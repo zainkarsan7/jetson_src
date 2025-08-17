@@ -11,10 +11,6 @@ int main(int argc, char *argv[]){
     rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
     auto const logger = rclcpp::get_logger("hello_moveit");
 
-    
-
-
-
     rclcpp::shutdown();
 
 
