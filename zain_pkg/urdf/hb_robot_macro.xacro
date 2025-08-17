@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+    <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+    <xacro:macro name="hb_robot" params="
+        parent
+        *origin
+        ur_type
+        joint_limits_parameters_file
+        kinematics_parameters_file
+        physical_parameters_file
+        visual_parameters_file
+        ">
+
+        <joint name="HB_base_joint" type="fixed">
+            <xacro:insert_block name="origin" />
+            <parent link="${parent}" />
+            <child link="HB_carriage" />
+        </joint>
+
+        <link name="HB_carriage"/>
+
+        <joint name="HB_rob_base" type="fixed">
+            <parent link="HB_carriage" />
+            <child link="robot_mount" />
+            <origin xyz= "0 0 0" rpy="0 0 ${pi}"/>
+        </joint>
+
+        <link name="robot_mount">
+            <visual>
+                <geometry>
+                <mesh filename="package://zain_pkg/meshes/board.stl"/>
+                </geometry>
+                <origin rpy="${pi/2} 0 0" xyz="0 0 0"/>
+            </visual>
+            <collision>
+                <geometry>
+                <mesh filename="package://zain_pkg/meshes/board.stl"/>
+                </geometry>
+                <origin rpy="${pi/2} 0 0" xyz="0 0 0"/>
+            </collision>
+        </link>
+
+        
+
+        <xacro:ur_robot
+            name="${ur_type}"
+            tf_prefix="${ur_type}_"
+            parent="robot_mount"
+            joint_limits_parameters_file="${joint_limits_parameters_file}"
+            kinematics_parameters_file="${kinematics_parameters_file}"
+            physical_parameters_file="${physical_parameters_file}"
+            visual_parameters_file="${visual_parameters_file}"
+            >
+            <origin xyz="0 0 0" rpy="${pi/2} 0 0" />
+        </xacro:ur_robot>
+    </xacro:macro>
+</robot>
