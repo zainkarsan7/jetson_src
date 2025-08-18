@@ -73,8 +73,8 @@ def generate_launch_description():
             "kinematics_params_file",
             default_value=PathJoinSubstitution(
                 [
-                    FindPackageShare("hb_robot_description"),
-                    "urdf",
+                    FindPackageShare("hb_robot_control"),
+                    "config",
                     "my_robot_calibration.yaml",
                 ]
             ),

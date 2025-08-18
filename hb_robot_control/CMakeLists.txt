@@ -25,15 +25,11 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+install(
+  DIRECTORY launch config urdf rviz
+  DESTINATION share/${PROJECT_NAME}
+)
+
 
 
 ament_package()
-
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launch")
-  install(
-    DIRECTORY launch
-    DESTINATION share/${PROJECT_NAME}
-    )
-endif()
-
-install(DIRECTORY urdf config rviz DESTINATION share/${PROJECT_NAME})
