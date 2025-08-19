@@ -7,10 +7,11 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(moveit_visual_tools REQUIRED)
 find_package(rclcpp REQUIRED)
 
 add_executable(hello_moveit src/hello_moveit.cpp)
-ament_target_dependencies(hello_moveit moveit_ros_planning_interface rclcpp) 
+ament_target_dependencies(hello_moveit moveit_ros_planning_interface moveit_visual_tools rclcpp) 
 
 
 

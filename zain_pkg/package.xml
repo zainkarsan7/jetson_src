@@ -16,6 +16,7 @@
   <exec_depend>ur_description</exec_depend>
   <exec_depend>ur_robot_driver</exec_depend>
   <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_visual_tools</depend>
   <depend>rclcpp</depend>
 
   <export>

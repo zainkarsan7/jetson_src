@@ -1,6 +1,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include <memory>
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit_visual_tools/moveit_visual_tools.h>
+#include <thread>
 
 using moveit::planning_interface::MoveGroupInterface;
 
@@ -20,7 +22,7 @@ int main(int argc, char *argv[]){
         msg.orientation.w = 1.0;
         msg.position.x = 0.5;
         msg.position.y = 0.5;
-        msg.position.z = 0.5;
+        msg.position.z = 0.75;
         return msg;
     }();
 
