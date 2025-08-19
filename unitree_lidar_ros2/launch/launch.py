@@ -2,16 +2,20 @@ import os
 import subprocess
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-def generate_launch_description():
-    # Run unitree lidar
+def launch_setup(context):
+    
+    
     node1 = Node(
         package='unitree_lidar_ros2',
         executable='unitree_lidar_ros2_node',
         name='unitree_lidar_ros2_node',
         output='screen',
-        arguments=['--ros-args', '--log-level','debug'],
+        arguments=['--ros-args', '--log-level', 'warn'],
+        # arguments=['--ros-args', '--log-level','debug'],
         parameters= [
                 
                 {'initialize_type': 2},
@@ -35,16 +39,29 @@ def generate_launch_description():
                 {'imu_topic': "unilidar/imu"},
                 ]
     )
+    nodes = [node1]
+    if LaunchConfiguration('launch_rviz').perform(context).lower() in ['true', '1']:
+        # Run Rviz
+        package_path = subprocess.check_output(['ros2', 'pkg', 'prefix', 'unitree_lidar_ros2']).decode('utf-8').rstrip()
+        rviz_config_file = os.path.join(package_path, 'share', 'unitree_lidar_ros2', 'view.rviz')
+        print("rviz_config_file = " + rviz_config_file)
+        rviz_node = Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-d', rviz_config_file],
+            output='log'
+        )
+        nodes.append(rviz_node)
+    return nodes
 
-    # Run Rviz
-    package_path = subprocess.check_output(['ros2', 'pkg', 'prefix', 'unitree_lidar_ros2']).decode('utf-8').rstrip()
-    rviz_config_file = os.path.join(package_path, 'share', 'unitree_lidar_ros2', 'view.rviz')
-    print("rviz_config_file = " + rviz_config_file)
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', rviz_config_file],
-        output='log'
-    )
-    return LaunchDescription([rviz_node,node1])
+def generate_launch_description():
+
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'launch_rviz',
+            default_value='false',
+            description='Whether to launch RViz'
+        ),
+        OpaqueFunction(function=launch_setup)
+    ])

@@ -160,7 +160,7 @@ void UnitreeLidarSDKNode::timer_callback()
     int result = lsdk_->runParse();
     static pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
 
-    RCLCPP_INFO(this->get_logger(), "result = %d", result);
+    // RCLCPP_INFO(this->get_logger(), "result = %d", result);
 
     if (result == LIDAR_IMU_DATA_PACKET_TYPE)
     {
