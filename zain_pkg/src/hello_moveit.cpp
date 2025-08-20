@@ -4,6 +4,7 @@
 #include <moveit_visual_tools/moveit_visual_tools.h>
 #include <thread>
 #include <moveit/planning_interface/planning_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 
 using moveit::planning_interface::MoveGroupInterface;
 
@@ -59,6 +60,32 @@ int main(int argc, char *argv[]){
     }();
 
     mg_interface.setPoseTarget(t_pose);
+
+    auto const col_object = [frame_id=mg_interface.getPlanningFrame()]{
+        moveit_msgs::msg::CollisionObject col_object;
+        col_object.header.frame_id = frame_id;
+        col_object.id = "my_box";
+        shape_msgs::msg::SolidPrimitive prim;
+        prim.type = prim.BOX;
+        prim.dimensions.resize(3);
+        prim.dimensions[prim.BOX_X]=0.5;
+        prim.dimensions[prim.BOX_Y]=0.1;
+        prim.dimensions[prim.BOX_Z]=1;
+
+        geometry_msgs::msg::Pose box_pose;
+        box_pose.orientation.w = 1;
+        box_pose.position.x = .75;
+        box_pose.position.y = 1;
+        box_pose.position.z = 0.25;
+        col_object.primitives.push_back(prim);
+        col_object.primitive_poses.push_back(box_pose);
+        col_object.operation= col_object.ADD;
+        return col_object;
+
+    }();
+
+    moveit::planning_interface::PlanningSceneInterface p_scene_interface;
+    p_scene_interface.applyCollisionObject(col_object);
 
     prompt("start planning");
     draw_title("planning");
