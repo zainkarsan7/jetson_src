@@ -6,7 +6,7 @@ controller_manager:
       type: joint_trajectory_controller/joint_trajectory_controller
     
     joint_state_broadcaster:
-      tpye: joint_state_broadcaster/JointStateBroadcaster
+      type: joint_state_broadcaster/JointStateBroadcaster
 
     # Manipulator controller
 manipulator_controller:

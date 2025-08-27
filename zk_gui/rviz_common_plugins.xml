@@ -1,0 +1,5 @@
+<library path="zk_panel">
+    <class type="zk_gui::zk_panel" base_class_type="rviz_common::Panel">
+        <description>test panel</description>
+    </class>
+</library>

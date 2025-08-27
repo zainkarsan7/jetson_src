@@ -8,13 +8,15 @@ Panels:
         - /Status1
         - /MotionPlanning1
         - /PointCloud21
-        - /TF1
         - /TF1/Frames1
-        - /AzureKinect1
+        - /MarkerArray1
+        - /Trajectory1
       Splitter Ratio: 0.5
-    Tree Height: 247
+    Tree Height: 417
   - Class: rviz_common/Help
     Name: Help
+  - Class: rviz_visual_tools/RvizVisualToolsGui
+    Name: RvizVisualToolsGui
 Visualization Manager:
   Class: ""
   Displays:
@@ -135,7 +137,7 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
-        Loop Animation: true
+        Loop Animation: false
         Robot Alpha: 0.5
         Robot Color: 150; 50; 150
         Show Robot Collision: false
@@ -295,21 +297,7 @@ Visualization Manager:
         All Enabled: true
         HB_carriage:
           Value: true
-        camera_base:
-          Value: true
-        depth_camera_link:
-          Value: true
-        imu_link:
-          Value: true
-        rgb_camera_link:
-          Value: true
         robot_mount:
-          Value: true
-        unilidar_imu:
-          Value: true
-        unilidar_imu_initial:
-          Value: true
-        unilidar_lidar:
           Value: true
         ur10e_base:
           Value: true
@@ -327,8 +315,6 @@ Visualization Manager:
           Value: true
         ur10e_tool0:
           Value: true
-        ur10e_tool0_controller:
-          Value: true
         ur10e_upper_arm_link:
           Value: true
         ur10e_wrist_1_link:
@@ -345,17 +331,12 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        unilidar_imu_initial:
-          unilidar_imu:
-            unilidar_lidar:
-              {}
         world:
           HB_carriage:
             robot_mount:
               ur10e_base_link:
                 ur10e_base:
-                  ur10e_tool0_controller:
-                    {}
+                  {}
                 ur10e_base_link_inertia:
                   ur10e_shoulder_link:
                     ur10e_upper_arm_link:
@@ -384,6 +365,111 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /k4a/rgb_to_depth/image_raw
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        Path: true
+        Sphere: true
+        Text: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /rviz_visual_tools
+      Value: true
+    - Class: moveit_rviz_plugin/Trajectory
+      Color Enabled: false
+      Enabled: true
+      Interrupt Display: false
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        HB_carriage:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        Link Tree Style: Links in Alphabetic Order
+        robot_mount:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link_inertia:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_flange:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_forearm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_ft_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_tool0:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_1_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_3_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Loop Animation: false
+      Name: Trajectory
+      Robot Alpha: 0.5
+      Robot Color: 150; 50; 150
+      Robot Description: robot_description
+      Show Robot Collision: false
+      Show Robot Visual: true
+      Show Trail: false
+      State Display Time: 3x
+      Trail Step Size: 25
+      Trajectory Topic: /display_planned_path
+      Use Sim Time: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -409,25 +495,27 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.13183893263339996
-        Y: 0.7865306735038757
-        Z: 0.3659868836402893
+        X: 0.21714837849140167
+        Y: 0.9157698154449463
+        Z: 0.024614527821540833
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5203979015350342
+      Pitch: 0.5497963428497314
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.3853980302810669
+      Yaw: 2.053584575653076
     Saved: ~
 Window Geometry:
+  " - Trajectory Slider":
+    collapsed: false
   AzureKinect:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1173
+  Height: 1137
   Help:
     collapsed: false
   Hide Left Dock: false
@@ -436,7 +524,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000002b40000043bfc0200000006fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100fffffffb000000100044006900730070006c006100790073010000003d0000017a000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000001bd000002bb0000017d00ffffff00000001000001400000043bfc0200000001fb000000160041007a007500720065004b0069006e006500630074010000003d0000043b0000002800ffffff000003680000043b00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
-  Width: 1896
-  X: 197
-  Y: 109
+  QMainWindow State: 000000ff00000000fd0000000200000000000002b40000041bfc0200000008fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003b0000003f0000003f00fffffffb000000100044006900730070006c006100790073010000008000000222000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000002a8000001690000016900fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006901000004170000003f0000003f00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00ffffff00000001000001400000041bfc0200000001fb000000160041007a007500720065004b0069006e006500630074010000003b0000041b0000002800ffffff000003800000041b00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  RvizVisualToolsGui:
+    collapsed: false
+  Width: 1920
+  X: 0
+  Y: 23

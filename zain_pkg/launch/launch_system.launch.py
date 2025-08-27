@@ -9,14 +9,14 @@ import os
 from launch.event_handlers import OnProcessStart
 from launch.actions import TimerAction, ExecuteProcess
 def get_launch(context):
-
+    use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [FindPackageShare("hb_robot_control"),"launch","start_hb_robot.launch.py"]
             )
         ),
-            launch_arguments={"launch_rviz": 'True','use_fake_hardware': 'true'}.items()
+            launch_arguments={"launch_rviz": 'false','use_fake_hardware': use_fake_hardware}.items()
     )
 
     move_group = IncludeLaunchDescription(
@@ -65,7 +65,8 @@ def get_launch(context):
     return nodes
 
 def generate_launch_description():
-    return LaunchDescription([DeclareLaunchArgument(
+    return LaunchDescription([DeclareLaunchArgument('use_fake_hardware',default_value='false',description='fake or not'),
+                              DeclareLaunchArgument(
         'include_sensors',
         default_value='false',
         description='launch the lidar or k4a sensors'
