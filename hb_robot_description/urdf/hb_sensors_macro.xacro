@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+<xacro:macro name="hb_sensors" params="ur_type">
+<xacro:include filename="$(find azure_kinect_ros2_driver)/urdf/azure_kinect.urdf.xacro"/>
+<joint name="tool0_to_kinect" type="fixed">
+    <parent link="${ur_type}_tool0"/>
+    <child link="camera_base"/>
+    <origin xyz= "0.05 0.07 0.06" rpy="0.002 -0.001 -2.36"/>
+</joint>
+<!-- <link name="unilidar_lidar"/> -->
+<link name="unilidar_imu_initial"/>
+<!-- <joint name="mount_to_lidar" type="fixed">
+    <parent link="robot_mount"/>
+    <child link= "unilidar_lidar"/>
+    <origin xyz="1 0 0" rpy="0 0 0"/>
+</joint> -->
+
+<joint name="mount_to_imu" type="fixed">
+    <parent link="robot_mount"/>
+    <child link= "unilidar_imu_initial"/>
+    <origin xyz="1 1 0" rpy="0 0 0"/>
+</joint>
+
+</xacro:macro>
+</robot>

@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <robot name="hb_robot" xmlns:xacro="http://ros.org/wiki/xacro">
     <xacro:include filename="$(find hb_robot_description)/urdf/hb_robot_macro.xacro"/>
+    <xacro:include filename="$(find hb_robot_description)/urdf/hb_sensors_macro.xacro"/>
     <xacro:arg name="ur_type" default="ur10e"/>        
     <xacro:arg name="joint_limits_parameters_file" default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
     <xacro:arg name="kinematics_parameters_file" default="$(find hb_robot_description)/urdf/my_robot_calibration.yaml"/>
@@ -18,5 +19,7 @@
       <origin xyz="0 0 0" rpy="0 0 0" />
 
     </xacro:hb_robot>
+    <xacro:hb_sensors ur_type="$(arg ur_type)"/>
+    
     
 </robot>
