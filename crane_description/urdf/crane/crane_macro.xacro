@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+<xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
+    <xacro:macro name="crane">
+        <!-- LINKS -->
+        <link name="base_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder length= "0.1" radius= "0.05"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder length= "0.1" radius= "0.05"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="spreader_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "1 0.08 0.08"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "1 0.08 0.08"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="LG_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="RG_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <joint name="swivel_joint" type="continuous">
+            <parent link="base_link"/>
+            <child link="spreader_link"/>
+            <origin xyz="0 0 -1" rpy="0 0 0"/>
+            <axis xyz="0 0 1"/>
+            <limit effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="LG_lin_joint" type="prismatic">
+            <parent link="spreader_link"/>
+            <child link="LG_link"/>
+            <origin xyz="-0.25 0 -0.08" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <limit lower="-0.5" upper="0.0" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="RG_lin_joint" type="prismatic">
+            <parent link="spreader_link"/>
+            <child link="RG_link"/>
+            <origin xyz="0.25 0 -0.08" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <limit lower="0.0" upper="0.5" effort="100" velocity="1.0"/>
+        </joint>
+    </xacro:macro>
+</robot>
+

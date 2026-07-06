@@ -1,0 +1,33 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    pid_controller:
+      type: pid_controller/PidController 
+
+    swivel_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+swivel_position_controller:
+  ros__parameters:
+    joints:
+      - swivel_joint
+    
+pid_controller:
+  ros__parameters: 
+    dof_names: 
+     - swivel_joint
+
+    command_interface: position
+    reference_and_state_interfaces:
+      - position
+
+    gains:
+      swivel_joint:
+        p: 10.0
+        i: 0.0
+        d: 0.1
+

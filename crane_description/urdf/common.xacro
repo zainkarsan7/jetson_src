@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:macro name="def_inertial">
+        <inertial>
+            <origin xyz="0. 0. 0." rpy="0. 0. 0." />
+            <mass value="0.01"/>
+            <inertia
+                ixx = "0.001"
+                ixy = "0."
+                ixz = "0."
+                iyy = "0.001"
+                iyz = "0."
+                izz = "0.001"/>
+        </inertial>
+    </xacro:macro>
+
+    <material name= "light_red">
+        <color rgba="${200/255} ${10/255} ${10/255} 1.0"/>
+    </material>
+</robot>

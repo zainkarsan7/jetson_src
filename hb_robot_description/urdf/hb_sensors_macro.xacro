@@ -16,9 +16,9 @@
 </joint> -->
 
 <joint name="mount_to_imu" type="fixed">
-    <parent link="robot_mount"/>
+    <parent link="HB_carriage"/>
     <child link= "unilidar_imu_initial"/>
-    <origin xyz="0 0 1.1" rpy="${pi/2} 0 0"/>
+    <origin xyz="0 0 1.1" rpy="0 0 ${pi}"/>
 </joint>
 
 </xacro:macro>

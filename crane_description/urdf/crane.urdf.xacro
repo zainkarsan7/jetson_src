@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="crane">
+
+<xacro:arg name="use_mock_hardware" default="true" />
+
+
+<xacro:include filename="$(find crane_description)/urdf/crane/crane_macro.xacro"/>
+<xacro:include filename="$(find crane_description)/urdf/crane/crane_macro.ros2_control.xacro"/>
+
+<xacro:crane/>
+<xacro:crane_ros2_control use_mock_hardware="$(arg use_mock_hardware)" />
+</robot>
