@@ -47,12 +47,12 @@ class cam_publisher : public rclcpp::Node{
         cam_info.width  = frame.cols;
 
         cam_info.distortion_model = "plumb_bob";
-        cam_info.d.assign(5, 0.0);
+        cam_info.d = {-0.161207, 0.061080, -0.002903, -0.009254, 0.000000};
 
         cam_info.k = {
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0,
-            0.0, 0.0, 1.0
+           609.98768,   0.     , 601.44779,
+           0.     , 589.20671, 421.11547,
+           0.     ,   0.     ,   1.    
         };
 
         cam_info.r = {
@@ -62,9 +62,9 @@ class cam_publisher : public rclcpp::Node{
         };
 
         cam_info.p = {
-            0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0
+            559.49133,   0.     , 586.51838,   0.     ,
+           0.     , 553.91614, 424.13734,   0.     ,
+           0.     ,   0.     ,   1.     ,   0.   
         };       
         
         cam_info_pub_->publish(cam_info);

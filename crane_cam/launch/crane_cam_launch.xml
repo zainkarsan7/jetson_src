@@ -1,0 +1,9 @@
+<launch>
+
+<node pkg="crane_cam" exec="cam_pub" name="crane_camera"/>
+<node pkg="crane_cam" exec="pose_est" name="aruco_pose"/>
+   
+    
+
+
+</launch>

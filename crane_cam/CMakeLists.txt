@@ -31,11 +31,19 @@ ament_target_dependencies(pose_est tf2 tf2_ros geometry_msgs rclcpp sensor_msgs 
 
 target_link_libraries(cam_pub ${OpenCV_LIBRARIES})
 
+target_link_libraries(pose_est ${OpenCV_LIBRARIES})
+
+message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 
 install(TARGETS
 cam_pub
+pose_est
 DESTINATION lib/${PROJECT_NAME})
 
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
