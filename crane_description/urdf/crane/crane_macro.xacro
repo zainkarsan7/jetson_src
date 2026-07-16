@@ -38,6 +38,9 @@
             </visual>
         </link>
 
+        <link name="Crane_RS_link"/>
+
+
         <link name="LG_link">
             <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -94,6 +97,12 @@
             <origin xyz="0.25 0 -0.08" rpy="0 0 0"/>
             <axis xyz="1 0 0"/>
             <limit lower="0.0" upper="0.5" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="spreader_camera_joint" type="fixed">
+            <parent link="spreader_link"/>
+            <child link ="Crane_RS_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
         </joint>
     </xacro:macro>
 </robot>

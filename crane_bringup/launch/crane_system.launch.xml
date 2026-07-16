@@ -5,7 +5,7 @@
     <arg name="enable_gyro" value="true"/>
     <arg name="enable_accel" value="true"/>
     <arg name="unite_imu_method" value="true"/>
-    <arg name="base_frame_id" value="spreader_link"/>
+    <arg name="pointcloud.enable" value="true"/>
     </include>
     <include file="$(find-pkg-share crane_cam)/launch/crane_cam_launch.xml"/>
     <include file="$(find-pkg-share crane_bringup)/launch/crane.launch.xml"/>
