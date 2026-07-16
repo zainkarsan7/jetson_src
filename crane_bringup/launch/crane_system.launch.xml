@@ -12,7 +12,7 @@
 
     <include file="$(find-pkg-share foxglove_bridge)/launch/foxglove_bridge_launch.xml">
     <arg name="remote_access" value="true"/>
-    <arg name="device_token" value=""/>
+    <arg name="device_token" value="fox_dt_VvLbtak7kgOLQe4MSftc6anRYhvL9mHf"/>
     </include>
 
 </launch>
