@@ -20,6 +20,38 @@
             <material name="light_red"/>
             </visual>
         </link>
+        <link name = "swivel_top">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder size= "0.05 0.1"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder size= "0.05 0.1"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+        <link name = "swivel_bottom">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder size= "0.05 0.1"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <cylinder size= "0.05 0.1"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
 
         <link name="spreader_link">
             <collision>
@@ -38,9 +70,9 @@
             </visual>
         </link>
 
+        <link name = "Swivel_Tag"/>
         <link name="Crane_RS_link"/>
-
-
+        
         <link name="LG_link">
             <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -75,13 +107,33 @@
             </visual>
         </link>
 
-        <joint name="swivel_joint" type="continuous">
+        <joint name="base_sw_top_joint" type = "fixed">
             <parent link="base_link"/>
-            <child link="spreader_link"/>
-            <origin xyz="0 0 -1" rpy="0 0 0"/>
+            <child link="swivel_top"/>
+            <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+        </joint>
+
+        <joint name="swivel_joint" type="continuous">
+            <parent link="swivel_top"/>
+            <child link="swivel_bottom"/>
+            <origin xyz="0 0 -0.1" rpy="0 0 0"/>
             <axis xyz="0 0 1"/>
             <limit effort="100" velocity="1.0"/>
         </joint>
+
+        <joint name="swivel_spreader_joint" type="fixed">
+            <parent link="swivel_bottom"/>
+            <child link="spreader_link"/>
+            <origin xyz="0 0 -0.75" rpy="0 0 0"/>
+        </joint>
+
+        <joint name="swivel_bottom_tag_joint" type="fixed">
+            <parent link="swivel_bottom"/>
+            <child link ="Swivel_Tag"/>
+            <origin xyz ="0.0 0.1 0" rpy="-${pi} 0 ${pi/2}"/> 
+        </joint>
+
+
 
         <joint name="LG_lin_joint" type="prismatic">
             <parent link="spreader_link"/>
@@ -99,11 +151,13 @@
             <limit lower="0.0" upper="0.5" effort="100" velocity="1.0"/>
         </joint>
 
-        <joint name="spreader_camera_joint" type="fixed">
+        <joint name="spreader_RS_joint" type="fixed">
             <parent link="spreader_link"/>
             <child link ="Crane_RS_link"/>
             <origin xyz ="0 0 0" rpy="0 0 0"/> 
         </joint>
+
+        
     </xacro:macro>
 </robot>
 

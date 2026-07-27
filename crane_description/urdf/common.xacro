@@ -18,4 +18,8 @@
     <material name= "light_red">
         <color rgba="${200/255} ${10/255} ${10/255} 1.0"/>
     </material>
+
+    <material name= "light_blue">
+        <color rgba="${10/255} ${10/255} ${200/255} 1.0"/>
+    </material>
 </robot>

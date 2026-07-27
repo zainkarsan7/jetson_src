@@ -17,6 +17,8 @@
 #include "tf2_ros/transform_broadcaster.hpp"
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
+#include "tf2/LinearMath/Transform.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 
 class ArucoNode: public rclcpp::Node{
@@ -42,8 +44,8 @@ class ArucoNode: public rclcpp::Node{
         anno_img_pub = image_transport::create_publisher(this,
         "camera/image_aruco");
 
-        pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-
+        spreader_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        camera_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
     }
     private:
@@ -66,6 +68,51 @@ class ArucoNode: public rclcpp::Node{
         tf_rotation.getRotation(quat);
         quat.normalize();
     }
+
+    tf2::Transform invert_cv_pose(const cv::Vec3d & rvec, const cv::Vec3d & tvec){
+        cv::Mat R_cam_tag;
+        cv::Rodrigues(rvec,R_cam_tag);
+        cv::Mat R_tag_cam = R_cam_tag.t();
+        cv::Mat t_cam_tag = (cv::Mat_<double>(3,1)<<tvec[0],tvec[1],tvec[2]);
+        cv::Mat t_tag_cam = -R_tag_cam * t_cam_tag;
+
+        // then get into quaternion
+        tf2::Matrix3x3 tf_rotation(
+            R_tag_cam.at<double>(0, 0),
+            R_tag_cam.at<double>(0, 1),
+            R_tag_cam.at<double>(0, 2),
+
+            R_tag_cam.at<double>(1, 0),
+            R_tag_cam.at<double>(1, 1),
+            R_tag_cam.at<double>(1, 2),
+
+            R_tag_cam.at<double>(2, 0),
+            R_tag_cam.at<double>(2, 1),
+            R_tag_cam.at<double>(2, 2));
+        tf2::Quaternion q_tag_cam;
+        tf_rotation.getRotation(q_tag_cam);
+        q_tag_cam.normalize();
+        tf2::Transform result;
+        result.setOrigin(tf2::Vector3(t_tag_cam.at<double>(0),
+        t_tag_cam.at<double>(1),
+        t_tag_cam.at<double>(2)
+                                                ));
+        result.setRotation(q_tag_cam);
+        return result;
+    }
+
+    tf2::Transform get_Cam_to_Spreader(const tf2::Transform & tag_2_cam){
+        tf2::Transform cam_spreader;
+        cam_spreader.setOrigin(tf2::Vector3(0,0.14,-0.3));
+        tf2::Quaternion q_cam_spreader;
+        q_cam_spreader.setRPY(0.0,0.0,M_PI);
+        q_cam_spreader.normalize();
+        cam_spreader.setRotation(q_cam_spreader);
+        // cam_spreader.setIdentity();
+        tf2::Transform T_tag_2_spreader = tag_2_cam * cam_spreader;
+        return T_tag_2_spreader;
+    }
+
 
     void get_cam_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr &msg){
         cam_mat_ = cv::Mat(3,3,CV_64F);
@@ -103,7 +150,7 @@ class ArucoNode: public rclcpp::Node{
         if (mIds.size()>0){
 
             cv::aruco::drawDetectedMarkers(annotated_,mCorners,mIds);
-            cv::aruco::estimatePoseSingleMarkers(mCorners,0.05,cam_mat_,dist_coeffs,rvecs,tvecs);
+            cv::aruco::estimatePoseSingleMarkers(mCorners,0.1,cam_mat_,dist_coeffs,rvecs,tvecs);
             for (size_t i=0; i<mIds.size(); i++){
                 cv::aruco::drawAxis(annotated_,cam_mat_,dist_coeffs,rvecs[i],tvecs[i],0.01);
                 RCLCPP_INFO_THROTTLE(
@@ -115,21 +162,25 @@ class ArucoNode: public rclcpp::Node{
         );
             }
         
-        tf2::Quaternion quat;
-        get_tf2_quat(rvecs.back(),quat);
-        transform.header.stamp = msg->header.stamp;
-        transform.header.frame_id = "spreader_link";
-        transform.child_frame_id = "tag";
-        transform.transform.translation.x = tvecs.back()[0];
-        transform.transform.translation.y = tvecs.back()[1];
-        transform.transform.translation.z = tvecs.back()[2];
+        // tf2::Quaternion quat;
+        // get_tf2_quat(rvecs.back(),quat);
 
-        transform.transform.rotation.x = quat.x();
-        transform.transform.rotation.y = quat.y();
-        transform.transform.rotation.z = quat.z();
-        transform.transform.rotation.w = quat.w();
+        tf2::Transform T_measured_cam = invert_cv_pose(rvecs.back(),tvecs.back());
+        tf2::Transform T_measured_spreader = get_Cam_to_Spreader(T_measured_cam);
+        cam_transform.header.stamp = msg->header.stamp;
+        cam_transform.header.frame_id = "Swivel_Tag";
+        cam_transform.child_frame_id = "Camera_Measured";
+        cam_transform.transform = tf2::toMsg(T_measured_cam);
+        
+        spreader_transform.header.stamp = msg->header.stamp;
+        spreader_transform.header.frame_id = "Swivel_Tag";
+        spreader_transform.child_frame_id = "Spreader_Measured";
+        spreader_transform.transform = tf2::toMsg(T_measured_spreader);
 
-        pose_broadcaster_->sendTransform(transform);                
+
+        camera_pose_broadcaster_->sendTransform(cam_transform);       
+        spreader_pose_broadcaster_->sendTransform(spreader_transform);                
+         
 
         }
         
@@ -146,13 +197,20 @@ class ArucoNode: public rclcpp::Node{
     cv::Mat dist_coeffs;
     std::string cam_frame_id;
     bool cam_info_received_{false};
-    geometry_msgs::msg::TransformStamped transform;
+    geometry_msgs::msg::TransformStamped cam_transform;
+    geometry_msgs::msg::TransformStamped spreader_transform;
+
+
+    tf2::Transform T_webcam;
+
+
 
     image_transport::Subscriber img_sub_;
     image_transport::Publisher anno_img_pub;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;
     sensor_msgs::msg::CameraInfo cam_info;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> pose_broadcaster_;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_pose_broadcaster_;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> camera_pose_broadcaster_;
 
 
 };

@@ -15,6 +15,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -26,7 +27,7 @@ add_executable(cam_pub src/cam_pub.cpp)
 ament_target_dependencies(cam_pub rclcpp sensor_msgs cv_bridge image_transport)
 
 add_executable(pose_est src/aruc_pose_est.cpp)
-ament_target_dependencies(pose_est tf2 tf2_ros geometry_msgs rclcpp sensor_msgs cv_bridge image_transport)
+ament_target_dependencies(pose_est tf2 tf2_ros tf2_geometry_msgs geometry_msgs rclcpp sensor_msgs cv_bridge image_transport)
 
 
 target_link_libraries(cam_pub ${OpenCV_LIBRARIES})
