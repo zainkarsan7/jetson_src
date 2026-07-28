@@ -10,6 +10,25 @@ controller_manager:
 
     swivel_position_controller:
       type: position_controllers/JointGroupPositionController
+    
+    joint_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+    crane_homing_controller:
+      type: crane_controllers/CraneHomingController
+
+crane_homing_controller:
+  ros__parameters:
+    command_interface: home
+    
+
+
+joint_position_controller:
+  ros__parameters:
+    joints:
+      - swivel_joint
+      - LG_lin_joint
+      - RG_lin_joint
 
 swivel_position_controller:
   ros__parameters:

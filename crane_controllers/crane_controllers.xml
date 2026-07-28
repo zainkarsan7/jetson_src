@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+
+<library path="crane_controllers">
+    <class 
+    name="crane_controllers/CraneHomingController"
+    type="crane_controllers::CraneHomingController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+    "Homing Routine"
+    </description>
+    </class>
+
+</library>

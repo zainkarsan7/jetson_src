@@ -24,6 +24,13 @@ class CraneHardware : public hardware_interface::SystemInterface
             RIGHT = 2
         };
 
+        double home_command_{0.0};
+        double homing_state_{0.0};
+        double homed_state_{0.0};
+        double homing_failed_state_{0.0};
+
+        bool prev_home_com_{false};
+        bool ard_is_homing_{false};
         
         // extending the system interface class from hardware interface
         // all these functions are part of the lifecycle for hardware

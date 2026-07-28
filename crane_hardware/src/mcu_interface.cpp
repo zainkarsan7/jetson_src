@@ -31,6 +31,13 @@ namespace crane_hardware
             return hardware_interface::CallbackReturn::ERROR;
         }
 
+        if (info_.gpios.size()<1){
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+
+
+        const auto & gpio = info_.gpios[0];
+
     port_ = info_.hardware_parameters.at("port");
     //if theres a baud rate parameter, plug it into the private variable
     if(info_.hardware_parameters.count("baud_rate")){
@@ -67,6 +74,7 @@ namespace crane_hardware
             );
             return hardware_interface::CallbackReturn::ERROR;
         }
+        
 
         if(joint.state_interfaces.size()!=1 || 
         joint.state_interfaces[0].name != hardware_interface::HW_IF_POSITION)
@@ -92,7 +100,7 @@ namespace crane_hardware
             }
             RCLCPP_INFO(
                 rclcpp::get_logger("CraneHardware"),
-                "connected nano on '%s'",
+                "connected MCU on '%s'",
                 port_.c_str()
             );
             return hardware_interface::CallbackReturn::SUCCESS;
@@ -118,6 +126,11 @@ namespace crane_hardware
                 &hw_positions_[i]
             );
         }
+
+        interfaces.emplace_back("crane","homing", &homing_state_);
+        interfaces.emplace_back("crane","homed", &homed_state_);
+        interfaces.emplace_back("crane","home_failed", &homing_failed_state_);
+
             return interfaces;
         }
 
@@ -131,34 +144,68 @@ namespace crane_hardware
                 &hw_commands_[i]
             );
         }
+
+        interfaces.emplace_back("crane","home", &home_command_);
         return interfaces;
     }
     hardware_interface::return_type CraneHardware::read(
         const rclcpp::Time &,
         const rclcpp::Duration &){
-            std::string line;
+        
+        std::string line;
 
-            if(!read_line(line)){
-                return hardware_interface::return_type::OK;
+        while(read_line(line)){
+                        
+            long s = 0;
+            long l = 0;
+            long r = 0;
+            
+            if (std::sscanf(line.c_str(),"POS %ld %ld %ld", &s, &l, &r)==3){
+                hw_positions_[0] = steps_to_unit(s, JointIndex::SWIVEL);
+                hw_positions_[1] = steps_to_unit(l, JointIndex::LEFT);
+                hw_positions_[2] = steps_to_unit(r, JointIndex::RIGHT);
             }
-        
-        long s = 0;
-        long l = 0;
-        long r = 0;
-        
-        if (std::sscanf(line.c_str(),"POS %ld %ld %ld", &s, &l, &r)==3){
-            hw_positions_[0] = steps_to_unit(s, JointIndex::SWIVEL);
-            hw_positions_[1] = steps_to_unit(l, JointIndex::LEFT);
-            hw_positions_[2] = steps_to_unit(r, JointIndex::RIGHT);
+            else if (line == "HOME_STARTED"){
+                ard_is_homing_ = true;
+                homing_state_ = 1.0;
+                homed_state_ = 0.0;
+                homing_failed_state_ = 0.0;
+            }
+            else if(line== "HOME_DONE"){
+                ard_is_homing_ = false;
+                homing_state_ = 0.0;
+                homed_state_ = 1.0;
+                homing_failed_state_ = 0.0;
+            }
+            else if (line== "HOME_FAILED"){
+                ard_is_homing_ = false;
+                homing_state_ = 0.0;
+                homed_state_ = 0.0;
+                homing_failed_state_ = 1.0;
+            }
+            //other arduino messages could be parsed here
         }
 
         return hardware_interface::return_type::OK;
-        }
+    }
 
     hardware_interface::return_type CraneHardware::write(
         const rclcpp::Time &,
         const rclcpp::Duration &){
 
+            const bool home_requested = home_command_ > 0.5;
+            const bool home_rising_edge = home_requested && !prev_home_com_;
+            prev_home_com_ = home_requested;
+            if (home_rising_edge){
+                if (!write_line("HOME\n")){
+                    return hardware_interface::return_type::ERROR;
+                }
+
+                return hardware_interface::return_type::OK;
+            }
+            if (ard_is_homing_){
+                return hardware_interface::return_type::OK;
+            }
             const long s = unit_to_steps(hw_commands_[0],JointIndex::SWIVEL);
             const long l = unit_to_steps(hw_commands_[1],JointIndex::LEFT);
             const long r = unit_to_steps(hw_commands_[2],JointIndex::RIGHT);

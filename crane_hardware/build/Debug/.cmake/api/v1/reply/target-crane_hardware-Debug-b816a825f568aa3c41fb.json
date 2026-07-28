@@ -891,7 +891,7 @@
 		{
 			"backtrace" : 1,
 			"compileGroupIndex" : 0,
-			"path" : "src/nano_interface.cpp",
+			"path" : "src/mcu_interface.cpp",
 			"sourceGroupIndex" : 0
 		}
 	],

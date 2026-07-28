@@ -20,10 +20,19 @@
         <param name="left_steps_per_unit">1000.0</param>
         <param name="right_steps_per_unit">1000.0</param>
       </hardware>
+      
+      <gpio name="crane">
+        <command_interface name="home"/>
+        <state_interface name="homing"/>
+        <state_interface name="homed"/>
+        <state_interface name="home_failed"/>
+      </gpio>
+
       <joint name="swivel_joint">
         <command_interface name="position"/>
         <state_interface name="position"/>
       </joint>
+
 
       <joint name="LG_lin_joint">
         <command_interface name="position"/>

@@ -10,8 +10,10 @@
         <remap from="~/robot_description" to="/robot_description"/>
     </node>
     <node pkg="controller_manager" exec="spawner" args="joint_state_broadcaster"/>
+    <node pkg="controller_manager" exec="spawner" args="crane_homing_controller"/>
 
-    <node pkg="controller_manager" exec="spawner" args="swivel_position_controller"/>
+    <node pkg="controller_manager" exec="spawner" args="joint_position_controller"/>
+    <node pkg="controller_manager" exec="spawner" args="swivel_position_controller --inactive"/>
     <node pkg="rviz2" exec="rviz2" output="screen" args= "-d $(var rviz_config_path)"/>
 </launch>
 

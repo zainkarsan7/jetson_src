@@ -24,14 +24,14 @@
             <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <cylinder size= "0.05 0.1"/>
+                <cylinder radius="0.05" length="0.1"/>
             </geometry>
             </collision>
 
             <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <cylinder size= "0.05 0.1"/>
+                <cylinder radius="0.05" length="0.1"/>
             </geometry>
             <material name="light_red"/>
             </visual>
@@ -40,14 +40,14 @@
             <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <cylinder size= "0.05 0.1"/>
+                <cylinder radius="0.05" length="0.1"/>
             </geometry>
             </collision>
 
             <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <cylinder size= "0.05 0.1"/>
+                <cylinder radius="0.05" length="0.1"/>
             </geometry>
             <material name="light_red"/>
             </visual>

@@ -4,7 +4,7 @@
     type="crane_hardware::CraneHardware"
     base_class_type="hardware_interface::SystemInterface">
     <description>
-      Arduino Nano serial hardware interface for crane stepper motors.
+      Arduino serial hardware interface for crane stepper motors.
     </description>
   </class>
 </library>
