@@ -103,9 +103,9 @@ class ArucoNode: public rclcpp::Node{
 
     tf2::Transform get_Cam_to_Spreader(const tf2::Transform & tag_2_cam){
         tf2::Transform cam_spreader;
-        cam_spreader.setOrigin(tf2::Vector3(0,0.14,-0.3));
+        cam_spreader.setOrigin(tf2::Vector3(0,-0.14,-0.3));
         tf2::Quaternion q_cam_spreader;
-        q_cam_spreader.setRPY(0.0,0.0,M_PI);
+        q_cam_spreader.setRPY(0.0,0.0,0);
         q_cam_spreader.normalize();
         cam_spreader.setRotation(q_cam_spreader);
         // cam_spreader.setIdentity();
