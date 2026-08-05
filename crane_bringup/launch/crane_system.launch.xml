@@ -14,7 +14,7 @@
 
     <include file="$(find-pkg-share foxglove_bridge)/launch/foxglove_bridge_launch.xml">
     <arg name="remote_access" value="true"/>
-    <arg name="device_token" value="fox_dt_VvLbtak7kgOLQe4MSftc6anRYhvL9mHf"/>
+    <arg name="device_token" value="fox_dt_7HW4r65r9jjBjEO7ld4N71kxQqNGKTnj"/>
     </include>
 
 </launch>
