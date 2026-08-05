@@ -2,6 +2,7 @@
 
 <node pkg="crane_cam" exec="cam_pub" name="crane_camera"/>
 <node pkg="crane_cam" exec="pose_est" name="aruco_pose"/>
+<node pkg="crane_cam" exec="beam_est" name="beam_detector"/>
    
     
 

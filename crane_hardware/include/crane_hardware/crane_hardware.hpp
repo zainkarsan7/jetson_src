@@ -4,7 +4,7 @@
 
 #include <string>
 #include <vector>
-
+#include <limits>
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
@@ -28,6 +28,10 @@ class CraneHardware : public hardware_interface::SystemInterface
         double homing_state_{0.0};
         double homed_state_{0.0};
         double homing_failed_state_{0.0};
+
+        long last_sent_s_{std::numeric_limits<long>::min()};
+        long last_sent_l_{std::numeric_limits<long>::min()};
+        long last_sent_r_{std::numeric_limits<long>::min()};
 
         bool prev_home_com_{false};
         bool ard_is_homing_{false};

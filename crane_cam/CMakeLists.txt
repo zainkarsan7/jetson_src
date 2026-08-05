@@ -30,15 +30,25 @@ add_executable(pose_est src/aruc_pose_est.cpp)
 ament_target_dependencies(pose_est tf2 tf2_ros tf2_geometry_msgs geometry_msgs rclcpp sensor_msgs cv_bridge image_transport)
 
 
+add_executable(beam_est src/beam_pose_est.cpp)
+ament_target_dependencies(beam_est tf2 tf2_ros tf2_geometry_msgs geometry_msgs rclcpp sensor_msgs cv_bridge image_transport)
+
+
+
+
 target_link_libraries(cam_pub ${OpenCV_LIBRARIES})
 
 target_link_libraries(pose_est ${OpenCV_LIBRARIES})
+
+
+target_link_libraries(beam_est ${OpenCV_LIBRARIES})
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 
 install(TARGETS
 cam_pub
 pose_est
+beam_est
 DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY

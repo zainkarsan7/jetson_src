@@ -46,9 +46,9 @@ namespace crane_hardware
     //fill the vectors generic
     hw_positions_.assign(3,0.0);
     hw_commands_.assign(3,0.0);
-    steps_per_unit_ = {{JointIndex::SWIVEL, 1.0},
-                        {JointIndex::LEFT, 1.0},
-                        {JointIndex::RIGHT, 1.0}
+    steps_per_unit_ = {{JointIndex::SWIVEL, 1000.0},
+                        {JointIndex::LEFT, 10000.0},
+                        {JointIndex::RIGHT, 10000.0}
                     };
 
     if(info_.hardware_parameters.count("swivel_steps_per_unit")){
@@ -160,7 +160,7 @@ namespace crane_hardware
             long l = 0;
             long r = 0;
             
-            if (std::sscanf(line.c_str(),"POS %ld %ld %ld", &s, &l, &r)==3){
+            if (std::sscanf(line.c_str(),"S %ld L %ld R %ld", &s, &l, &r)==3){
                 hw_positions_[0] = steps_to_unit(s, JointIndex::SWIVEL);
                 hw_positions_[1] = steps_to_unit(l, JointIndex::LEFT);
                 hw_positions_[2] = steps_to_unit(r, JointIndex::RIGHT);
@@ -209,12 +209,31 @@ namespace crane_hardware
             const long s = unit_to_steps(hw_commands_[0],JointIndex::SWIVEL);
             const long l = unit_to_steps(hw_commands_[1],JointIndex::LEFT);
             const long r = unit_to_steps(hw_commands_[2],JointIndex::RIGHT);
+            
+             if (s == last_sent_s_ &&
+                l == last_sent_l_ &&
+                r == last_sent_r_) {
+                return hardware_interface::return_type::OK;
+            }
+
 
             std::ostringstream command;
             command<<"SETPOS "<< s<<" "<<l<<" "<<r<<"\n";
+            
+            RCLCPP_INFO(rclcpp::get_logger("CraneHardware"),
+        "Commands: %.4f %.4f %.4f -> SETPOS %ld %ld %ld",
+        hw_commands_[0],hw_commands_[1],hw_commands_[2],s,l,r);
+
+
             if (!write_line(command.str())){
                 return hardware_interface::return_type::ERROR;
             }
+
+
+
+            last_sent_s_ = s;
+            last_sent_l_ = l;
+            last_sent_r_ = r;
             return hardware_interface::return_type::OK;
         }
     
@@ -281,9 +300,40 @@ namespace crane_hardware
         if (serial_fd_<0){
             return false;
         }
+        
 
-        const ssize_t written = ::write(serial_fd_,line.c_str(),line.size());
-        return written== static_cast<ssize_t>(line.size());
+        std::size_t total_written = 0;
+
+        while (total_written < line.size()) {
+            const ssize_t result = ::write(
+            serial_fd_,
+            line.data() + total_written,
+            line.size() - total_written);
+
+            if (result > 0) {
+            total_written += static_cast<std::size_t>(result);
+            continue;
+            }
+
+            if (result < 0 && errno == EINTR) {
+            continue;
+            }
+
+            if (result < 0 && (
+                errno == EAGAIN ||
+                errno == EWOULDBLOCK)) {
+            return false;
+            }
+
+            RCLCPP_ERROR(
+            rclcpp::get_logger("CraneHardware"),
+            "Serial write failed: %s",
+            std::strerror(errno));
+
+            return false;
+        }
+
+        return true;
 
     }
 
