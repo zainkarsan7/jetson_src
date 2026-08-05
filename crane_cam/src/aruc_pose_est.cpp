@@ -5,7 +5,7 @@
 #include <vector>
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "cv_bridge/cv_bridge.h"
+#include "cv_bridge/cv_bridge.hpp"
 #include "image_transport/image_transport.hpp"
 
 #include "opencv2/opencv.hpp"
@@ -14,7 +14,7 @@
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 
-#include "tf2_ros/transform_broadcaster.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
@@ -152,7 +152,7 @@ class ArucoNode: public rclcpp::Node{
             cv::aruco::drawDetectedMarkers(annotated_,mCorners,mIds);
             cv::aruco::estimatePoseSingleMarkers(mCorners,0.1,cam_mat_,dist_coeffs,rvecs,tvecs);
             for (size_t i=0; i<mIds.size(); i++){
-                cv::aruco::drawAxis(annotated_,cam_mat_,dist_coeffs,rvecs[i],tvecs[i],0.01);
+                cv::drawFrameAxes(annotated_,cam_mat_,dist_coeffs,rvecs[i],tvecs[i],0.01);
                 RCLCPP_INFO_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
