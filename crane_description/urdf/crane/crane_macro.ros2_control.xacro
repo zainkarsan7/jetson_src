@@ -13,7 +13,7 @@
 
       <hardware>
         <plugin>crane_hardware/CraneHardware</plugin>
-        <param name="port">/dev/ttyACM1</param>
+        <param name="port">/dev/ttyACM0</param>
         <param name="baud_rate">115200</param>
     
         <param name="swivel_steps_per_unit">1000.0</param>

@@ -1,13 +1,13 @@
 <launch>
     <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
-    <arg name="camera_name" value="Crane_RS"/>
-    <arg name="camera_namespace" value="Cam_RS"/>
-    <arg name="enable_gyro" value="true"/>
-    <arg name="enable_depth" value = "true"/>
-    <arg name="enable_accel" value="true"/>
-    <arg name="unite_imu_method" value="true"/>
-    <arg name="align_depth.enable" value="true"/>
-    <arg name="pointcloud.enable" value="true"/>
+        <arg name="camera_name" value="Crane_RS"/>
+        <arg name="camera_namespace" value="Cam_RS"/>
+        <arg name="enable_gyro" value="true"/>
+        <arg name="enable_depth" value = "true"/>
+        <arg name="enable_accel" value="true"/>
+        <arg name="unite_imu_method" value="2"/>
+        <arg name="align_depth.enable" value="true"/>
+        <arg name="pointcloud.enable" value="false"/>
     </include>
     <include file="$(find-pkg-share crane_cam)/launch/crane_cam_launch.xml"/>
     <include file="$(find-pkg-share crane_bringup)/launch/crane.launch.xml"/>
