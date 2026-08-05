@@ -9,10 +9,10 @@ controller_manager:
       type: pid_controller/PidController 
 
     swivel_position_controller:
-      type: position_controllers/JointGroupPositionController
+      type: forward_command_controller/ForwardCommandController
     
     joint_position_controller:
-      type: position_controllers/JointGroupPositionController
+      type: forward_command_controller/ForwardCommandController
 
     crane_homing_controller:
       type: crane_controllers/CraneHomingController
@@ -29,11 +29,13 @@ joint_position_controller:
       - swivel_joint
       - LG_lin_joint
       - RG_lin_joint
+    interface_name: position
 
 swivel_position_controller:
   ros__parameters:
     joints:
       - swivel_joint
+    interface_name: position
     
 pid_controller:
   ros__parameters: 
