@@ -18,31 +18,31 @@ using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface
 class CraneHardware : public hardware_interface::SystemInterface
     {
         public:
-        enum JointIndex{
-            SWIVEL = 0,
-            LEFT = 1,
-            RIGHT = 2,
-            G0 = 3,
-            G1 = 4,
-            W0 = 5,
-            W1 = 6,
-            W2 = 7,
-            W3 = 8
-        };
+            enum JointIndex{
+                SWIVEL = 0,
+                LEFT = 1,
+                RIGHT = 2,
+                G0 = 3,
+                G1 = 4,
+                W0 = 5,
+                W1 = 6,
+                W2 = 7,
+                W3 = 8
+            };
 
         std::vector<std::string> pos_joint_names_ = {
-            'swivel_joint',
-            'LG_lin_joint',
-            'RG_lin_joint',
-            'G0_joint',
-            'G1_joint'
+            "swivel_joint",
+            "LG_lin_joint",
+            "RG_lin_joint",
+            "G0_joint",
+            "G1_joint"
         };
 
         std::vector<std::string> vel_joint_names_ = {
-            'w0_joint',
-            'w1_joint',
-            'w2_joint',
-            'w3_joint'
+            "w0_joint",
+            "w1_joint",
+            "w2_joint",
+            "w3_joint"
         };
 
         double home_command_{0.0};

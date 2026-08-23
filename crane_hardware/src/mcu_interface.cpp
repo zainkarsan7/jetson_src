@@ -300,7 +300,7 @@ namespace crane_hardware
 
             return hardware_interface::return_type::OK;
         }
-        }
+    }
     
     long CraneHardware::unit_to_steps(double value, JointIndex joint_index) const{
         return static_cast<long>(std::llround(value * steps_per_unit_.at(joint_index)));
