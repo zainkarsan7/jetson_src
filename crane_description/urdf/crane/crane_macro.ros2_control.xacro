@@ -23,7 +23,15 @@
         <param name="g0_steps_per_unit">25.0</param>
         <param name="g1_steps_per_unit">25.0</param>
       </hardware>
-      
+
+
+      <gpio name="G0_wheels">
+        <command_interface name="velocity"/>
+      </gpio>
+      <gpio name="G1_wheels">
+        <command_interface name="velocity"/>
+      </gpio>
+
       <gpio name="crane">
         <command_interface name="home"/>
         <state_interface name="homing"/>
@@ -46,25 +54,27 @@
         <command_interface name="position"/>
         <state_interface name="position"/>
       </joint>
-<!-- 
-      <joint name="swivel_joint">
-        <command_interface name="velocity"/>
+
+      <joint name="G0_joint">  
         <command_interface name="position"/>
-        <state_interface name="velocity"/>
         <state_interface name="position"/>
       </joint>
-      <joint name="LG_lin_joint">
-        <command_interface name="velocity"/>
+      <joint name="G1_joint">
         <command_interface name="position"/>
-        <state_interface name="velocity"/>
         <state_interface name="position"/>
       </joint>
-      <joint name="RG_lin_joint">
-        <command_interface name="velocity"/>
-        <command_interface name="position"/>
+      <joint name="w0_joint">
         <state_interface name="velocity"/>
-        <state_interface name="position"/>
-      </joint> -->
+      </joint>
+      <joint name="w1_joint">
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="w2_joint">
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="w3_joint">
+        <state_interface name="velocity"/>
+      </joint>
     </ros2_control>
   </xacro:macro>
 </robot>
