@@ -36,7 +36,7 @@ namespace crane_hardware
         }
 
 
-        const auto & gpio = info_.gpios[0];
+      
 
     port_ = info_.hardware_parameters.at("port");
     //if theres a baud rate parameter, plug it into the private variable
@@ -299,7 +299,7 @@ namespace crane_hardware
             }
 
             return hardware_interface::return_type::OK;
-        }
+        
     }
     
     long CraneHardware::unit_to_steps(double value, JointIndex joint_index) const{
