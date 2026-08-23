@@ -79,7 +79,7 @@ namespace crane_hardware
 
     for (const auto & joint : info_.joints){
         for (const auto & com_int : joint.command_interfaces){
-            if (com_int.name != hardware_interface::HW_IF_POSITION || com_int.name != hardware_interface::HW_IF_VELOCITY){
+            if (com_int.name != hardware_interface::HW_IF_POSITION && com_int.name != hardware_interface::HW_IF_VELOCITY){
                 RCLCPP_ERROR(
                 rclcpp::get_logger("CraneHardware"),
                 "joint '%s' must have 1 pos or vel command interface",
@@ -188,10 +188,10 @@ namespace crane_hardware
             }
 
             else if (std::sscanf(line.c_str(),"W0 %ld W1 %ld W2 %ld W3 %ld", &w0_rpm,&w1_rpm,&w2_rpm,&w3_rpm)==4){
-                hw_velocities_[0] = w0_rpm;
-                hw_velocities_[1] = w1_rpm;
-                hw_velocities_[2] = w2_rpm;
-                hw_velocities_[3] = w3_rpm;
+                hw_velocities_[0] = rpm_to_rad_sec(w0_rpm);
+                hw_velocities_[1] = rpm_to_rad_sec(w1_rpm);
+                hw_velocities_[2] = rpm_to_rad_sec(w2_rpm);
+                hw_velocities_[3] = rpm_to_rad_sec(w3_rpm);
             }
             else if (line == "HOME_STARTED"){
                 ard_is_homing_ = true;
@@ -243,19 +243,17 @@ namespace crane_hardware
             const long g0 = unit_to_steps(hw_pos_commands_[3],JointIndex::G0);
             const long g1 = unit_to_steps(hw_pos_commands_[4],JointIndex::G1);
             
-             if (s == last_sent_s_ &&
-                l == last_sent_l_ &&
-                r == last_sent_r_ && 
-                g0 == last_sent_g0_ && 
-                g1 == last_sent_g1_            
-            ) {
-                return hardware_interface::return_type::OK;
-            }
+            const bool pos_changed = (s != last_sent_s_ ||
+                l != last_sent_l_ ||
+                r != last_sent_r_ || 
+                g0 != last_sent_g0_ || 
+                g1 != last_sent_g1_            
+            ) ;
 
 
-            std::ostringstream command;
+            if (pos_changed){
+                std::ostringstream command;
             command<<"SETPOS "<< s<<" "<<l<<" "<<r<<" "<<g0<<" "<<g1<<"\n";
-            
             RCLCPP_INFO(rclcpp::get_logger("CraneHardware"),
         "Commands: %.4f %.4f %.4f %.4f %.4f -> SETPOS %ld %ld %ld %ld %ld",
         hw_pos_commands_[0],hw_pos_commands_[1],hw_pos_commands_[2],hw_pos_commands_[3],hw_pos_commands_[4],s,l,r,g0,g1);
@@ -270,21 +268,35 @@ namespace crane_hardware
             last_sent_r_ = r;
             last_sent_g0_ = g0;
             last_sent_g1_ = g1;
+        
+        
+        }
 
+            const double g0_wheel_rpm = std::lround(rad_sec_to_rpm(hw_vel_commands_[0]));
+            const double g1_wheel_rpm = std::lround(rad_sec_to_rpm(hw_vel_commands_[1]));
 
-            
+            if (g0_wheel_rpm!=last_sent_g0_wheels_){
+                std::ostringstream wheel_0_command;
 
-            const double g0_wheel_rpm = rad_sec_to_rpm(hw_vel_commands_[0]);
-            const double g1_wheel_rpm = rad_sec_to_rpm(hw_vel_commands_[1]);
+                wheel_0_command<<"GIM 0 RPM "<<g0_wheel_rpm<<"\n";
 
-            
-            std::ostringstream wheel_0_command;
+                if (!write_line(wheel_0_command.str())){
+                    return hardware_interface::return_type::ERROR;
+                }
+                last_sent_g0_wheels_ = g0_wheel_rpm;
 
-            wheel_0_command<<"GIM 0 RPM "<<g0_wheel_rpm<<"\n";
+            } 
+            if (g1_wheel_rpm!=last_sent_g1_wheels_){
+                std::ostringstream wheel_1_command;
 
-            std::ostringstream wheel_1_command;
-            wheel_1_command<<"GIM 1 RPM "<<g1_wheel_rpm<<"\n";
+                wheel_1_command<<"GIM 1 RPM "<<g1_wheel_rpm<<"\n";
 
+                if (!write_line(wheel_1_command.str())){
+                    return hardware_interface::return_type::ERROR;
+                }
+                last_sent_g1_wheels_ = g1_wheel_rpm;
+
+            }
 
             return hardware_interface::return_type::OK;
         }
@@ -300,6 +312,10 @@ namespace crane_hardware
 
     double CraneHardware::rad_sec_to_rpm(double rad_sec) const{
         return static_cast<double>(rad_sec * 60.0)/ (2 * M_PI);
+    }
+
+    double CraneHardware::rpm_to_rad_sec(long rpm)const{
+        return static_cast<double>(rpm * 2 * M_PI)/60.0;
     }
 
     bool CraneHardware::open_serial(){

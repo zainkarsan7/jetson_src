@@ -97,6 +97,7 @@ class CraneHardware : public hardware_interface::SystemInterface
         long unit_to_steps(double value, JointIndex joint) const;
         double steps_to_unit(long steps, JointIndex joint) const;
         double rad_sec_to_rpm(double rad_sec) const;
+        double rpm_to_rad_sec(long rpm) const;
 
     };
 }
