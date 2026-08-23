@@ -21,7 +21,28 @@ class CraneHardware : public hardware_interface::SystemInterface
         enum JointIndex{
             SWIVEL = 0,
             LEFT = 1,
-            RIGHT = 2
+            RIGHT = 2,
+            G0 = 3,
+            G1 = 4,
+            W0 = 5,
+            W1 = 6,
+            W2 = 7,
+            W3 = 8
+        };
+
+        std::vector<std::string> pos_joint_names_ = {
+            'swivel_joint',
+            'LG_lin_joint',
+            'RG_lin_joint',
+            'G0_joint',
+            'G1_joint'
+        };
+
+        std::vector<std::string> vel_joint_names_ = {
+            'w0_joint',
+            'w1_joint',
+            'w2_joint',
+            'w3_joint'
         };
 
         double home_command_{0.0};
@@ -32,6 +53,11 @@ class CraneHardware : public hardware_interface::SystemInterface
         long last_sent_s_{std::numeric_limits<long>::min()};
         long last_sent_l_{std::numeric_limits<long>::min()};
         long last_sent_r_{std::numeric_limits<long>::min()};
+        long last_sent_g0_{std::numeric_limits<long>::min()};
+        long last_sent_g1_{std::numeric_limits<long>::min()};
+
+        long last_sent_g0_wheels_{std::numeric_limits<long>::min()};
+        long last_sent_g1_wheels_{std::numeric_limits<long>::min()};
 
         bool prev_home_com_{false};
         bool ard_is_homing_{false};
@@ -56,7 +82,10 @@ class CraneHardware : public hardware_interface::SystemInterface
         int baud_rate_{115200};
         // motor hardware vector 
         std::vector<double> hw_positions_;
-        std::vector<double> hw_commands_;
+        std::vector<double> hw_pos_commands_;
+        std::vector<double> hw_velocities_;
+        std::vector<double> hw_vel_commands_;
+        
         std::unordered_map<JointIndex, double> steps_per_unit_;
         // serial functions open and close
         bool open_serial();
@@ -67,6 +96,7 @@ class CraneHardware : public hardware_interface::SystemInterface
 
         long unit_to_steps(double value, JointIndex joint) const;
         double steps_to_unit(long steps, JointIndex joint) const;
+        double rad_sec_to_rpm(double rad_sec) const;
 
     };
 }

@@ -19,6 +19,9 @@
         <param name="swivel_steps_per_unit">1000.0</param>
         <param name="left_steps_per_unit">1000.0</param>
         <param name="right_steps_per_unit">1000.0</param>
+
+        <param name="g0_steps_per_unit">25.0</param>
+        <param name="g1_steps_per_unit">25.0</param>
       </hardware>
       
       <gpio name="crane">
