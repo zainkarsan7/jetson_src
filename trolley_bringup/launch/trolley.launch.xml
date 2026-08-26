@@ -1,0 +1,14 @@
+<launch>
+    <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
+        <arg name="camera_name" value="Trolley_Cam"/>
+        <arg name="camera_namespace" value="Trolley_RS"/>
+        <arg name="enable_gyro" value="true"/>
+        <arg name="enable_depth" value = "true"/>
+        <arg name="enable_accel" value="true"/>
+        <arg name="unite_imu_method" value="2"/>
+        <arg name="align_depth.enable" value="true"/>
+        <arg name="pointcloud.enable" value="false"/>
+    </include>
+
+
+</launch>
