@@ -47,4 +47,4 @@ Why compile_commands.json Is Better
 
 - the mac address is link/ether 2c:cf:67:34:65:dd for wlan0
 - the ipv4 address should be 192.168.200.10 assigned from the RUTX12
-- the hostname is zk-desktop
+- the hostname is zk
