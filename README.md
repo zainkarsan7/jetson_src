@@ -41,3 +41,10 @@ Why compile_commands.json Is Better
 - The build system (CMake + colcon) knows all the actual include paths and compiler flags needed for your particular packages and message types.  
 - By letting the C/C++ extension read all these flags and includes from 'compile_commands.json', it mirrors the exact environment that your compiler sees.
 - Manually adding "/opt/ros/jazzy/include", "/usr/include", etc., may not be enough, because there are often additional flags (e.g., definitions like '_GNU_SOURCE') and other transitive includes from your dependencies. -Jonas from the ROS course. 
+
+
+## Networking Stuff for Raspi
+
+- the mac address is link/ether 2c:cf:67:34:65:dd for wlan0
+- the ipv4 address should be 192.168.200.10 assigned from the RUTX12
+- the hostname is zk-desktop
