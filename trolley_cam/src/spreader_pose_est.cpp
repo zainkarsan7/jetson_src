@@ -85,10 +85,11 @@ class SpreaderPoseNode: public rclcpp::Node{
         cv::Mat annotated_ = cv_ptr->image.clone();
         auto detections = detector_.detect(annotated_);
         detector_.draw_detections(annotated_,detections);
+        RCLCPP_INFO_THROTTLE(this->get_logger(),this->get_clock(),2000,"got '%d' detections",detections.size());
 
         sensor_msgs::msg::Image::SharedPtr anno_msg = cv_bridge::CvImage(msg->header, "bgr8", annotated_).toImageMsg();
         anno_trolley_image_pub.publish(anno_msg);
-        
+
     }
     //members
 
