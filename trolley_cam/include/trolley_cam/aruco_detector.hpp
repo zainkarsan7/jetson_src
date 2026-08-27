@@ -15,6 +15,8 @@ class ArucoDetector{
             int id;
             std::vector<cv::Point2f> corners;
             tf2::Transform T_cam_marker;
+            cv::Vec3d rvec;
+            cv::Vec3d tvec;
         };
 
         ArucoDetector(int dict_id, double marker_size);
@@ -22,6 +24,9 @@ class ArucoDetector{
         void setCamInfo(
             const cv::Mat& cam_mat, const cv::Mat& dist_coeffs
         );
+
+        void draw_detections(cv::Mat& anno_img, 
+            std::vector<Detection> detections);
 
         std::vector<Detection> detect(const cv::Mat& img);
 

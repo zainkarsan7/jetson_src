@@ -9,6 +9,10 @@
         <arg name="align_depth.enable" value="true"/>
         <arg name="pointcloud.enable" value="false"/>
     </include>
+    <node pkg="trolley_cam" exec="spreader_pose_pub" name="trolley_spreader_pose"/>
+    
+
+
 
 
 </launch>

@@ -19,6 +19,20 @@ void ArucoDetector::setCamInfo( const cv::Mat& cam_mat, const cv::Mat& dist_coef
     cam_info_set_ = true;
 }
 
+void ArucoDetector::draw_detections(cv::Mat& anno_img, 
+            std::vector<ArucoDetector::Detection> detections){
+
+                std::vector<std::vector<cv::Point2f>> mCorners;
+                std::vector<int>mIds;
+             
+                for (size_t i=0; i<mIds.size(); i++){
+                    cv::drawFrameAxes(anno_img,cam_mat_,dist_coeffs_,detections[i].rvec,detections[i].tvec,0.01);
+                    mCorners.push_back(detections[i].corners);
+                    mIds.push_back(detections[i].id);
+                }
+                cv::aruco::drawDetectedMarkers(anno_img,mCorners,mIds);
+            }
+
 bool ArucoDetector::cam_info_set() const{return cam_info_set_;}
 
 std::vector<ArucoDetector::Detection> ArucoDetector::detect(const cv::Mat& img){
@@ -50,6 +64,8 @@ std::vector<ArucoDetector::Detection> ArucoDetector::detect(const cv::Mat& img){
             Detection det_;
             det_.id = ids[i];
             det_.corners = corners[i];
+            det_.rvec = rvecs[i];
+            det_.tvec = tvecs[i];
             det_.T_cam_marker = cvPoseToTf(rvecs[i],tvecs[i]);
             detections.push_back(det_);
 
