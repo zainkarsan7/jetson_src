@@ -61,7 +61,29 @@ std::vector<ArucoDetector::Detection> ArucoDetector::detect(const cv::Mat& img){
             const cv::Vec3d& tvec 
         )const{
             cv::Mat rot_mat;
-            
+            cv::Rodrigues(rvec,rot_mat);
+            cv::Mat trans_mat = (cv::Mat_<double>(3,1)<<tvec[0],tvec[1],tvec[2]);
+            tf2::Matrix3x3 tf_rotation(
+                rot_mat.at<double>(0, 0),
+                rot_mat.at<double>(0, 1),
+                rot_mat.at<double>(0, 2),
+
+                rot_mat.at<double>(1, 0),
+                rot_mat.at<double>(1, 1),
+                rot_mat.at<double>(1, 2),
+
+                rot_mat.at<double>(2, 0),
+                rot_mat.at<double>(2, 1),
+                rot_mat.at<double>(2, 2));
+            tf2::Quaternion quat;
+            tf_rotation.getRotation(quat);
+            quat.normalize();
+            tf2::Transform result;
+            result.setOrigin(tf2::Vector3(trans_mat.at<double>(0),
+                                          trans_mat.at<double>(1),
+                                          trans_mat.at<double>(2)));
+            result.setRotation(quat);
+            return result;
 
         }
 
