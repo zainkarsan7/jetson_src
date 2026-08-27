@@ -40,4 +40,29 @@ Why compile_commands.json Is Better
 
 - The build system (CMake + colcon) knows all the actual include paths and compiler flags needed for your particular packages and message types.  
 - By letting the C/C++ extension read all these flags and includes from 'compile_commands.json', it mirrors the exact environment that your compiler sees.
-- Manually adding "/opt/ros/jazzy/include", "/usr/include", etc., may not be enough, because there are often additional flags (e.g., definitions like '_GNU_SOURCE') and other transitive includes from your dependencies. -Jonas from the ROS course. 
+- Manually adding "/opt/ros/jazzy/include", "/usr/include", etc., may not be enough, because there are often additional flags (e.g., definitions like '_GNU_SOURCE') and other transitive includes from your dependencies. -Jonas from the ROS course.
+
+## Camera Calibration Realsense Nightmare: 
+
+- Trolley RS:
+accel_trolley.txt
+gyro_trolley.txt
+[-0.00016008  0.00178818  0.00141935]
+[1000 1000 1000 1000 1000 1000]
+using 6000 measurements.
+[[ 1.00524066e+00  1.09669645e-02 -9.54355028e-04]
+ [-9.06739521e-03  1.00614886e+00 -1.95002876e-03]
+ [ 7.40343510e-04  8.83738598e-03  1.00589303e+00]
+ [-2.98698188e-02 -8.31376491e-02 -6.00540568e-03]]
+residuals: [ 3.78996708 20.05494741  4.71108261]
+rank: 4
+singular: [437.50303149 436.22350424 434.4151744   77.44988618]
+norm (raw data  ): 9.750057
+norm (fixed data): 9.806355 A good calibration will be near 9.806650
+Would you like to write the results to the camera? (Y/N)y
+Writing calibration to device.
+  Device PID:  0B3A
+  Device name:  RealSense D435I
+  Serial number:  239722071597
+  Firmware version:  5.16.0.1
+- Spreader RS:
