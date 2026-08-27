@@ -20,13 +20,13 @@ void ArucoDetector::setCamInfo( const cv::Mat& cam_mat, const cv::Mat& dist_coef
 }
 
 void ArucoDetector::draw_detections(cv::Mat& anno_img, 
-            std::vector<ArucoDetector::Detection> detections){
+            const std::vector<ArucoDetector::Detection>& detections){
 
                 std::vector<std::vector<cv::Point2f>> mCorners;
                 std::vector<int>mIds;
              
-                for (size_t i=0; i<mIds.size(); i++){
-                    cv::drawFrameAxes(anno_img,cam_mat_,dist_coeffs_,detections[i].rvec,detections[i].tvec,0.01);
+                for (size_t i=0; i<detections.size(); i++){
+                    cv::drawFrameAxes(anno_img,cam_mat_,dist_coeffs_,detections[i].rvec,detections[i].tvec,0.05);
                     mCorners.push_back(detections[i].corners);
                     mIds.push_back(detections[i].id);
                 }

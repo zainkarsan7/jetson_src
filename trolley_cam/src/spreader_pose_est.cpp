@@ -28,7 +28,7 @@
 class SpreaderPoseNode: public rclcpp::Node{
     public:
 
-    SpreaderPoseNode():Node("spreader_pose_node"), detector_(cv::aruco::DICT_6X6_250,0.25)
+    SpreaderPoseNode():Node("spreader_pose_node"), detector_(cv::aruco::DICT_6X6_250,0.1)
     {
         trolley_image_sub_ = image_transport::create_subscription(this,
             "/Trolley_RS/Trolley_Cam/color/image_raw",
@@ -41,10 +41,10 @@ class SpreaderPoseNode: public rclcpp::Node{
             std::bind(&SpreaderPoseNode::get_cam_info_callback,this,std::placeholders::_1)
         );
 
-        anno_trolley_image_pub = image_transport::create_publisher(this,"/Trolley_RS/Trolley_Cam/color/image_aruco");
+        // anno_trolley_image_pub = image_transport::create_publisher(this,"Trolley_Detection");
 
         spreader_left_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-        spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        // spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
 
 
@@ -84,19 +84,40 @@ class SpreaderPoseNode: public rclcpp::Node{
         }  
         cv::Mat annotated_ = cv_ptr->image.clone();
         auto detections = detector_.detect(annotated_);
-        detector_.draw_detections(annotated_,detections);
+        // detector_.draw_detections(annotated_,detections);
         RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(),2000,"got '%zu' detections",detections.size());
 
-        sensor_msgs::msg::Image::SharedPtr anno_msg = cv_bridge::CvImage(msg->header, "bgr8", annotated_).toImageMsg();
-        anno_trolley_image_pub.publish(anno_msg);
+        // sensor_msgs::msg::Image::SharedPtr anno_msg = cv_bridge::CvImage(msg->header, "bgr8", annotated_).toImageMsg();
+        // anno_trolley_image_pub.publish(anno_msg);
 
+        auto T_estimate = estimate_Pose(detections);
+        if (T_estimate){
+            geometry_msgs::msg::TransformStamped msg_out;
+            msg_out.header.stamp = msg->header.stamp;
+            msg_out.header.frame_id = "base";
+            msg_out.child_frame_id = "test_pose";
+            msg_out.transform = tf2::toMsg(*T_estimate);
+            spreader_left_pose_broadcaster_->sendTransform(msg_out);
+        }
+
+    }
+
+    std::optional<tf2::Transform> estimate_Pose(const std::vector<ArucoDetector::Detection>& detections){
+       
+        
+        for (const auto& detection: detections){
+            if (detection.id== 0){
+                return detection.T_cam_marker;
+            }
+        }
+        return std::nullopt;
     }
     //members
 
 
     ArucoDetector detector_;
     image_transport::Subscriber trolley_image_sub_;
-    image_transport::Publisher anno_trolley_image_pub;
+    // image_transport::Publisher anno_trolley_image_pub;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr trolley_cam_info_sub_;
     sensor_msgs::msg::CameraInfo trolley_cam_info;
 
@@ -105,7 +126,7 @@ class SpreaderPoseNode: public rclcpp::Node{
 
 
     std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_left_pose_broadcaster_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_right_pose_broadcaster_;
+    // std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_right_pose_broadcaster_;
 
 };
 

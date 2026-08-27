@@ -26,7 +26,7 @@ class ArucoDetector{
         );
 
         void draw_detections(cv::Mat& anno_img, 
-            std::vector<Detection> detections);
+            const std::vector<Detection>& detections);
 
         std::vector<Detection> detect(const cv::Mat& img);
 
