@@ -41,7 +41,7 @@ class SpreaderPoseNode: public rclcpp::Node{
             std::bind(&SpreaderPoseNode::get_cam_info_callback,this,std::placeholders::_1)
         );
 
-        anno_trolley_image_pub = image_transport::create_publisher(this,"Trolley_RS/Trolley_Cam/color/image_aruco");
+        anno_trolley_image_pub = image_transport::create_publisher(this,"/Trolley_RS/Trolley_Cam/color/image_aruco");
 
         spreader_left_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -85,7 +85,7 @@ class SpreaderPoseNode: public rclcpp::Node{
         cv::Mat annotated_ = cv_ptr->image.clone();
         auto detections = detector_.detect(annotated_);
         detector_.draw_detections(annotated_,detections);
-        RCLCPP_INFO_THROTTLE(this->get_logger(),this->get_clock(),2000,"got '%d' detections",detections.size());
+        RCLCPP_INFO_THROTTLE(this->get_logger(),*this->get_clock(),2000,"got '%zu' detections",detections.size());
 
         sensor_msgs::msg::Image::SharedPtr anno_msg = cv_bridge::CvImage(msg->header, "bgr8", annotated_).toImageMsg();
         anno_trolley_image_pub.publish(anno_msg);
