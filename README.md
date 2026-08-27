@@ -43,8 +43,7 @@ Why compile_commands.json Is Better
 - Manually adding "/opt/ros/jazzy/include", "/usr/include", etc., may not be enough, because there are often additional flags (e.g., definitions like '_GNU_SOURCE') and other transitive includes from your dependencies. -Jonas from the ROS course.
 
 ## Camera Calibration Realsense Nightmare: 
-
-- Trolley RS:
+### Trolley RS:
 accel_trolley.txt
 gyro_trolley.txt
 [-0.00016008  0.00178818  0.00141935]
@@ -65,4 +64,27 @@ Writing calibration to device.
   Device name:  RealSense D435I
   Serial number:  239722071597
   Firmware version:  5.16.0.1
-- Spreader RS:
+### Spreader RS:
+accel_spreader.txt
+gyro_spreader.txt
+[-0.00056404 -0.00245215 -0.00215151]
+[1000 1000 1000 1000 1000 1000]
+using 6000 measurements.
+[[ 1.00407585 -0.00247661 -0.004456  ]
+ [ 0.00192737  1.00862848 -0.00597276]
+ [-0.00280658  0.00173569  1.00843256]
+ [-0.06116452  0.00650555  0.00476152]]
+residuals: [ 8.29430243  4.57855757 11.40860065]
+rank: 4
+singular: [437.79870396 435.16476291 433.5431594   77.45491929]
+norm (raw data  ): 9.738123
+norm (fixed data): 9.806417 A good calibration will be near 9.806650
+Would you like to write the results to the camera? (Y/N)y
+Writing calibration to device.
+  Device PID:  0B3A
+  Device name:  RealSense D435I
+  Serial number:  239122071900
+  Firmware version:  5.13.0.55
+SUCCESS: saved calibration to camera.
+Done.
+
