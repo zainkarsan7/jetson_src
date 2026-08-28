@@ -3,13 +3,16 @@
         <arg name="camera_name" value="Trolley_Cam"/>
         <arg name="camera_namespace" value="Trolley_RS"/>
         <arg name="enable_gyro" value="true"/>
-        <arg name="enable_depth" value = "true"/>
+        <arg name="enable_depth" value = "false"/>
         <arg name="enable_accel" value="true"/>
         <arg name="unite_imu_method" value="2"/>
-        <arg name="align_depth.enable" value="true"/>
+        <arg name="align_depth.enable" value="false"/>
         <arg name="pointcloud.enable" value="false"/>
+        <arg name="initial_reset" value="true"/>
+        <arg name="rgb_camera.color_profile" value = "640x480x15"/>
+        
     </include>
-    <node pkg="trolley_cam" exec="spreader_pose_pub" name="trolley_spreader_pose"/>
+    <!-- <node pkg="trolley_cam" exec="spreader_pose_pub" name="trolley_spreader_pose"/> -->
     
 
 
