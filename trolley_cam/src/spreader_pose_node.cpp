@@ -21,6 +21,7 @@
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "trolley_cam/spreader_pose_node.hpp"
 
 
 // make a node that looks for two aruco markers, using one or the other's pose
@@ -28,11 +29,8 @@
 
 namespace trolley_cam
 {
-class SpreaderPoseNode: public rclcpp::Node{
-    public:
-
-    explicit SpreaderPoseNode(const rclcpp::NodeOptions & options):Node("spreader_pose_node", options), detector_(cv::aruco::DICT_6X6_250,0.1)
-    {
+SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
+:Node("spreader_pose_node",options), detector_(cv::aruco::DICT_6X6_250,0.1){
         trolley_image_sub_ = image_transport::create_subscription(this,
             "/Trolley_RS/Trolley_Cam/color/image_raw",
             std::bind(&SpreaderPoseNode::get_detections_callback, this,std::placeholders::_1),"raw"
@@ -49,12 +47,12 @@ class SpreaderPoseNode: public rclcpp::Node{
         spreader_left_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-
+        left_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/left_spreader_transform",10);
+        right_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/right_spreader_transform",10);
 
     }
-    private:
 
-    void get_cam_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr &msg){
+    void SpreaderPoseNode::get_cam_info_callback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr &msg){
         cv::Mat cam_mat_ = cv::Mat(3,3,CV_64F);
 
         for(size_t i = 0; i<9; i++){
@@ -67,7 +65,7 @@ class SpreaderPoseNode: public rclcpp::Node{
         cam_info_received_ = true;
     }
     
-    void get_detections_callback(const sensor_msgs::msg::Image::ConstSharedPtr& msg){
+    void SpreaderPoseNode::get_detections_callback(const sensor_msgs::msg::Image::ConstSharedPtr& msg){
         if (!cam_info_received_) {
                     RCLCPP_WARN_THROTTLE(
                         get_logger(),
@@ -100,6 +98,7 @@ class SpreaderPoseNode: public rclcpp::Node{
                 msg_out.child_frame_id = "left_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_left_pose_broadcaster_->sendTransform(msg_out);
+                left_t_pub->publish(msg_out);
             }
             if (detection.id== 50){
                 geometry_msgs::msg::TransformStamped msg_out;
@@ -108,27 +107,13 @@ class SpreaderPoseNode: public rclcpp::Node{
                 msg_out.child_frame_id = "left_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_right_pose_broadcaster_->sendTransform(msg_out);
+                right_t_pub->publish(msg_out);
             }
 
         }
     }
-    //members
+    //members in the hpp
 
-
-    ArucoDetector detector_;
-    image_transport::Subscriber trolley_image_sub_;
-    image_transport::Publisher anno_trolley_image_pub;
-    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr trolley_cam_info_sub_;
-    sensor_msgs::msg::CameraInfo trolley_cam_info;
-
-    std::string cam_frame_id;
-    bool cam_info_received_{false};
-
-
-    std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_left_pose_broadcaster_;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> spreader_right_pose_broadcaster_;
-
-};
 }
 RCLCPP_COMPONENTS_REGISTER_NODE(trolley_cam::SpreaderPoseNode)
 
