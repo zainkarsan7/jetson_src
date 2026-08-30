@@ -85,6 +85,7 @@ class CraneHardware : public hardware_interface::SystemInterface
         std::vector<double> hw_pos_commands_;
         std::vector<double> hw_velocities_;
         std::vector<double> hw_vel_commands_;
+        std::vector<double> hw_wheel_pos_;
         
         std::unordered_map<JointIndex, double> steps_per_unit_;
         // serial functions open and close

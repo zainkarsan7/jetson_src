@@ -48,6 +48,7 @@ namespace crane_hardware
     hw_velocities_.assign(4,0.0);
     hw_pos_commands_.assign(5,0.0);
     hw_vel_commands_.assign(2,0.0);
+    hw_wheel_pos_.assign(4,0.0);
     
 
     steps_per_unit_ = {{JointIndex::SWIVEL, 1000.0},
@@ -109,8 +110,8 @@ namespace crane_hardware
         }
     hardware_interface::CallbackReturn CraneHardware::on_activate(
         const rclcpp_lifecycle::State &){
-            hw_pos_commands_ = hw_positions_;
-            hw_vel_commands_ = hw_velocities_;
+            std::copy(hw_positions_.begin(),hw_positions_.end(),hw_pos_commands_.begin());
+            std::fill(hw_vel_commands_.begin(),hw_vel_commands_.end(),0.0);
             return hardware_interface::CallbackReturn::SUCCESS;
         }
 
@@ -135,6 +136,11 @@ namespace crane_hardware
                 vel_joint_names_[i],
                 hardware_interface::HW_IF_VELOCITY,
                 &hw_velocities_[i]
+            );
+            interfaces.emplace_back(
+                vel_joint_names_[i],
+                hardware_interface::HW_IF_POSITION,
+                &hw_wheel_pos_[i]
             );
         }
 
@@ -162,7 +168,7 @@ namespace crane_hardware
     }
     hardware_interface::return_type CraneHardware::read(
         const rclcpp::Time &,
-        const rclcpp::Duration &){
+        const rclcpp::Duration & period){
         
         std::string line;
 
@@ -211,7 +217,16 @@ namespace crane_hardware
                 homed_state_ = 0.0;
                 homing_failed_state_ = 1.0;
             }
+
+            
             //other arduino messages could be parsed here
+        }
+
+
+        const double dt = period.seconds();
+        for (size_t i=0;i<hw_wheel_pos_.size(); i++){
+            hw_positions_[i] = dt * hw_velocities_[i];
+            hw_positions_[i] = std::remainder(hw_positions_[i], 2.0*M_PI);
         }
 
         return hardware_interface::return_type::OK;
