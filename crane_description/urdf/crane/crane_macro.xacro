@@ -124,15 +124,247 @@
             </visual>
         </link>
 
-        <link name="Gimbal_0_link"/>
-        <link name="Gimbal_1_link"/>
-        <link name="Gimbal_2_link"/>
-        <link name="Gimbal_3_link"/>
+        <link name="Gimbal_0_link">
+            <inertial>
+             <origin 
+                xyz="-0.125 -0.028951 0"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".00207"
+                ixy="0"
+                ixz="0"
+                iyy=".005608"
+                iyz="0"
+                izz="0.007147"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_0.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_0.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
 
-        <link name="w0_link"/>
-        <link name="w1_link"/>
-        <link name="w2_link"/>
-        <link name="w3_link"/>
+
+        <link name="Gimbal_1_link">
+            <inertial>
+             <origin 
+                xyz="-0.028951 0 -0.125"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".005608"
+                ixy="0"
+                ixz="0"
+                iyy="0.007147"
+                iyz="0"
+                izz="0.00207"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="Gimbal_2_link">
+        <inertial>
+             <origin 
+                xyz="-0.028951 0 -0.125"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".005608"
+                ixy="0"
+                ixz="0"
+                iyy="0.007147"
+                iyz="0"
+                izz="0.00207"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="Gimbal_3_link">
+        <inertial>
+             <origin 
+                xyz="-0.125 -0.028951 0"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".00207"
+                ixy="0"
+                ixz="0"
+                iyy=".005608"
+                iyz="0"
+                izz="0.007147"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_3.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_3.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="w0_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".007176"
+                ixy="0"
+                ixz="0"
+                iyy=".014182"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+
+
+        <link name="w1_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".014182"
+                ixy="0"
+                ixz="0"
+                iyy=".007176"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+        <link name="w2_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".014182"
+                ixy="0"
+                ixz="0"
+                iyy=".007176"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+
+
+        <link name="w3_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".007176"
+                ixy="0"
+                ixz="0"
+                iyy=".014182"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
 
         <joint name="base_sw_top_joint" type = "fixed">
             <parent link="base_link"/>
