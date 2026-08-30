@@ -12,12 +12,51 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(Eigen3 REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+
+### state estimation stuff to make the attitude.so
+
+add_library(crane_attitude SHARED
+src/crane_attitude_utils.cpp
+src/crane_attitude_estimator.cpp
+)
+
+target_include_directories(crane_attitude
+PUBLIC 
+$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+$<INSTALL_INTERFACE:include>
+)
+
+
+ament_target_dependencies(crane_attitude
+  geometry_msgs
+  sensor_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  )
+
+target_link_libraries(crane_attitude
+Eigen3::Eigen
+)
+
+
+### controller stuff
+
 add_library(${PROJECT_NAME} SHARED
-  src/crane_homing_controller.cpp)
+  src/crane_homing_controller.cpp
+  src/crane_attitude_controller.cpp
+  )
 
 target_include_directories(${PROJECT_NAME}
 PUBLIC 
@@ -27,11 +66,17 @@ $<INSTALL_INTERFACE:include>
 
 ament_target_dependencies(${PROJECT_NAME}
   controller_interface
+  hardware_interface
   pluginlib
   rclcpp
   rclcpp_lifecycle
   std_srvs
   )
+
+  ### when controller uses crane attitude link them:
+target_link_libraries(${PROJECT_NAME}
+crane_attitude
+)
 
 pluginlib_export_plugin_description_file(
   controller_interface
@@ -39,7 +84,7 @@ pluginlib_export_plugin_description_file(
 )
 
 install(
-  TARGETS ${PROJECT_NAME}
+  TARGETS crane_attitude ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -49,7 +94,6 @@ install(
 install(
   DIRECTORY include/
   DESTINATION include
-  OPTIONAL
 )
 
 install(
@@ -69,6 +113,11 @@ ament_export_dependencies(
   rclcpp
   rclcpp_lifecycle
   std_srvs
+  tf2
+  tf2_geometry_msgs
+  Eigen3
+  geometry_msgs
+  sensor_msgs
 )
 
 
