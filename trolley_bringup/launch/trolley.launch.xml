@@ -14,8 +14,6 @@
     </include>
     <!-- <node pkg="trolley_cam" exec="spreader_pose_pub" name="trolley_spreader_pose"/> -->
     
-
-
-
+    
 
 </launch>

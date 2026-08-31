@@ -1,4 +1,8 @@
 <launch>
+    <arg name="record" default="false"/>
+
+    
+
 <node_container
     pkg="rclcpp_components"
     exec="component_container_mt"
@@ -32,5 +36,17 @@ name="spreader_pose_node">
 <extra_arg name="use_intra_process_comms" value="true"/>
 </composable_node>
 </node_container>
+
+
+<exec
+            if="$(var record)"
+            cmd="bash -c 'cd ~/bags &amp;&amp;
+            ros2 bag record 
+            /Trolley_RS/Trolley_Cam/imu
+            /Trolley/left_spreader_transform
+            /Trolley/right_spreader_transform'"
+            output="screen"/>
+
+
 
 </launch>
