@@ -38,7 +38,7 @@ name="spreader_pose_node">
 </node_container>
 
 
-<exec
+<executable
             if="$(var record)"
             cmd="bash -c 'cd ~/bags &amp;&amp;
             ros2 bag record 
