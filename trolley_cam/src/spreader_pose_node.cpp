@@ -30,7 +30,7 @@
 namespace trolley_cam
 {
 SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
-:Node("spreader_pose_node",options), detector_(cv::aruco::DICT_6X6_250,0.1){
+:Node("spreader_pose_node",options), detector_(cv::aruco::DICT_6X6_250,0.2){
         trolley_image_sub_ = image_transport::create_subscription(this,
             "/Trolley_RS/Trolley_Cam/color/image_raw",
             std::bind(&SpreaderPoseNode::get_detections_callback, this,std::placeholders::_1),"raw"
@@ -104,7 +104,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
                 geometry_msgs::msg::TransformStamped msg_out;
                 msg_out.header.stamp = msg->header.stamp;
                 msg_out.header.frame_id = "base";
-                msg_out.child_frame_id = "left_pose";
+                msg_out.child_frame_id = "right_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_right_pose_broadcaster_->sendTransform(msg_out);
                 right_t_pub->publish(msg_out);
