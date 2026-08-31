@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Site BuildName="(empty)"
-	BuildStamp="20260830-0807-Experimental"
+	BuildStamp="20260831-0752-Experimental"
 	Name="zk-desktop"
 	Generator="ctest-3.22.1"
 	CompilerName="/usr/bin/aarch64-linux-gnu-g++"
@@ -24,11 +24,11 @@
 	ProcessorClockFrequency="0"
 	>
 	<Testing>
-		<StartDateTime>Aug 30 17:43 CEST</StartDateTime>
-		<StartTestTime>1788104583</StartTestTime>
+		<StartDateTime>Aug 31 09:52 CEST</StartDateTime>
+		<StartTestTime>1788162761</StartTestTime>
 		<TestList/>
-		<EndDateTime>Aug 30 17:43 CEST</EndDateTime>
-		<EndTestTime>1788104583</EndTestTime>
+		<EndDateTime>Aug 31 09:52 CEST</EndDateTime>
+		<EndTestTime>1788162761</EndTestTime>
 		<ElapsedMinutes>0</ElapsedMinutes>
 	</Testing>
 </Site>

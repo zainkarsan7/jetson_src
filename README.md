@@ -88,3 +88,7 @@ Writing calibration to device.
 SUCCESS: saved calibration to camera.
 Done.
 
+
+## File transfer stuff:
+scp -r zk@192.168.200.10:~/bags/rosbag2_2026_08_31-11_54_27 ~/ros2_ws/src/bags/
+

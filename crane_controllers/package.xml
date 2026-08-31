@@ -16,6 +16,7 @@
   <depend>tf2</depend>
     <depend>tf2_geometry_msgs</depend>
     <depend>tf2_ros</depend>
+    <depend>tf2_eigen</depend>
     <depend>eigen3_cmake_module</depend>
     <depend>eigen</depend>
     <depend>hardware_interface</depend>
