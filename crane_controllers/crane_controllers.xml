@@ -10,4 +10,14 @@
     </description>
     </class>
 
+
+    <class 
+    name="crane_controllers/CraneAttitudeController"
+    type="crane_controllers::CraneAttitudeController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+    "Attitude Controller"
+    </description>
+    </class>
+
 </library>
