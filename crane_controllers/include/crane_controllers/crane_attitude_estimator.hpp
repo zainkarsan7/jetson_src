@@ -49,6 +49,6 @@ namespace crane_controllers{
 
         CraneAttitudeState state_;
         
-    }
+    };
 
 }

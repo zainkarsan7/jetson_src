@@ -20,6 +20,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(realtime_tools REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -73,6 +74,14 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   rclcpp_lifecycle
   std_srvs
+  realtime_tools
+  tf2_ros
+  tf2
+  tf2_geometry_msgs
+  tf2_eigen
+  sensor_msgs
+  geometry_msgs
+
   )
 
   ### when controller uses crane attitude link them:
