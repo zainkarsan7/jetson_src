@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+
+    <xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
+    <xacro:macro name="trolley">
+
+    
+    <link name="base_link"/>
+    <link name="Trolley_link"/>
+        <joint name="base_trolley_joint" type="fixed">
+            <parent link="base_link"/>
+            <child link ="Trolley_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
+        </joint>
+
+    <link name="Trolley_RS_link"/>
+     <joint name="trolley_RS_joint" type="fixed">
+            <parent link="Trolley_link"/>
+            <child link ="Trolley_RS_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
+        </joint>
+        
+    </xacro:macro>
+</robot>

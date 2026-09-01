@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="spreader">
+
+
+
+<xacro:include filename="$(find crane_description)/urdf/crane/spreader_macro.xacro"/>
+
+<xacro:spreader/>
+</robot>

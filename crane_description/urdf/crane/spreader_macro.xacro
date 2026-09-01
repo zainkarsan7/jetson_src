@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+
+<xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
+     <xacro:macro name="spreader">
+        <!-- LINKS -->
+        
+        <link name="chassis_link">
+
+            <inertial>
+             <origin 
+                xyz="0.00317 -0.01646 0.0625"
+                rpy="0 0 0" />
+            <mass value="44.667"/>
+            <inertia 
+                ixx="16.383145"
+                ixy="-0.02317"
+                ixz="-0.013012"
+                iyy="0.949633"
+                iyz="0.77285"
+                izz="16.145575"/>
+            
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/chassis.stl"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/chassis.stl"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="Spreader_RS_link"/>
+        
+        <link name="LG_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="RG_link">
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            </collision>
+
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size= "0.05 0.08 0.08"/>
+            </geometry>
+            <material name="light_red"/>
+            </visual>
+        </link>
+
+        <link name="Gimbal_0_link">
+            <inertial>
+             <origin 
+                xyz="-0.125 -0.028951 0"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".00207"
+                ixy="0"
+                ixz="0"
+                iyy=".005608"
+                iyz="0"
+                izz="0.007147"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_0.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_0.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+
+        <link name="Gimbal_1_link">
+            <inertial>
+             <origin 
+                xyz="-0.028951 0 -0.125"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".005608"
+                ixy="0"
+                ixz="0"
+                iyy="0.007147"
+                iyz="0"
+                izz="0.00207"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="Gimbal_2_link">
+        <inertial>
+             <origin 
+                xyz="-0.028951 0 -0.125"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".005608"
+                ixy="0"
+                ixz="0"
+                iyy="0.007147"
+                iyz="0"
+                izz="0.00207"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_12.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="Gimbal_3_link">
+        <inertial>
+             <origin 
+                xyz="-0.125 -0.028951 0"
+                rpy="0 0 0" />
+            <mass value="1.2749"/>
+            <inertia 
+                ixx=".00207"
+                ixy="0"
+                ixz="0"
+                iyy=".005608"
+                iyz="0"
+                izz="0.007147"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_3.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/gimbal_3.stl"/>
+            </geometry>
+            <material name="light_blue"/>
+            </visual>
+        </link>
+
+        <link name="w0_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".007176"
+                ixy="0"
+                ixz="0"
+                iyy=".014182"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+
+
+        <link name="w1_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".014182"
+                ixy="0"
+                ixz="0"
+                iyy=".007176"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+        <link name="w2_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".014182"
+                ixy="0"
+                ixz="0"
+                iyy=".007176"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_12.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+
+
+        <link name="w3_link">
+        <inertial>
+             <origin 
+                xyz="0 0 0"
+                rpy="0 0 0" />
+            <mass value="2.0887"/>
+            <inertia 
+                ixx=".007176"
+                ixy="0"
+                ixz="0"
+                iyy=".014182"
+                iyz="0"
+                izz="0.007176"/>
+            </inertial>
+            
+            <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            </collision>
+            <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://crane_description/meshes/wheel_03.stl"/>
+            </geometry>
+            <material name="light_green"/>
+            </visual>
+        </link>
+
+        
+
+        <joint name="LG_lin_joint" type="prismatic">
+            <parent link="chassis_link"/>
+            <child link="LG_link"/>
+            <origin xyz="0 -0.5 -0.191" rpy="0 0 0"/>
+            <axis xyz="0 1 0"/>
+            <limit lower="-0.5" upper="0.0" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="RG_lin_joint" type="prismatic">
+            <parent link="chassis_link"/>
+            <child link="RG_link"/>
+            <origin xyz="0 -0.5 -0.191" rpy="0 0 0"/>
+            <axis xyz="0 1 0"/>
+            <limit lower="0.0" upper="0.5" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="spreader_RS_joint" type="fixed">
+            <parent link="chassis_link"/>
+            <child link ="Spreader_RS_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
+        </joint>
+
+        <joint name="G0_joint" type="revolute">
+            <parent link="chassis_link"/>
+            <child link="Gimbal_0_link"/>
+            <origin xyz="0.125 0.3595 0.155" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <limit lower="-1.57" upper="1.57" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="G3_joint" type="revolute">
+            <parent link="chassis_link"/>
+            <child link="Gimbal_3_link"/>
+            <origin xyz="0.125 -0.3595 0.155" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <mimic joint="G0_joint" multiplier="-1" offset="0.0"/>
+            <limit lower="-1.57" upper="1.57" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="G1_joint" type="revolute">
+            <parent link="chassis_link"/>
+            <child link="Gimbal_1_link"/>
+            <origin xyz="-0.0005 0.115 0.28" rpy="0 0 0"/>
+            <axis xyz="0 0 1"/>
+            <limit lower="-1.57" upper="1.57" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="G2_joint" type="revolute">
+            <parent link="chassis_link"/>
+            <child link="Gimbal_2_link"/>
+            <origin xyz="-0.0005 -0.115 0.28" rpy="0 0 0"/>
+            <axis xyz="0 0 1"/>
+            <mimic joint="G1_joint" multiplier="-1" offset="0.0"/>
+            <limit lower="-1.57" upper="1.57" effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="w0_joint" type="continuous">
+            <parent link="Gimbal_0_link"/>
+            <child link="w0_link"/>
+            <origin xyz="-0.125 0 0" rpy="0 0 0"/>
+            <axis xyz="0 1 0"/>
+            <limit effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="w1_joint" type="continuous">
+            <parent link="Gimbal_1_link"/>
+            <child link="w1_link"/>
+            <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <limit effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="w2_joint" type="continuous">
+            <parent link="Gimbal_2_link"/>
+            <child link="w2_link"/>
+            <origin xyz="0 0 -0.125" rpy="0 0 0"/>
+            <axis xyz="1 0 0"/>
+            <limit effort="100" velocity="1.0"/>
+        </joint>
+
+        <joint name="w3_joint" type="continuous">
+            <parent link="Gimbal_3_link"/>
+            <child link="w3_link"/>
+            <origin xyz="-0.125 0 0" rpy="0 0 0"/>
+            <axis xyz="0 1 0"/>
+            <limit effort="100" velocity="1.0"/>
+        </joint>
+
+    </xacro:macro>
+</robot>
