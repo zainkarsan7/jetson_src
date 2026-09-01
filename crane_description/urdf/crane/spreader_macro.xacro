@@ -2,7 +2,6 @@
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
 
 
-<xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
      <xacro:macro name="spreader">
         <!-- LINKS -->
         

@@ -2,6 +2,7 @@
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="crane">
 
 <xacro:arg name="use_mock_hardware" default="true" />
+    <xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
 
 <xacro:include filename="$(find crane_description)/urdf/crane/trolley_macro.xacro"/>
 <xacro:include filename="$(find crane_description)/urdf/crane/hook_macro.xacro"/>

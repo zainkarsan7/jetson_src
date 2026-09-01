@@ -2,10 +2,9 @@
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
 
 
-    <xacro:include filename="$(find crane_description)/urdf/common.xacro"/>
     <xacro:macro name="trolley">
 
-    
+
     <link name="base_link"/>
     <link name="Trolley_link"/>
         <joint name="base_trolley_joint" type="fixed">
