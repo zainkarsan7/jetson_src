@@ -14,6 +14,8 @@ pkg="realsense2_camera"
 plugin="realsense2_camera::RealSenseNodeFactory"
 name="Trolley_RS"
 namespace="Trolley_NS_RS">
+<param name="camera_name" value="Trolley_RS"/>
+<param name="camera_namespace" value="Trolley_NS_RS"/>
 <param name="enable_gyro" value="true"/>
 <param name="enable_depth" value = "false"/>
 <param name="enable_accel" value="true"/>
