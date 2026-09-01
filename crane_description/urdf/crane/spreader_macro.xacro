@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
-
-
      <xacro:macro name="spreader">
         <!-- LINKS -->
+        <link name="left_spreader_pose"/>
         
+
+
         <link name="chassis_link">
 
             <inertial>
@@ -406,5 +407,12 @@
             <limit effort="100" velocity="1.0"/>
         </joint>
 
+
+
+        <joint name="tag_chassis" type="fixed">
+            <child link="chassis_link"/>
+            <parent link="left_spreader_pose"/>
+            <origin xyz="0 -0.5 -0.191" rpy="0 0 0"/>
+        </joint>
     </xacro:macro>
 </robot>

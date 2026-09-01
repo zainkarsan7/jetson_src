@@ -6,11 +6,20 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /RobotModel1
+        - /RobotModel1/Status1
         - /RobotModel1/Description Topic1
+        - /TF1
+        - /TF1/Status1
+        - /TF1/Tree1
+        - /TF1/Tree1/base_link1
+        - /TF1/Tree1/base_link1/Trolley_link1
+        - /TF1/Tree1/base_link1/Trolley_link1/chassis_link1
+        - /TF1/Tree1/base_link1/Trolley_link1/chassis_link1/Spreader_RS_link1
         - /Image1
+        - /Image2
+        - /Image2/Status1
       Splitter Ratio: 0.5
-    Tree Height: 549
+    Tree Height: 839
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -64,46 +73,24 @@ Visualization Manager:
       Enabled: true
       Links:
         All Links Enabled: true
-        Crane_RS_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
-        LG_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         Link Tree Style: Links in Alphabetic Order
-        RG_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         Swivel_Tag:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        spreader_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         swivel_bottom:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+          Value: true
         swivel_top:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+          Value: true
       Mass Properties:
         Inertia: false
         Mass: false
@@ -119,35 +106,59 @@ Visualization Manager:
         All Enabled: true
         Camera_Measured:
           Value: true
-        Crane_RS_accel_frame:
-          Value: true
-        Crane_RS_accel_optical_frame:
-          Value: true
-        Crane_RS_color_frame:
-          Value: true
-        Crane_RS_color_optical_frame:
-          Value: true
-        Crane_RS_depth_frame:
-          Value: true
-        Crane_RS_depth_optical_frame:
-          Value: true
-        Crane_RS_gyro_frame:
-          Value: true
-        Crane_RS_gyro_optical_frame:
-          Value: true
-        Crane_RS_link:
-          Value: true
-        LG_link:
-          Value: true
-        RG_link:
-          Value: true
         Spreader_Measured:
+          Value: true
+        Spreader_RS_accel_frame:
+          Value: true
+        Spreader_RS_accel_optical_frame:
+          Value: true
+        Spreader_RS_color_frame:
+          Value: true
+        Spreader_RS_color_optical_frame:
+          Value: true
+        Spreader_RS_depth_frame:
+          Value: true
+        Spreader_RS_depth_optical_frame:
+          Value: true
+        Spreader_RS_gyro_frame:
+          Value: true
+        Spreader_RS_gyro_optical_frame:
+          Value: true
+        Spreader_RS_imu_frame:
+          Value: true
+        Spreader_RS_imu_optical_frame:
+          Value: true
+        Spreader_RS_link:
           Value: true
         Swivel_Tag:
           Value: true
+        Trolley_RS_accel_frame:
+          Value: true
+        Trolley_RS_accel_optical_frame:
+          Value: true
+        Trolley_RS_color_frame:
+          Value: true
+        Trolley_RS_color_optical_frame:
+          Value: true
+        Trolley_RS_gyro_frame:
+          Value: true
+        Trolley_RS_gyro_optical_frame:
+          Value: true
+        Trolley_RS_imu_frame:
+          Value: true
+        Trolley_RS_imu_optical_frame:
+          Value: true
+        Trolley_RS_link:
+          Value: true
+        Trolley_link:
+          Value: true
         base_link:
           Value: true
-        spreader_link:
+        chassis_link:
+          Value: true
+        left_spreader_pose:
+          Value: true
+        right_spreader_pose:
           Value: true
         swivel_bottom:
           Value: true
@@ -160,30 +171,43 @@ Visualization Manager:
       Show Names: false
       Tree:
         base_link:
-          swivel_top:
-            swivel_bottom:
-              Swivel_Tag:
-                Camera_Measured:
-                  Spreader_Measured:
+          Trolley_link:
+            Trolley_RS_link:
+              Trolley_RS_accel_frame:
+                Trolley_RS_accel_optical_frame:
+                  {}
+              Trolley_RS_color_frame:
+                Trolley_RS_color_optical_frame:
+                  {}
+              Trolley_RS_gyro_frame:
+                Trolley_RS_gyro_optical_frame:
+                  {}
+                Trolley_RS_imu_frame:
+                  Trolley_RS_imu_optical_frame:
                     {}
-              spreader_link:
-                Crane_RS_link:
-                  Crane_RS_accel_frame:
-                    Crane_RS_accel_optical_frame:
+            chassis_link:
+              Spreader_RS_link:
+                Spreader_RS_accel_frame:
+                  Spreader_RS_accel_optical_frame:
+                    {}
+                Spreader_RS_color_frame:
+                  Spreader_RS_color_optical_frame:
+                    {}
+                Spreader_RS_depth_frame:
+                  Spreader_RS_depth_optical_frame:
+                    {}
+                Spreader_RS_gyro_frame:
+                  Spreader_RS_gyro_optical_frame:
+                    {}
+                  Spreader_RS_imu_frame:
+                    Spreader_RS_imu_optical_frame:
                       {}
-                  Crane_RS_color_frame:
-                    Crane_RS_color_optical_frame:
-                      {}
-                  Crane_RS_depth_frame:
-                    Crane_RS_depth_optical_frame:
-                      {}
-                  Crane_RS_gyro_frame:
-                    Crane_RS_gyro_optical_frame:
-                      {}
-                LG_link:
-                  {}
-                RG_link:
-                  {}
+            left_spreader_pose:
+              {}
+            right_spreader_pose:
+              {}
+            swivel_top:
+              {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
@@ -199,6 +223,20 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /camera/image_aruco
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Image
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /Trolley_Detection
       Value: true
   Enabled: true
   Global Options:
@@ -246,35 +284,35 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.5089061260223389
+      Distance: 10.99918270111084
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.05932106077671051
-        Y: 0.07382728904485703
-        Z: -0.4045265316963196
+        X: -0.09189721196889877
+        Y: -0.2791561484336853
+        Z: 0.11164669692516327
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -0.0046014608815312386
+      Pitch: 0.41539835929870605
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 0.6453981399536133
+      Yaw: 0.6053981781005859
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 846
+  Height: 1136
   Hide Left Dock: false
   Hide Right Dock: false
   Image:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd000000040000000000000156000002b0fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d000002b0000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000015a000002b0fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fc0000003d000002b00000002800fffffffa000000000100000002fb0000000a0049006d0061006700650100000000ffffffff0000005e00fffffffb0000000a0056006900650077007300000003a10000010f0000010000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000004b00000003efc0100000002fb0000000800540069006d00650100000000000004b0000002fb00fffffffb0000000800540069006d00650100000000000004500000000000000000000001f4000002b000000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000002d6000003d2fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d000003d2000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000015a000003d2fc0200000004fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fc0000003d000001ca0000002800fffffffa000000000100000002fb0000000a0049006d0061006700650100000000ffffffff0000005e00fffffffb0000000a0056006900650077007300000003a10000010f0000010000fffffffb0000000a0049006d006100670065010000020d000002020000002800fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000073a0000003efc0100000002fb0000000800540069006d006501000000000000073a000002fb00fffffffb0000000800540069006d00650100000000000004500000000000000000000002fe000003d200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
@@ -283,6 +321,6 @@ Window Geometry:
     collapsed: false
   Views:
     collapsed: false
-  Width: 1200
-  X: 439
-  Y: 67
+  Width: 1850
+  X: 70
+  Y: 27
