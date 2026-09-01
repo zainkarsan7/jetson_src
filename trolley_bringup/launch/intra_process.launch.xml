@@ -42,6 +42,7 @@ name="spreader_pose_node">
             if="$(var record)"
             cmd="bash -c 'cd ~/bags &amp;&amp;
             ros2 bag record 
+            /tf2
             /Trolley_RS/Trolley_Cam/imu
             /Trolley/left_spreader_transform
             /Trolley/right_spreader_transform'"

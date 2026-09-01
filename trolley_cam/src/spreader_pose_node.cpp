@@ -94,7 +94,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
             if (detection.id== 25){
                 geometry_msgs::msg::TransformStamped msg_out;
                 msg_out.header.stamp = msg->header.stamp;
-                msg_out.header.frame_id = "base";
+                msg_out.header.frame_id = "base_link";
                 msg_out.child_frame_id = "left_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_left_pose_broadcaster_->sendTransform(msg_out);
@@ -103,7 +103,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
             if (detection.id== 50){
                 geometry_msgs::msg::TransformStamped msg_out;
                 msg_out.header.stamp = msg->header.stamp;
-                msg_out.header.frame_id = "base";
+                msg_out.header.frame_id = "base_link";
                 msg_out.child_frame_id = "right_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_right_pose_broadcaster_->sendTransform(msg_out);
