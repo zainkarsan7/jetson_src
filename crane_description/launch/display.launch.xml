@@ -6,22 +6,12 @@
 
     <let name="rviz_config_path" value="$(find-pkg-share crane_description)/rviz/urdf_config.rviz"/>
         
-    <node pkg="robot_state_publisher" exec="robot_state_publisher" name="hook_state_publisher">
-        <param name="robot_description"
-                value="$(command 'xacro $(var hook_urdf_path))" />
-        <remap from="~/robot_description" to="/hook/robot_description"/>
-    </node>
+    
 
-    <node pkg="robot_state_publisher" exec="robot_state_publisher" name="trolley_state_publisher">
+    <node pkg="robot_state_publisher" exec="robot_state_publisher" name="control_state_publisher">
         <param name="robot_description"
-                value="$(command 'xacro $(var trolley_urdf_path))" />
-        <remap from="~/robot_description" to="/trolley/robot_description"/>
-    </node>
-
-    <node pkg="robot_state_publisher" exec="robot_state_publisher" name="spreader_state_publisher">
-        <param name="robot_description"
-                value="$(command 'xacro $(var spreader_urdf_path))" />
-        <remap from="~/robot_description" to="/spreader/robot_description"/>
+                value="$(command 'xacro $(var control_urdf_path)')" />
+        <remap from="~/robot_description" to="/robot_description"/>
     </node>
 
 

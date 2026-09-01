@@ -8,26 +8,26 @@
         
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="hook_state_publisher">
         <param name="robot_description"
-                value="$(command 'xacro $(var hook_urdf_path))" />
-        <remap from="~/robot_description" to="/hook/robot_description"/>
+                value="$(command 'xacro $(var hook_urdf_path)')" />
+        <remap from="/robot_description" to="/hook/robot_description"/>
     </node>
 
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="trolley_state_publisher">
         <param name="robot_description"
-                value="$(command 'xacro $(var trolley_urdf_path))" />
-        <remap from="~/robot_description" to="/trolley/robot_description"/>
+                value="$(command 'xacro $(var trolley_urdf_path)')" />
+        <remap from="/robot_description" to="/trolley/robot_description"/>
     </node>
 
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="spreader_state_publisher">
         <param name="robot_description"
-                value="$(command 'xacro $(var spreader_urdf_path))" />
-        <remap from="~/robot_description" to="/spreader/robot_description"/>
+                value="$(command 'xacro $(var spreader_urdf_path)')" />
+        <remap from="/robot_description" to="/spreader/robot_description"/>
     </node>
 
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="control_description_publisher">
         <param name="robot_description"
-                value="$(command 'xacro $(var control_urdf_path))" />
-        <remap from="~/robot_description" to="/control_robot_description"/>
+                value="$(command 'xacro $(var control_urdf_path)')" />
+        <remap from="/robot_description" to="/control_robot_description"/>
     </node>
 
     <node pkg="controller_manager" exec="ros2_control_node">

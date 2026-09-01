@@ -23,6 +23,8 @@
 
 <xacro:include filename="$(find crane_description)/urdf/crane/crane_macro.ros2_control.xacro"/>
 
-<xacro:crane/>
+<xacro:trolley/>
+<xacro:hook/>
+<xacro:spreader/>
 <xacro:crane_ros2_control use_mock_hardware="$(arg use_mock_hardware)" />
 </robot>
