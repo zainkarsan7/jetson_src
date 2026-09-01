@@ -88,7 +88,9 @@
         </link>
 
         <link name = "Swivel_Tag"/>
-        <link name="Crane_RS_link"/>
+        <link name="Trolley_link"/>
+        <link name="Spreader_RS_link"/>
+        <link name="Trolley_RS_link"/>
         
         <link name="LG_link">
             <collision>
@@ -412,7 +414,19 @@
 
         <joint name="spreader_RS_joint" type="fixed">
             <parent link="chassis_link"/>
-            <child link ="Crane_RS_link"/>
+            <child link ="Spreader_RS_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
+        </joint>
+
+        <joint name="base_trolley_joint" type="fixed">
+            <parent link="base_link"/>
+            <child link ="Trolley_link"/>
+            <origin xyz ="0 0 0" rpy="0 0 0"/> 
+        </joint>
+
+        <joint name="trolley_RS_joint" type="fixed">
+            <parent link="Trolley_link"/>
+            <child link ="Trolley_RS_link"/>
             <origin xyz ="0 0 0" rpy="0 0 0"/> 
         </joint>
 

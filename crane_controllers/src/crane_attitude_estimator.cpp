@@ -1,6 +1,6 @@
 #include "crane_controllers/crane_attitude_estimator.hpp"
 #include "crane_controllers/crane_attitude_utils.hpp"
-#include "tf2_eigen/tf2_eigen.h"
+#include "tf2_eigen/tf2_eigen.hpp"
 
 namespace crane_controllers
 {
@@ -14,10 +14,9 @@ namespace crane_controllers
         rs_imu_to_chassis_ = rs_imu_to_chassis;
     }
 
-    void CraneAttitudeEstimator::update_marker_pose(const geometry_msgs::msg::PoseStamped &marker_pose){
+    void CraneAttitudeEstimator::update_marker_pose(const geometry_msgs::msg::TransformStamped &marker_pose){
         
-        const Eigen::Isometry3d cam_to_marker;
-        tf2::fromMsg(marker_pose,cam_to_marker);
+        Eigen::Isometry3d cam_to_marker = tf2::transformToEigen(marker_pose);
 
         const Eigen::Isometry3d cam_to_chassis = cam_to_marker * marker_to_chassis_;
 

@@ -17,7 +17,7 @@ controller_manager:
     crane_homing_controller:
       type: crane_controllers/CraneHomingController
 
-    crane_homing_controller:
+    crane_attitude_controller:
       type: crane_controllers/CraneAttitudeController
 
 crane_homing_controller:
@@ -26,7 +26,8 @@ crane_homing_controller:
     
 crane_attitude_controller:
   ros__parameters:
-    command_interface: home
+    marker_pose_topic: /Trolley/left_spreader_transform
+    imu_topic: /Spreader_NS_RS/Spreader_RS/imu
     
 
 

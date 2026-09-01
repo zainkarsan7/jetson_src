@@ -153,13 +153,13 @@ class ArucoNode: public rclcpp::Node{
             cv::aruco::estimatePoseSingleMarkers(mCorners,0.1,cam_mat_,dist_coeffs,rvecs,tvecs);
             for (size_t i=0; i<mIds.size(); i++){
                 cv::aruco::drawAxis(annotated_,cam_mat_,dist_coeffs,rvecs[i],tvecs[i],0.01);
-                RCLCPP_INFO_THROTTLE(
-            this->get_logger(),
-            *this->get_clock(),
-            1000,
-            "tvec = [%.4f, %.4f, %.4f]",
-            tvecs[i][0],tvecs[i][1],tvecs[i][2]
-        );
+        //         RCLCPP_INFO_THROTTLE(
+        //     this->get_logger(),
+        //     *this->get_clock(),
+        //     1000,
+        //     "tvec = [%.4f, %.4f, %.4f]",
+        //     tvecs[i][0],tvecs[i][1],tvecs[i][2]
+        // );
             }
         
         // tf2::Quaternion quat;

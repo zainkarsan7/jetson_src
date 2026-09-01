@@ -30,13 +30,13 @@ namespace crane_controllers{
 
     class CraneAttitudeEstimator{
         public:
-        CraneAttitudeEstimator();
+         CraneAttitudeEstimator() = default;
 
         void set_marker_chassis_t(const Eigen::Isometry3d &marker_to_chassis);
 
         void set_rs_imu_chassis_t(const Eigen::Isometry3d &rs_imu_to_chassis);
 
-        void update_marker_pose(const geometry_msgs::msg::PoseStamped & marker_pose);
+        void update_marker_pose(const geometry_msgs::msg::TransformStamped & marker_pose);
 
         void update_imu(const sensor_msgs::msg::Imu &imu_msg);
         const CraneAttitudeState & state() const;

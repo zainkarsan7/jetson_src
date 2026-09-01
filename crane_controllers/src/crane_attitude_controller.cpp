@@ -9,10 +9,11 @@ namespace crane_controllers{
             auto_declare<std::string>(
                 "marker_pose_topic",
                 "/Trolley/left_spreader_transform"
+                
             );
             auto_declare<std::string>(
                 "imu_topic",
-                "/Trolley_RS/Trolley_Cam/imu"
+                "/Spreader_NS_RS/Spreader_RS/imu"
             );
 
 
@@ -40,10 +41,12 @@ namespace crane_controllers{
         state_buffer_.writeFromNonRT(initial_state);
 
         // make subscriptions 
-        marker_pose_sub = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(marker_pose_topic_,
+        marker_pose_sub = get_node()->create_subscription<geometry_msgs::msg::TransformStamped>(marker_pose_topic_,
             rclcpp::SensorDataQoS(),
-        [this](const geometry_msgs::msg::PoseStamped::SharedPtr pose_msg){
+        [this](const geometry_msgs::msg::TransformStamped::SharedPtr pose_msg){
                 estimator_.update_marker_pose(*pose_msg);
+                // RCLCPP_INFO_THROTTLE(get_node()->get_logger(),*get_node()->get_clock(),2000,"marker updated %d",
+                // estimator_.state().pose_valid);
                 state_buffer_.writeFromNonRT(estimator_.state());
             });
 
@@ -52,6 +55,8 @@ namespace crane_controllers{
         rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::Imu::SharedPtr imu_msg){
         estimator_.update_imu(*imu_msg);
+        // RCLCPP_INFO_THROTTLE(get_node()->get_logger(),*get_node()->get_clock(),1000,
+        // "imu update %d",estimator_.state().imu_valid);
         state_buffer_.writeFromNonRT(estimator_.state());
     });
 
@@ -83,10 +88,18 @@ namespace crane_controllers{
         CraneAttitudeState * current_state_ptr= state_buffer_.readFromRT();
 
         if(current_state_ptr==nullptr){
+
+            RCLCPP_INFO_THROTTLE(get_node()->get_logger(),
+        *get_node()->get_clock(),2000,"state ptr is null");
+
             return controller_interface::return_type::OK;
         }
 
         if(!current_state_ptr->imu_valid || !current_state_ptr->pose_valid){
+            RCLCPP_INFO_THROTTLE(get_node()->get_logger(),
+        *get_node()->get_clock(),2000,"state subscriptions imu %d pose %d",
+        current_state_ptr->imu_valid,current_state_ptr->pose_valid);
+
             return controller_interface::return_type::OK;
         }
 
