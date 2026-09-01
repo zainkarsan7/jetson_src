@@ -32,12 +32,12 @@ namespace trolley_cam
 SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
 :Node("spreader_pose_node",options), detector_(cv::aruco::DICT_6X6_250,0.2){
         trolley_image_sub_ = image_transport::create_subscription(this,
-            "/Trolley_RS/Trolley_Cam/color/image_raw",
+            "/Trolley_NS_RS/Trolley_RS/color/image_raw",
             std::bind(&SpreaderPoseNode::get_detections_callback, this,std::placeholders::_1),"raw"
         );
 
         trolley_cam_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
-            "/Trolley_RS/Trolley_Cam/color/camera_info",
+            "/Trolley_NS_RS/Trolley_RS/color/camera_info",
             rclcpp::SensorDataQoS(),
             std::bind(&SpreaderPoseNode::get_cam_info_callback,this,std::placeholders::_1)
         );
@@ -94,8 +94,8 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
             if (detection.id== 25){
                 geometry_msgs::msg::TransformStamped msg_out;
                 msg_out.header.stamp = msg->header.stamp;
-                msg_out.header.frame_id = "base_link";
-                msg_out.child_frame_id = "left_pose";
+                msg_out.header.frame_id = "trolley_link";
+                msg_out.child_frame_id = "left_spreader_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_left_pose_broadcaster_->sendTransform(msg_out);
                 left_t_pub->publish(msg_out);
@@ -103,8 +103,8 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
             if (detection.id== 50){
                 geometry_msgs::msg::TransformStamped msg_out;
                 msg_out.header.stamp = msg->header.stamp;
-                msg_out.header.frame_id = "base_link";
-                msg_out.child_frame_id = "right_pose";
+                msg_out.header.frame_id = "trolley_link";
+                msg_out.child_frame_id = "right_spreader_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 spreader_right_pose_broadcaster_->sendTransform(msg_out);
                 right_t_pub->publish(msg_out);
