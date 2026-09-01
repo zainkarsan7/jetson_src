@@ -17,7 +17,14 @@ controller_manager:
     crane_homing_controller:
       type: crane_controllers/CraneHomingController
 
+    crane_homing_controller:
+      type: crane_controllers/CraneAttitudeController
+
 crane_homing_controller:
+  ros__parameters:
+    command_interface: home
+    
+crane_attitude_controller:
   ros__parameters:
     command_interface: home
     

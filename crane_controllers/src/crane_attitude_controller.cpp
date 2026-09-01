@@ -1,13 +1,14 @@
 #include "crane_controllers/crane_attitude_estimator.hpp"
 #include "crane_controllers/crane_attitude_controller.hpp"
 #include "crane_controllers/crane_attitude_utils.hpp"
+#include "pluginlib/class_list_macros.hpp"
 
 namespace crane_controllers{
     controller_interface::CallbackReturn CraneAttitudeController::on_init(){
         try{
             auto_declare<std::string>(
                 "marker_pose_topic",
-                "/Trolley/left_spreader_pose"
+                "/Trolley/left_spreader_transform"
             );
             auto_declare<std::string>(
                 "imu_topic",
@@ -54,7 +55,6 @@ namespace crane_controllers{
         state_buffer_.writeFromNonRT(estimator_.state());
     });
 
-    estimator_.set_marker_chassis_t()
 
 
 
@@ -104,7 +104,15 @@ namespace crane_controllers{
         "RPY: %.3f, %.3f, %.3f || Omega:  %.3f, %.3f, %.3f ",
         roll,pitch,yaw,omega_x,omega_y,omega_z);
 
+        return controller_interface::return_type::OK;
+
     }
 
 
+
 }
+
+PLUGINLIB_EXPORT_CLASS(
+  crane_controllers::CraneAttitudeController,
+  controller_interface::ControllerInterface
+)

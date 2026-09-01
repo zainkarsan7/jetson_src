@@ -11,6 +11,7 @@
     </node>
     <node pkg="controller_manager" exec="spawner" args="joint_state_broadcaster"/>
     <node pkg="controller_manager" exec="spawner" args="crane_homing_controller"/>
+    <node pkg="controller_manager" exec="spawner" args="crane_attitude_controller"/>
 
     <node pkg="controller_manager" exec="spawner" args="joint_position_controller"/>
     <node pkg="controller_manager" exec="spawner" args="swivel_position_controller --inactive"/>
