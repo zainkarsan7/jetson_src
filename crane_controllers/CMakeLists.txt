@@ -58,7 +58,15 @@ ament_target_dependencies(${PROJECT_NAME}
 
   ### when controller uses crane attitude link them:
 target_link_libraries(${PROJECT_NAME}
-crane_estimation::crane_attitude
+crane_attitude
+)
+
+install(
+  TARGETS crane_attitude ${PROJECT_NAME}
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 pluginlib_export_plugin_description_file(
