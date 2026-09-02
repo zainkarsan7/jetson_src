@@ -3,6 +3,7 @@
      <xacro:macro name="spreader">
         <!-- LINKS -->
         <link name="left_spreader_pose"/>
+        <link name="right_spreader_pose"/>
         
 
 
@@ -409,10 +410,16 @@
 
 
 
-        <joint name="tag_chassis" type="fixed">
-            <child link="chassis_link"/>
-            <parent link="left_spreader_pose"/>
-            <origin xyz="0 -0.5 -0.191" rpy="0 0 0"/>
+        <joint name="left_tag_chassis_joint" type="fixed">
+            <parent link="chassis_link"/>
+            <child link="left_spreader_pose"/>
+            <origin xyz=".125 -0.6745 0.363" rpy="0 0 0"/>
+        </joint>
+
+        <joint name="right_tag_chassis_joint" type="fixed">
+            <parent link="chassis_link"/>
+            <child link="right_spreader_pose"/>
+            <origin xyz=".125 0.6745 0.363" rpy="0 0 0"/>
         </joint>
     </xacro:macro>
 </robot>

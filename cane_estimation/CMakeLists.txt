@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(crane_controllers)
+project(cane_estimation)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -7,94 +7,71 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(controller_interface REQUIRED)
-find_package(pluginlib REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(rclcpp_lifecycle REQUIRED)
-find_package(std_srvs REQUIRED)
-find_package(hardware_interface REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(realtime_tools REQUIRED)
-find_package(crane_estimation REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+## add library crane_attitude.so , 
+## add shared, include, dependencies ament and link
+add_library(crane_attitude SHARED
+src/crane_attitude_utils.cpp
+src/crane_attitude_estimator.cpp
+)
 
-### controller stuff
-
-add_library(${PROJECT_NAME} SHARED
-  src/crane_homing_controller.cpp
-  src/crane_attitude_controller.cpp
-  )
-
-target_include_directories(${PROJECT_NAME}
+target_include_directories(crane_attitude
 PUBLIC 
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(${PROJECT_NAME}
-  controller_interface
-  hardware_interface
-  pluginlib
-  rclcpp
-  rclcpp_lifecycle
-  std_srvs
-  realtime_tools
-  tf2_ros
-  tf2
-  tf2_geometry_msgs
-  tf2_eigen
-  sensor_msgs
+ament_target_dependencies(crane_attitude
   geometry_msgs
+  sensor_msgs
+  tf2
+  tf2_ros
+  tf2_eigen
+  tf2_geometry_msgs
   )
 
-  ### when controller uses crane attitude link them:
-target_link_libraries(${PROJECT_NAME}
-crane_estimation::crane_attitude
+target_link_libraries(crane_attitude
+Eigen3::Eigen
 )
 
-pluginlib_export_plugin_description_file(
-  controller_interface
-  crane_controllers.xml
-)
 
+install(
+  TARGETS crane_attitude ${PROJECT_NAME}
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
 
 install(
   DIRECTORY include/
   DESTINATION include
 )
 
-install(
-  FILES crane_controllers.xml
-  DESTINATION share/${PROJECT_NAME}
-)
-
-
 ament_export_targets(
   export_${PROJECT_NAME}
   HAS_LIBRARY_TARGET
 )
 
-ament_export_dependencies(
-  controller_interface
-  pluginlib
-  rclcpp
-  rclcpp_lifecycle
-  std_srvs
-  tf2
-  tf2_geometry_msgs
-  Eigen3
-  geometry_msgs
-  sensor_msgs
-)
+add_executable(chassis_estimator src/chassis_pose_estimator_node.cpp)
+ament_target_dependencies(chassis_estimator tf2 tf2_ros tf2_geometry_msgs geometry_msgs rclcpp)
+target_link_libraries(chassis_estimator Eigen3::Eigen crane_attitude)
+
+install(TARGETS chassis_estimator 
+DESTINATION lib/${PROJECT_NAME})
+
+
+
 
 
 if(BUILD_TESTING)
