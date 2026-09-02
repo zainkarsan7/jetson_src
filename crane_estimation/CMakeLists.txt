@@ -46,8 +46,11 @@ Eigen3::Eigen
 )
 
 
+
+
+
 install(
-  TARGETS crane_attitude ${PROJECT_NAME}
+  TARGETS crane_attitude 
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

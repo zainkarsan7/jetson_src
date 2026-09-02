@@ -1,8 +1,8 @@
-#include "crane_controllers/crane_attitude_estimator.hpp"
-#include "crane_controllers/crane_attitude_utils.hpp"
+#include "crane_estimation/crane_attitude_estimator.hpp"
+#include "crane_estimation/crane_attitude_utils.hpp"
 #include "tf2_eigen/tf2_eigen.hpp"
 
-namespace crane_controllers
+namespace crane_estimation
 {
     
     void CraneAttitudeEstimator::set_marker_chassis_t(const Eigen::Isometry3d &marker_to_chassis){
@@ -23,7 +23,7 @@ namespace crane_controllers
         state_.pos = cam_to_chassis.translation();
         state_.orn = cam_to_chassis.rotation();
         state_.orn.normalize();
-        state_.rpy = attitude::quaternion_to_rpy(state_.orn);
+        state_.rpy = quaternion_to_rpy(state_.orn);
 
         state_.pose_valid = true;
         state_.pose_stamp = static_cast<double>(marker_pose.header.stamp.sec) + static_cast<double>(marker_pose.header.stamp.nanosec)*1e-9;
@@ -44,4 +44,4 @@ namespace crane_controllers
 
 
 
-} // namespace crane_controllers
+} // namespace crane_estimation

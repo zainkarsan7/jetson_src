@@ -62,7 +62,7 @@ crane_attitude
 )
 
 install(
-  TARGETS crane_attitude ${PROJECT_NAME}
+  TARGETS ${PROJECT_NAME}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

@@ -1,11 +1,10 @@
-#include "crane_controllers/crane_attitude_utils.hpp"
+#include "crane_estimation/crane_attitude_utils.hpp"
 #include <cmath>
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_eigen/tf2_eigen.hpp"
 #include <algorithm>
 
-namespace crane_controllers{
-    namespace attitude{
+namespace crane_estimation{
         double wrap_angle(double angle){
             return std::remainder(angle,2.0*M_PI);
         }
@@ -27,5 +26,5 @@ namespace crane_controllers{
         }
 
 
-    }
+    
 }
