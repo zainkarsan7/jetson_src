@@ -5,6 +5,8 @@
 #include "crane_estimation/crane_attitude_estimator.hpp"
 #include "crane_estimation/crane_attitude_utils.hpp"
 #include "rclcpp/time.hpp"
+#include "tf2_eigen/tf2_eigen.hpp"
+#include <Eigen/Geometry>
 
 class ChassisPoseNode: public rclcpp::Node{
 
@@ -20,7 +22,9 @@ public:
             // });
 
             left_sub_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
-                "Trolley/left_spreader_transform",rclcpp::SensorDataQoS(),[this](const geometry_msgs::msg::TransformStamped::SharedPtr trolley_left_spreader_msg){
+                "Trolley/left_spreader_transform",rclcpp::SensorDataQoS(),
+                [this]
+                (const geometry_msgs::msg::TransformStamped::SharedPtr trolley_left_spreader_msg){
                     compute_trolley_to_chassis_transform_callback(* trolley_left_spreader_msg);
                 }
             );
@@ -31,13 +35,7 @@ public:
 
 
 private:
-
-    tf2_ros::TransformBroadcaster trolley_to_chassis_broadcaster_;
-    tf2_ros::Buffer tf_buffer_;
-    tf2_ros::TransformListener tf_listener_;
-    rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr left_sub_;
-    void ChassisPoseNode::compute_trolley_to_chassis_transform_callback(const geometry_msgs::msg::TransformStamped::SharedPtr trolley_left_spreader_msg){
+    void compute_trolley_to_chassis_transform_callback(const geometry_msgs::msg::TransformStamped & trolley_left_spreader_msg){
         // try both transforms, choose left, lookup from ros buffer
 
         try{
@@ -53,19 +51,27 @@ private:
         auto output = tf2::eigenToTransform(T_trol_to_chassis);
         output.header.frame_id = "Trolley_link";
         output.child_frame_id = "chassis_link";
-        output.header.stamp = this->now();
+        output.header.stamp = trolley_left_spreader_msg.header.stamp;
 
-        trolley_to_chassis_broadcaster_.sendTransform(output);}
+        trolley_to_chassis_broadcaster_.sendTransform(output);
+    }
         catch(const tf2::TransformException &ex){
-            RCLCPP_WARN_THROTTLE(get_logger(),get_clock(),2000,"error: %s",ex.what());
+            RCLCPP_WARN_THROTTLE(get_logger(),*get_clock(),2000,"error: %s",ex.what());
         }
     }
-
-
+    tf2_ros::TransformBroadcaster trolley_to_chassis_broadcaster_;
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
+    // rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr left_sub_;
+    
 };
 
 
 
-int main (int argv, char* argc[]){
-    return 0;
+int main (int argc, char* argv[]){
+    rclcpp::init(argc,argv);
+    rclcpp::spin(std::make_shared<ChassisPoseNode>());
+    rclcpp::shutdown();
+    return 0 ;
 }
