@@ -49,6 +49,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
 
         left_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/left_spreader_transform",10);
         right_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/right_spreader_transform",10);
+        hook_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/hook_transform",10);
 
     }
 
@@ -108,6 +109,16 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
                 // spreader_right_pose_broadcaster_->sendTransform(msg_out);
                 right_t_pub->publish(msg_out);
+            }
+
+            if (detection.id== 75){
+                geometry_msgs::msg::TransformStamped msg_out;
+                msg_out.header.stamp = msg->header.stamp;
+                msg_out.header.frame_id = "Trolley_link";
+                msg_out.child_frame_id = "Swivel_Tag";
+                msg_out.transform = tf2::toMsg(detection.T_cam_marker);
+                // spreader_right_pose_broadcaster_->sendTransform(msg_out);
+                hook_t_pub->publish(msg_out);
             }
 
         }
