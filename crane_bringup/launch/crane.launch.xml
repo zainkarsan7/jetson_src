@@ -32,6 +32,8 @@
 
     <node pkg="controller_manager" exec="ros2_control_node">
         <param from="$(find-pkg-share crane_bringup)/config/crane_controllers.yaml"/>
+        <!-- <param name="robot_description"
+                value="$(command 'xacro $(var control_urdf_path)')" /> -->
         <remap from="~/robot_description" to="/control_robot_description"/>
     </node>
 

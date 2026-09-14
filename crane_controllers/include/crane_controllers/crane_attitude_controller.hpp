@@ -6,7 +6,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
-#include "crane_controllers/crane_attitude_estimator.hpp"
+#include "crane_estimation/crane_attitude_estimator.hpp"
 
 namespace crane_controllers{
     class CraneAttitudeController: public controller_interface::ControllerInterface
