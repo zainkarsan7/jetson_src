@@ -44,8 +44,8 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
 
         anno_trolley_image_pub = image_transport::create_publisher(this,"Trolley_Detection");
 
-        spreader_left_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-        spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        // spreader_left_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        // spreader_right_pose_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         left_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/left_spreader_transform",10);
         right_t_pub = this->create_publisher<geometry_msgs::msg::TransformStamped>("Trolley/right_spreader_transform",10);
@@ -97,7 +97,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
                 msg_out.header.frame_id = "Trolley_link";
                 msg_out.child_frame_id = "left_spreader_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
-                spreader_left_pose_broadcaster_->sendTransform(msg_out);
+                // spreader_left_pose_broadcaster_->sendTransform(msg_out);
                 left_t_pub->publish(msg_out);
             }
             if (detection.id== 50){
@@ -106,7 +106,7 @@ SpreaderPoseNode::SpreaderPoseNode(const rclcpp::NodeOptions & options)
                 msg_out.header.frame_id = "Trolley_link";
                 msg_out.child_frame_id = "right_spreader_pose";
                 msg_out.transform = tf2::toMsg(detection.T_cam_marker);
-                spreader_right_pose_broadcaster_->sendTransform(msg_out);
+                // spreader_right_pose_broadcaster_->sendTransform(msg_out);
                 right_t_pub->publish(msg_out);
             }
 
