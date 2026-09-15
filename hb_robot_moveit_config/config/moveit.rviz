@@ -12,7 +12,7 @@ Panels:
         - /MarkerArray1
         - /Trajectory1
       Splitter Ratio: 0.5
-    Tree Height: 417
+    Tree Height: 388
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_visual_tools/RvizVisualToolsGui
@@ -78,6 +78,10 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
+          unilidar_imu_initial:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
           ur10e_base:
             Alpha: 1
             Show Axes: false
@@ -192,6 +196,10 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
+          unilidar_imu_initial:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
           ur10e_base:
             Alpha: 1
             Show Axes: false
@@ -299,6 +307,8 @@ Visualization Manager:
           Value: true
         robot_mount:
           Value: true
+        unilidar_imu_initial:
+          Value: true
         ur10e_base:
           Value: true
         ur10e_base_link:
@@ -314,6 +324,8 @@ Visualization Manager:
         ur10e_shoulder_link:
           Value: true
         ur10e_tool0:
+          Value: true
+        ur10e_tool0_controller:
           Value: true
         ur10e_upper_arm_link:
           Value: true
@@ -336,7 +348,8 @@ Visualization Manager:
             robot_mount:
               ur10e_base_link:
                 ur10e_base:
-                  {}
+                  ur10e_tool0_controller:
+                    {}
                 ur10e_base_link_inertia:
                   ur10e_shoulder_link:
                     ur10e_upper_arm_link:
@@ -349,6 +362,8 @@ Visualization Manager:
                                   {}
                               ur10e_ft_frame:
                                 {}
+            unilidar_imu_initial:
+              {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
@@ -369,9 +384,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        Path: true
-        Sphere: true
-        Text: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -398,6 +411,10 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        unilidar_imu_initial:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         ur10e_base:
           Alpha: 1
           Show Axes: false
@@ -488,34 +505,32 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.253042697906494
+      Distance: 6.32178258895874
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.21714837849140167
-        Y: 0.9157698154449463
-        Z: 0.024614527821540833
+        X: 0.03382620960474014
+        Y: 0.19441820681095123
+        Z: 0.16578903794288635
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5497963428497314
+      Pitch: 0.3747955560684204
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.053584575653076
+      Yaw: 0.7985900640487671
     Saved: ~
 Window Geometry:
-  " - Trajectory Slider":
-    collapsed: false
   AzureKinect:
     collapsed: false
   Displays:
     collapsed: false
-  Height: 1137
+  Height: 1136
   Help:
     collapsed: false
   Hide Left Dock: false
@@ -524,9 +539,11 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000002b40000041bfc0200000008fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003b0000003f0000003f00fffffffb000000100044006900730070006c006100790073010000008000000222000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000002a8000001690000016900fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006901000004170000003f0000003f00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00ffffff00000001000001400000041bfc0200000001fb000000160041007a007500720065004b0069006e006500630074010000003b0000041b0000002800ffffff000003800000041b00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000002b400000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000490000004100fffffffb000000100044006900730070006c006100790073010000008c00000207000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000299000001ba0000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff000000010000014000000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074010000003d000004160000002800ffffff0000033a0000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RvizVisualToolsGui:
     collapsed: false
-  Width: 1920
-  X: 0
-  Y: 23
+  Trajectory - Trajectory Slider:
+    collapsed: false
+  Width: 1850
+  X: 70
+  Y: 27

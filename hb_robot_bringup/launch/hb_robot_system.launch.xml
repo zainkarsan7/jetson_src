@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+
+
+<launch>
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/hb_robot.launch.xml"/>
+
+
+    <!-- MoveIt move_group -->
+    <include file="$(find-pkg-share hb_robot_moveit_config)/launch/move_group.launch.py"/>
+
+
+    <!-- MoveIt RViz -->
+    <include file="$(find-pkg-share hb_robot_moveit_config)/launch/moveit_rviz.launch.py"/>
+
+
+</launch>

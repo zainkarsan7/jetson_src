@@ -1,0 +1,68 @@
+<launch>
+
+    <arg name="ur_type" default="ur10e"/>
+    <arg name="robot_ip" default="192.168.200.55"/>
+    <arg name="tf_prefix" default="ur10e_"/>
+    <arg name="description_package" default="hb_robot_control"/>
+    <arg name="description_file" default="hb_robot_controlled.urdf.xacro"/>
+    <arg name="kinematics_params_file"
+         default="$(find-pkg-share hb_robot_control)/config/my_robot_calibration.yaml"/>
+    
+    
+    
+    <arg name="use_fake_hardware" default="false"/>
+    <arg name="fake_sensor_commands" default="false"/>
+    <arg name="headless_mode" default="false"/>
+
+
+    <arg name="launch_rviz" default="false"/>
+
+
+    <arg name="initial_joint_controller"
+         default="scaled_joint_trajectory_controller"/>
+    <arg name="activate_joint_controller" default="true"/>
+
+
+    <include file="$(find-pkg-share ur_robot_driver)/launch/ur_control.launch.py">
+
+        <arg name="ur_type"
+             value="$(var ur_type)"/>
+
+        <arg name="robot_ip"
+             value="$(var robot_ip)"/>
+
+         <arg name="tf_prefix"
+             value="$(var tf_prefix)"/>
+
+        <arg name="launch_rviz"
+             value="$(var launch_rviz)"/>
+
+        <arg name="use_fake_hardware"
+             value="$(var use_fake_hardware)"/>
+
+        <arg name="fake_sensor_commands"
+             value="$(var fake_sensor_commands)"/>
+
+        <arg name="description_package"
+             value="$(var description_package)"/>
+
+        <arg name="description_file"
+             value="$(var description_file)"/>
+
+        <arg name="kinematics_params_file"
+             value="$(var kinematics_params_file)"/>
+
+        <arg name="initial_joint_controller"
+             value="$(var initial_joint_controller)"/>
+
+        <arg name="activate_joint_controller"
+             value="$(var activate_joint_controller)"/>
+
+        <arg name="headless_mode"
+             value="$(var headless_mode)"/>
+
+
+    </include>
+
+
+</launch>
