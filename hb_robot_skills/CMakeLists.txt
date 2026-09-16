@@ -13,6 +13,7 @@ find_package(hb_robot_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(moveit_ros_planning_interface REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
@@ -22,6 +23,8 @@ find_package(tf2_eigen REQUIRED)
 
 add_executable(generate_explore_path_server
 src/generate_explore_path_server.cpp)
+add_executable(inspect_scene_server
+src/inspect_scene_server.cpp)
 
 ament_target_dependencies(generate_explore_path_server 
   rclcpp
@@ -31,12 +34,24 @@ ament_target_dependencies(generate_explore_path_server
   tf2_eigen
 )
 
+ament_target_dependencies(inspect_scene_server 
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
+)
+
 target_link_libraries(generate_explore_path_server
 Eigen3::Eigen)
 
 install(
   TARGETS
     generate_explore_path_server
+    inspect_scene_server
   DESTINATION lib/${PROJECT_NAME}
 )
 
