@@ -92,3 +92,16 @@ Done.
 ## File transfer stuff:
 scp -r zk@192.168.200.10:~/bags/rosbag2_2026_08_31-11_54_27 ~/ros2_ws/src/bags/
 
+
+## Git Sparse commands i keep forgetting
+
+
+git clone --filter=blob:none --no-checkout <YOUR_REPO_URL> .
+git sparse-checkout init --cone
+git sparse-checkout set folder_in_my_repo_1 folder_in_my_repo_2
+git checkout
+
+and later when adding more pkgs need to do sparse -add 
+
+git sparse-checkout add new_folder_1 new_folder 2 
+
