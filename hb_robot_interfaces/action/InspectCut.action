@@ -1,0 +1,15 @@
+# Goal
+geometry_msgs/Pose viewpoints
+uint32 samples_per_viewpoint
+float64 max_ang_vel
+
+---
+# Result
+bool success
+bool cut_complete
+float32 confidence
+
+---
+# Feedback
+uint32 current_viewpoint
+geometry_msgs/Pose current_pose

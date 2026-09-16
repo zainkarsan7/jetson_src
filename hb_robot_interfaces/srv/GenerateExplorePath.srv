@@ -1,0 +1,7 @@
+std_msgs/Header header
+geometry_msgs/Point poi
+float64 search_radius
+---
+bool success
+string message
+geometry_msgs/Pose[] viewpoints

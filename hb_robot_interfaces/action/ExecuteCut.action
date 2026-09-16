@@ -1,0 +1,20 @@
+# Goal
+
+CutTraj cut_trajectory
+
+---
+# Result
+bool success
+uint8 SUCCESS=0
+uint8 MOTION_FAILURE=1
+uint8 PROCESS_FAILURE=2
+uint8 CANCELLED=3
+
+uint8 result_code
+uint8 message
+---
+# Feedback
+float32 progress
+geometry_msgs/Pose current_pose
+uint32 current_traj_point
+bool torch_active
