@@ -7,9 +7,38 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(hb_robot_interfaces REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(tf2_eigen REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
+
+add_executable(generate_explore_path_server
+src/generate_explore_path_server.cpp)
+
+ament_target_dependencies(generate_explore_path_server 
+  rclcpp
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+)
+
+target_link_libraries(generate_explore_path_server
+Eigen3::Eigen)
+
+install(
+  TARGETS
+    generate_explore_path_server
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
