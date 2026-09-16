@@ -6,6 +6,17 @@ float64 max_ang_vel
 ---
 # Result
 bool success
+
+uint8 SUCCESS=0
+uint8 PLANNING_FAILED=1
+uint8 MOTION_FAILED=2
+uint8 STABILITY_TIMEOUT=3
+uint8 ACQUISITION_FAILED=4
+uint8 REGISTRATION_FAILED=5
+uint8 CANCELLED=6
+
+uint8 result_code
+
 bool cut_complete
 float32 confidence
 
@@ -13,3 +24,4 @@ float32 confidence
 # Feedback
 uint32 current_viewpoint
 geometry_msgs/Pose current_pose
+uint8 samples_acquired

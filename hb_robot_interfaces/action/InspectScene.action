@@ -6,6 +6,17 @@ uint32 samples_per_viewpoint
 ---
 # Result
 bool success
+
+uint8 SUCCESS=0
+uint8 PLANNING_FAILED=1
+uint8 MOTION_FAILED=2
+uint8 STABILITY_TIMEOUT=3
+uint8 ACQUISITION_FAILED=4
+uint8 REGISTRATION_FAILED=5
+uint8 CANCELLED=6
+
+uint8 result_code
+
 string scene_id
 uint32 viewpoints_captured
 uint8 message
@@ -21,3 +32,4 @@ uint8 ACQUIRING=3
 uint8 REGISTERING=4
 
 uint8 phase
+uint8 samples_acquired
