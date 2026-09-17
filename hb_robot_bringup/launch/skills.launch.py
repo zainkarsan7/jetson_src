@@ -1,10 +1,10 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
-from moveit_configs_utils import MoveitConfigsBuilder
+from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description():
-    moveit_config=  (MoveitConfigsBuilder(
+    moveit_config=  (MoveItConfigsBuilder(
         "hb_robot",
         package_name="hb_robot_moveit_config"
     ).robot_description(file_path="config/hb_robot.urdf.xacro")
@@ -22,7 +22,7 @@ def generate_launch_description():
         parameters = [moveit_config.robot_description,
         moveit_config.robot_description_semantic,
         moveit_config.robot_description_kinematics,
-        {"execute_motion": False},
+        {"execute_inspection_motion": False},
         ],
     )
     return LaunchDescription([

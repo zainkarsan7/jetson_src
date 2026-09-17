@@ -1,0 +1,11 @@
+<launch>
+    <node  pkg="azure_kinect_ros2_driver"
+    exec = "azure_kinect_node"
+    name="k4a_ros2_node"
+    output="screen"
+    emulate_tty=true/>
+    <param name="color_enabled" value="false"/>
+    <param name="imu_rate_target" value="50"/>
+    <param name="fps" value="15"/>
+    </node>
+</launch>

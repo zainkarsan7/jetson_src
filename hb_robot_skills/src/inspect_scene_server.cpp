@@ -36,7 +36,7 @@ Node("inspect_scene_server",options){
 
     display_traj_pub_ = this->create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
     10);
-    execute_motion_ = this->declare_parameter<bool>("execute_motion",false);
+    execute_motion_ = this->declare_parameter<bool>("execute_inspection_motion",false);
 }
 
 void InspectSceneServer::initializeMoveit(){
