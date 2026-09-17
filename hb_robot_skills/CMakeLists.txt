@@ -20,7 +20,7 @@ find_package(tf2_eigen REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
-
+include_directories(include)
 add_executable(generate_explore_path_server
 src/generate_explore_path_server.cpp)
 add_executable(inspect_scene_server
@@ -54,6 +54,8 @@ install(
     inspect_scene_server
   DESTINATION lib/${PROJECT_NAME}
 )
+
+
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
