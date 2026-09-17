@@ -7,13 +7,14 @@
 
     <!-- MoveIt move_group -->
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/move_group.launch.py"/>
-
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/>
 
     <!-- MoveIt RViz -->
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/moveit_rviz.launch.py"/>
 
     <!-- Azure Kinect -->
     <include file="$(find-pkg-share azure_kinect_ros2_driver)/launch/k4a_device_launch.py"/>
+
 
 
 </launch>

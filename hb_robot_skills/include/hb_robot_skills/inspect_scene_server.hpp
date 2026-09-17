@@ -6,7 +6,7 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <hb_robot_interfaces/action/inspect_scene.hpp>
-
+#include <moveit_msgs/msg/display_trajectory.hpp>
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
 using MoveGroupInterface = moveit::planning_interface::MoveGroupInterface;
@@ -29,5 +29,6 @@ class InspectSceneServer : public rclcpp::Node {
 
         rclcpp_action::Server<InspectScene>::SharedPtr action_server_;
         std::shared_ptr<MoveGroupInterface> move_group_;
-        
+        rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
+        bool execute_motion_;
 };
