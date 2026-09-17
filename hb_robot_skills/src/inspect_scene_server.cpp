@@ -7,6 +7,8 @@
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <hb_robot_interfaces/action/inspect_scene.hpp>
 #include "hb_robot_skills/inspect_scene_server.hpp"
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
@@ -36,8 +38,42 @@ Node("inspect_scene_server",options){
 
     display_traj_pub_ = this->create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
     10);
-    execute_motion_ = this->declare_parameter<bool>("execute_inspection_motion",false);
+    execute_motion_ = this->get_parameter("execute_inspection_motion").as_bool();
+
+    viewpoint_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/inspect_scene/viewpoints",10);
 }
+
+void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs::msg::Pose> &viewpoints){
+    visualization_msgs::msg::MarkerArray markers;
+
+    visualization_msgs::msg::Marker clear;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    markers.markers.push_back(clear);
+    for (std::size_t m_ind = 0; m_ind<viewpoints.size(); m_ind++){
+        visualization_msgs::msg::Marker view_marker;
+        view_marker.header.frame_id = move_group_->getPoseReferenceFrame();
+        view_marker.header.stamp = this->now();
+        view_marker.ns = "inspection_viewpoints";
+        view_marker.id = static_cast<int>(m_ind);
+        view_marker.type = visualization_msgs::msg::Marker::ARROW;
+        view_marker.action = visualization_msgs::msg::Marker::ADD;
+
+        const auto& m_pose  = viewpoints[m_ind];
+        view_marker.pose = m_pose;
+        view_marker.scale.x = 0.15;
+        view_marker.scale.y = 0.15;
+        view_marker.scale.z = 0.15;
+        view_marker.color.r = 1.0;
+        view_marker.color.b = 0.2;
+        view_marker.color.g = 0.2;
+        view_marker.color.a = 1.0;
+        view_marker.lifetime = rclcpp::Duration::from_seconds(0.0);
+        markers.markers.push_back(view_marker);
+
+    }
+    viewpoint_marker_pub_->publish(markers);
+}
+
 
 void InspectSceneServer::initializeMoveit(){
     move_group_ = std::make_shared<MoveGroupInterface>(
@@ -49,6 +85,9 @@ void InspectSceneServer::initializeMoveit(){
     move_group_->startStateMonitor();
     RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
     RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
+    RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
+    RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+
 }
 
 rclcpp_action::GoalResponse InspectSceneServer::handleGoal(const rclcpp_action::GoalUUID & , 
@@ -79,6 +118,8 @@ void InspectSceneServer::handleAccepted(const std::shared_ptr<GoalHandleInspectS
 }
 void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> goal_handle){
     const auto goal = goal_handle->get_goal();
+
+    publishViewpointMarker(goal->viewpoints);
 
     auto feedback = std::make_shared<InspectScene::Feedback>();
 
@@ -118,6 +159,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         display_msg.trajectory_start = plan.start_state_;
         display_msg.trajectory.push_back(plan.trajectory_);
         display_traj_pub_->publish(display_msg);
+        
         
         if(!execute_motion_){
             RCLCPP_INFO(get_logger(),"motion disabled going to next viewpoint");

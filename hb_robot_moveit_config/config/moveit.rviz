@@ -9,6 +9,7 @@ Panels:
         - /MotionPlanning1
         - /PointCloud21
         - /TF1/Frames1
+        - /AzureKinect1
         - /MarkerArray1
         - /Trajectory1
       Splitter Ratio: 0.5
@@ -73,15 +74,26 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           Link Tree Style: Links in Alphabetic Order
+          camera_base:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          camera_body:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          camera_visor:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           robot_mount:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          unilidar_imu_initial:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           ur10e_base:
             Alpha: 1
             Show Axes: false
@@ -191,15 +203,26 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
           Link Tree Style: Links in Alphabetic Order
+          camera_base:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          camera_body:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          camera_visor:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           robot_mount:
             Alpha: 1
             Show Axes: false
             Show Trail: false
             Value: true
-          unilidar_imu_initial:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
           ur10e_base:
             Alpha: 1
             Show Axes: false
@@ -305,9 +328,19 @@ Visualization Manager:
         All Enabled: true
         HB_carriage:
           Value: true
-        robot_mount:
+        camera_base:
           Value: true
-        unilidar_imu_initial:
+        camera_body:
+          Value: true
+        camera_visor:
+          Value: true
+        depth_camera_link:
+          Value: true
+        imu_link:
+          Value: true
+        rgb_camera_link:
+          Value: true
+        robot_mount:
           Value: true
         ur10e_base:
           Value: true
@@ -359,11 +392,18 @@ Visualization Manager:
                             ur10e_wrist_3_link:
                               ur10e_flange:
                                 ur10e_tool0:
-                                  {}
+                                  camera_base:
+                                    camera_body:
+                                      {}
+                                    camera_visor:
+                                      {}
+                                    depth_camera_link:
+                                      imu_link:
+                                        {}
+                                      rgb_camera_link:
+                                        {}
                               ur10e_ft_frame:
                                 {}
-            unilidar_imu_initial:
-              {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
@@ -378,7 +418,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /k4a/rgb_to_depth/image_raw
+        Value: /k4a/depth/image_raw
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
@@ -406,15 +446,26 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         Link Tree Style: Links in Alphabetic Order
+        camera_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_body:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_visor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         robot_mount:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        unilidar_imu_initial:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         ur10e_base:
           Alpha: 1
           Show Axes: false
@@ -505,25 +556,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 6.32178258895874
+      Distance: 3.80393648147583
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.03382620960474014
-        Y: 0.19441820681095123
-        Z: 0.16578903794288635
+        X: -0.2777720093727112
+        Y: 0.34518495202064514
+        Z: 0.4438897371292114
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3747955560684204
+      Pitch: 0.2797955572605133
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.7985900640487671
+      Yaw: 0.7485900521278381
     Saved: ~
 Window Geometry:
   AzureKinect:

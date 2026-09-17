@@ -13,6 +13,7 @@ find_package(hb_robot_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(inspect_scene_server
   tf2_eigen
   moveit_msgs
   moveit_ros_planning_interface
+  visualization_msgs
 )
 
 target_link_libraries(generate_explore_path_server
