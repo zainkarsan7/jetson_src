@@ -6,9 +6,7 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /MotionPlanning1
-        - /PointCloud21
-        - /TF1/Frames1
+        - /TF1
         - /AzureKinect1
         - /MarkerArray1
         - /Trajectory1
@@ -45,7 +43,7 @@ Visualization Manager:
       Move Group Namespace: ""
       MoveIt_Allow_Approximate_IK: false
       MoveIt_Allow_External_Program: false
-      MoveIt_Allow_Replanning: false
+      MoveIt_Allow_Replanning: true
       MoveIt_Allow_Sensor_Positioning: false
       MoveIt_Planning_Attempts: 10
       MoveIt_Planning_Time: 5
@@ -325,51 +323,51 @@ Visualization Manager:
       Enabled: true
       Frame Timeout: 15
       Frames:
-        All Enabled: true
+        All Enabled: false
         HB_carriage:
-          Value: true
+          Value: false
         camera_base:
-          Value: true
+          Value: false
         camera_body:
-          Value: true
+          Value: false
         camera_visor:
           Value: true
         depth_camera_link:
-          Value: true
+          Value: false
         imu_link:
-          Value: true
+          Value: false
         rgb_camera_link:
-          Value: true
+          Value: false
         robot_mount:
-          Value: true
+          Value: false
         ur10e_base:
-          Value: true
+          Value: false
         ur10e_base_link:
-          Value: true
+          Value: false
         ur10e_base_link_inertia:
-          Value: true
+          Value: false
         ur10e_flange:
-          Value: true
+          Value: false
         ur10e_forearm_link:
-          Value: true
+          Value: false
         ur10e_ft_frame:
-          Value: true
+          Value: false
         ur10e_shoulder_link:
-          Value: true
+          Value: false
         ur10e_tool0:
-          Value: true
+          Value: false
         ur10e_tool0_controller:
-          Value: true
+          Value: false
         ur10e_upper_arm_link:
-          Value: true
+          Value: false
         ur10e_wrist_1_link:
-          Value: true
+          Value: false
         ur10e_wrist_2_link:
-          Value: true
+          Value: false
         ur10e_wrist_3_link:
-          Value: true
+          Value: false
         world:
-          Value: true
+          Value: false
       Marker Scale: 1
       Name: TF
       Show Arrows: true
@@ -424,13 +422,13 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        inspection_viewpoints: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /rviz_visual_tools
+        Value: /inspect_scene/viewpoints
       Value: true
     - Class: moveit_rviz_plugin/Trajectory
       Color Enabled: false
@@ -556,25 +554,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.80393648147583
+      Distance: 3.3267710208892822
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.2777720093727112
-        Y: 0.34518495202064514
-        Z: 0.4438897371292114
+        X: -0.37658581137657166
+        Y: 0.4413891136646271
+        Z: 0.5027444958686829
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.2797955572605133
+      Pitch: 0.5447966456413269
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.7485900521278381
+      Yaw: 0.4085902273654938
     Saved: ~
 Window Geometry:
   AzureKinect:

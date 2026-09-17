@@ -22,6 +22,27 @@ find_package(tf2_eigen REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 include_directories(include)
+
+add_library(hb_motion
+  src/motion/motion_planner.cpp
+  src/motion/trajectory_validator.cpp
+)
+
+target_include_directories(hb_motion
+PUBLIC 
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(hb_motion
+  rclcpp
+  geometry_msgs
+  moveit_ros_planning_interface
+  moveit_msgs
+)
+
+
+
 add_executable(generate_explore_path_server
 src/generate_explore_path_server.cpp)
 add_executable(inspect_scene_server
@@ -47,6 +68,10 @@ ament_target_dependencies(inspect_scene_server
   visualization_msgs
 )
 
+target_link_libraries(inspect_scene_server
+hb_motion
+)
+
 target_link_libraries(generate_explore_path_server
 Eigen3::Eigen)
 
@@ -54,10 +79,16 @@ install(
   TARGETS
     generate_explore_path_server
     inspect_scene_server
-  DESTINATION lib/${PROJECT_NAME}
+    hb_motion
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
-
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

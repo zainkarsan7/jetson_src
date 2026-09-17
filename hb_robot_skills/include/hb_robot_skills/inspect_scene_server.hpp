@@ -9,6 +9,7 @@
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include "hb_robot_skills/motion/motion_planner.hpp"
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
 using MoveGroupInterface = moveit::planning_interface::MoveGroupInterface;
@@ -34,4 +35,5 @@ class InspectSceneServer : public rclcpp::Node {
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viewpoint_marker_pub_;
         bool execute_motion_;
+        std::unique_ptr<hb_robot_skills::motion::MotionPlanner> motion_planner_;
 };

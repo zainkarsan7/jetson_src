@@ -9,6 +9,9 @@
 #include "hb_robot_skills/inspect_scene_server.hpp"
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include "hb_robot_skills/motion/motion_planner.hpp"
+#include "hb_robot_skills/motion/trajectory_validator.hpp"
+
 
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
@@ -60,9 +63,9 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 
         const auto& m_pose  = viewpoints[m_ind];
         view_marker.pose = m_pose;
-        view_marker.scale.x = 0.15;
-        view_marker.scale.y = 0.15;
-        view_marker.scale.z = 0.15;
+        view_marker.scale.x = 0.015;
+        view_marker.scale.y = 0.015;
+        view_marker.scale.z = 0.05;
         view_marker.color.r = 1.0;
         view_marker.color.b = 0.2;
         view_marker.color.g = 0.2;
@@ -83,6 +86,10 @@ void InspectSceneServer::initializeMoveit(){
     move_group_->setEndEffectorLink("camera_visor");
 
     move_group_->startStateMonitor();
+    motion_planner_ = std::make_unique<hb_robot_skills::motion::MotionPlanner>(
+        shared_from_this(),
+        "manipulator"
+    );
     RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
     RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
     RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
@@ -143,13 +150,17 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
 
         const auto& target = goal->viewpoints[view_index];
         move_group_->setStartStateToCurrentState();
-        move_group_->setPoseTarget(target,"camera_visor");
+        move_group_->setJointValueTarget(target,"camera_visor");
 
 
         MoveGroupInterface::Plan plan;
         // talk to the moveit action server
-        const auto plan_result = move_group_->plan(plan);
-        if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
+        // const auto plan_result = move_group_->plan(plan);
+        bool ik_success = motion_planner_->planToPose(
+            target,"camera_visor",plan
+        );
+        if(!ik_success){
+        // if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(), "planning failed for viewpoint %zu",view_index);
             move_group_->clearPoseTargets();
             
