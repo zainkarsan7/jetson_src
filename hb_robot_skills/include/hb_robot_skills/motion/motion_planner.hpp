@@ -21,10 +21,10 @@ class MotionPlanner{
     moveit::planning_interface::MoveGroupInterface::Plan& plan);
 
     bool execute(const moveit::planning_interface::MoveGroupInterface::Plan& plan);
-
+    std::unique_ptr<MoveGroupInterface> move_group_;
     private:
     rclcpp::Node::SharedPtr node_;
-    std::unique_ptr<MoveGroupInterface> move_group_;
+   
 };
 
 }

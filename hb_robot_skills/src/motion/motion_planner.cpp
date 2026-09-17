@@ -26,6 +26,19 @@ bool MotionPlanner::planToPose(const geometry_msgs::msg::Pose& pose,
 
 
 
+ MotionPlanner::MotionPlanner(const rclcpp::Node::SharedPtr& node,
+        const std::string & planning_group
+    ): node_(node){
+        move_group_ = std::make_unique<MoveGroupInterface>(
+        "manipulator"
+    );
+        move_group_->setEndEffectorLink("camera_visor");
+
+        move_group_->startStateMonitor();
+        
+    }
+
+
 
 
 

@@ -79,21 +79,17 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 
 
 void InspectSceneServer::initializeMoveit(){
-    move_group_ = std::make_shared<MoveGroupInterface>(
-        shared_from_this(),
-        "manipulator"
-    );
-    move_group_->setEndEffectorLink("camera_visor");
+    
 
-    move_group_->startStateMonitor();
     motion_planner_ = std::make_unique<hb_robot_skills::motion::MotionPlanner>(
         shared_from_this(),
         "manipulator"
     );
+    
     RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
-    RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
-    RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
-    RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+    RCLCPP_INFO(get_logger(),"Planning Frame: %s",motion_planner_->move_group_->getPlanningFrame().c_str());
+    RCLCPP_INFO(get_logger(), "Pose reference frame: %s", motion_planner_->move_group_->getPoseReferenceFrame().c_str());
+    RCLCPP_INFO(get_logger(),"End-effector link %s",motion_planner_->move_group_->getEndEffectorLink().c_str());
 
 }
 
@@ -109,8 +105,8 @@ rclcpp_action::GoalResponse InspectSceneServer::handleGoal(const rclcpp_action::
             }
 rclcpp_action::CancelResponse InspectSceneServer::handleCancel(const std::shared_ptr<GoalHandleInspectScene> ){
     RCLCPP_INFO(get_logger(),"cancel requested");
-    if(move_group_){
-        move_group_->stop();
+    if(!motion_planner_->move_group_){
+        motion_planner_->move_group_->stop();
     }
     return rclcpp_action::CancelResponse::ACCEPT;
 }
@@ -135,7 +131,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     std::size_t completed = 0;
     for (std::size_t view_index = 0; view_index < goal->viewpoints.size(); view_index++){
         if (goal_handle->is_canceling()){
-            move_group_->stop();
+            motion_planner_->move_group_->stop();
             result->success = false;
             result->viewpoints_captured = completed;
             result->result_code = result->CANCELLED;
@@ -145,14 +141,10 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         feedback->current_viewpoint = view_index;
         feedback->total_viewpoints = goal->viewpoints.size();
-        feedback->current_pose = move_group_->getCurrentPose("camera_visor").pose;
+        feedback->current_pose = motion_planner_->move_group_->getCurrentPose("camera_visor").pose;
         goal_handle->publish_feedback(feedback);
 
         const auto& target = goal->viewpoints[view_index];
-        move_group_->setStartStateToCurrentState();
-        move_group_->setJointValueTarget(target,"camera_visor");
-
-
         MoveGroupInterface::Plan plan;
         // talk to the moveit action server
         // const auto plan_result = move_group_->plan(plan);
@@ -162,7 +154,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         if(!ik_success){
         // if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(), "planning failed for viewpoint %zu",view_index);
-            move_group_->clearPoseTargets();
+            
             
             continue;
         }
@@ -174,13 +166,13 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         
         if(!execute_motion_){
             RCLCPP_INFO(get_logger(),"motion disabled going to next viewpoint");
-            move_group_->clearPoseTargets();
+            
             continue;
         }
 
 
-        const auto execute_result = move_group_->execute(plan);
-        move_group_->clearPoseTargets();
+        const auto execute_result = motion_planner_->move_group_->execute(plan);
+        
         if(execute_result!=moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(),"failed to traverse to viewpoint %zu", view_index);
             continue;

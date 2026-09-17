@@ -31,7 +31,6 @@ class InspectSceneServer : public rclcpp::Node {
         void execute(const std::shared_ptr<GoalHandleInspectScene> goal_handle);
         void publishViewpointMarker(const std::vector<geometry_msgs::msg::Pose> &viewpoints);
         rclcpp_action::Server<InspectScene>::SharedPtr action_server_;
-        std::shared_ptr<MoveGroupInterface> move_group_;
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viewpoint_marker_pub_;
         bool execute_motion_;
