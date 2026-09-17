@@ -81,15 +81,20 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 void InspectSceneServer::initializeMoveit(){
     
 
-    motion_planner_ = std::make_unique<hb_robot_skills::motion::MotionPlanner>(
-        shared_from_this(),
-        "manipulator"
-    );
+    // motion_planner_ = std::make_unique<hb_robot_skills::motion::MotionPlanner>(
+    //     shared_from_this(),
+    //     "manipulator"
+    // );
+
+    move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),"manipulator");
+    move_group_->startStateMonitor();
+
+
     
     RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
-    RCLCPP_INFO(get_logger(),"Planning Frame: %s",motion_planner_->move_group_->getPlanningFrame().c_str());
-    RCLCPP_INFO(get_logger(), "Pose reference frame: %s", motion_planner_->move_group_->getPoseReferenceFrame().c_str());
-    RCLCPP_INFO(get_logger(),"End-effector link %s",motion_planner_->move_group_->getEndEffectorLink().c_str());
+    RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
+    RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
+    RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
 
 }
 
@@ -105,8 +110,8 @@ rclcpp_action::GoalResponse InspectSceneServer::handleGoal(const rclcpp_action::
             }
 rclcpp_action::CancelResponse InspectSceneServer::handleCancel(const std::shared_ptr<GoalHandleInspectScene> ){
     RCLCPP_INFO(get_logger(),"cancel requested");
-    if(!motion_planner_->move_group_){
-        motion_planner_->move_group_->stop();
+    if(!move_group_){
+        move_group_->stop();
     }
     return rclcpp_action::CancelResponse::ACCEPT;
 }
@@ -129,9 +134,16 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     auto result = std::make_shared<InspectScene::Result>();
 
     std::size_t completed = 0;
+    auto current = move_group_->getCurrentPose("camera_visor");
+    const bool ik_success = 
+    move_group_->setJointValueTarget(current, "camera_visor");
+    RCLCPP_INFO(get_logger(), "IK_success %s", ik_success ? "yes":"no");
+
+
+
     for (std::size_t view_index = 0; view_index < goal->viewpoints.size(); view_index++){
         if (goal_handle->is_canceling()){
-            motion_planner_->move_group_->stop();
+            move_group_->stop();
             result->success = false;
             result->viewpoints_captured = completed;
             result->result_code = result->CANCELLED;
@@ -141,18 +153,19 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         feedback->current_viewpoint = view_index;
         feedback->total_viewpoints = goal->viewpoints.size();
-        feedback->current_pose = motion_planner_->move_group_->getCurrentPose("camera_visor").pose;
+        feedback->current_pose = move_group_->getCurrentPose("camera_visor").pose;
         goal_handle->publish_feedback(feedback);
 
         const auto& target = goal->viewpoints[view_index];
         MoveGroupInterface::Plan plan;
         // talk to the moveit action server
-        // const auto plan_result = move_group_->plan(plan);
-        bool ik_success = motion_planner_->planToPose(
-            target,"camera_visor",plan
-        );
-        if(!ik_success){
-        // if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
+        const auto plan_result = move_group_->plan(plan);
+        move_group_->setJointValueTarget(target,"camera_visor");
+        // bool ik_success = planToPose(
+        //     target,"camera_visor",plan
+        // );
+        // if(!ik_success){
+        if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(), "planning failed for viewpoint %zu",view_index);
             
             
@@ -171,7 +184,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
 
 
-        const auto execute_result = motion_planner_->move_group_->execute(plan);
+        const auto execute_result = move_group_->execute(plan);
         
         if(execute_result!=moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(),"failed to traverse to viewpoint %zu", view_index);

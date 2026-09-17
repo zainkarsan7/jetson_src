@@ -34,5 +34,6 @@ class InspectSceneServer : public rclcpp::Node {
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viewpoint_marker_pub_;
         bool execute_motion_;
-        std::unique_ptr<hb_robot_skills::motion::MotionPlanner> motion_planner_;
+        // std::unique_ptr<hb_robot_skills::motion::MotionPlanner> motion_planner_;
+        std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
 };
