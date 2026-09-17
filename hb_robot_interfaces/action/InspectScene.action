@@ -17,9 +17,9 @@ uint8 CANCELLED=6
 
 uint8 result_code
 
-string scene_id
+uint8 scene_id
 uint32 viewpoints_captured
-uint8 message
+string message
 ---
 # Feedback
 uint32 current_viewpoint

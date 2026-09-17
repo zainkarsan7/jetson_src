@@ -76,7 +76,65 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     const auto goal = goal_handle->get_goal();
 
     auto feedback = std::make_shared<InspectScene::Feedback>();
+
+    auto result = std::make_shared<InspectScene::Result>();
+
+    std::size_t completed = 0;
+    for (std::size_t view_index = 0; view_index < goal->viewpoints.size(); view_index++){
+        if (goal_handle->is_canceling()){
+            move_group_->stop();
+            result->success = false;
+            result->viewpoints_captured = completed;
+            result->result_code = result->CANCELLED;
+            result->message = "Cancelled Inspection";
+            goal_handle->canceled(result);
+        }
+        feedback->current_viewpoint = view_index;
+        feedback->total_viewpoints = goal->viewpoints.size();
+        feedback->current_pose = move_group_->getCurrentPose().pose;
+        
+        const auto& target = goal->viewpoints[view_index];
+        move_group_->setStartStateToCurrentState();
+        move_group_->setPoseTarget(target,"camera_visor");
+
+
+        MoveGroupInterface::Plan plan;
+        // talk to the moveit action server
+        const auto plan_result = move_group_->plan(plan);
+        if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
+            RCLCPP_WARN(get_logger(), "planning failed for viewpoint %zu",view_index);
+            move_group_->clearPoseTargets();
+            
+            continue;
+        }
+
+        const auto execute_result = move_group_->execute(plan);
+        move_group_->clearPoseTargets();
+        if(execute_result!=moveit::core::MoveItErrorCode::SUCCESS){
+            RCLCPP_WARN(get_logger(),"failed to traverse to viewpoint %zu", view_index);
+            continue;
+        }
+        
+        ++completed;
+
+        RCLCPP_INFO(get_logger(),"reached viewpoint %zu/%zu",view_index,goal->viewpoints.size());
+
+        if (completed == goal->viewpoints.size()){
+            result->success = true;
+            result->message = "all views captured";
+            goal_handle->succeed(result);
+
+        }
+        else{
+            result->success= false;
+            result->message="one or more views couldnt be captured";
+            goal_handle->abort(result);
+
+        }
+
+    }
     
+
 }
 
 
@@ -85,7 +143,10 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
 
 int main(int argc, char **argv){
 
-    auto node = std::make_shared<InspectSceneServer>();
+    auto options = rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true);
+    auto node = std::make_shared<InspectSceneServer>(options);
+
+
     node->initializeMoveit();
     rclcpp::spin(node);
     rclcpp::shutdown();
