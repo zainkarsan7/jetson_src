@@ -1109,13 +1109,13 @@ void K4AROS2Device::framePublisherThread()
     rclcpp::Duration cycle_time = this->now() - cycle_start_time;
 
     // If the cycle took longer than the expected rate (1/fps)
-    if (cycle_time > loop_rate.period())
-    {
-      RCLCPP_WARN_STREAM(this->get_logger(), "Image processing thread is running behind."
-                                       << std::endl
-                                       << "Expected max loop time: " << loop_rate.period().count() / 1000000000. << std::endl
-                                       << "Actual loop time: " << cycle_time.seconds() << std::endl);
-    }
+    // if (cycle_time > loop_rate.period())
+    // {
+    //   RCLCPP_WARN_STREAM(this->get_logger(), "Image processing thread is running behind."
+    //                                    << std::endl
+    //                                    << "Expected max loop time: " << loop_rate.period().count() / 1000000000. << std::endl
+    //                                    << "Actual loop time: " << cycle_time.seconds() << std::endl);
+    // }
 
     loop_rate.sleep();
   }

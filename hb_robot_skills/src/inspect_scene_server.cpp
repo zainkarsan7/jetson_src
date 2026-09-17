@@ -11,7 +11,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include "hb_robot_skills/motion/motion_planner.hpp"
 #include "hb_robot_skills/motion/trajectory_validator.hpp"
-
+#include <cmath>
 
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
@@ -44,6 +44,11 @@ Node("inspect_scene_server",options){
     execute_motion_ = this->get_parameter("execute_inspection_motion").as_bool();
 
     viewpoint_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("/inspect_scene/viewpoints",10);
+    
+    if (!has_parameter("planning_link")){
+        declare_parameter<std::string>("planning_link","ur10e_tool0");
+    }
+    inspection_tool_ = get_parameter("planning_link").as_string();
 }
 
 void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs::msg::Pose> &viewpoints){
@@ -63,9 +68,9 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 
         const auto& m_pose  = viewpoints[m_ind];
         view_marker.pose = m_pose;
-        view_marker.scale.x = 0.015;
+        view_marker.scale.x = 0.05;
         view_marker.scale.y = 0.015;
-        view_marker.scale.z = 0.05;
+        view_marker.scale.z = 0.015;
         view_marker.color.r = 1.0;
         view_marker.color.b = 0.2;
         view_marker.color.g = 0.2;
@@ -110,7 +115,7 @@ rclcpp_action::GoalResponse InspectSceneServer::handleGoal(const rclcpp_action::
             }
 rclcpp_action::CancelResponse InspectSceneServer::handleCancel(const std::shared_ptr<GoalHandleInspectScene> ){
     RCLCPP_INFO(get_logger(),"cancel requested");
-    if(!move_group_){
+    if(move_group_){
         move_group_->stop();
     }
     return rclcpp_action::CancelResponse::ACCEPT;
@@ -134,11 +139,6 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     auto result = std::make_shared<InspectScene::Result>();
 
     std::size_t completed = 0;
-    auto current = move_group_->getCurrentPose("camera_visor");
-    const bool ik_success = 
-    move_group_->setJointValueTarget(current, "camera_visor");
-    RCLCPP_INFO(get_logger(), "IK_success %s", ik_success ? "yes":"no");
-
 
 
     for (std::size_t view_index = 0; view_index < goal->viewpoints.size(); view_index++){
@@ -153,18 +153,47 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         feedback->current_viewpoint = view_index;
         feedback->total_viewpoints = goal->viewpoints.size();
-        feedback->current_pose = move_group_->getCurrentPose("camera_visor").pose;
+        feedback->current_pose = move_group_->getCurrentPose(inspection_tool_).pose;
         goal_handle->publish_feedback(feedback);
 
-        const auto& target = goal->viewpoints[view_index];
+        geometry_msgs::msg::PoseStamped current = move_group_->getCurrentPose(inspection_tool_); 
+
+        auto target = goal->viewpoints[view_index];
+        
+
+        for (double dy :
+            {0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30})
+        {
+            auto test = current;
+
+            test.pose.position.y += dy;
+
+            move_group_->setStartStateToCurrentState();
+
+            const bool success =
+                move_group_->setJointValueTarget(
+                    test,
+                    inspection_tool_);
+
+            RCLCPP_INFO(
+                get_logger(),
+                "dy = %.3f m : IK %s",
+                dy,
+                success ? "SUCCESS" : "FAILED");
+        }
+
+
+        const bool ik_succ = move_group_->setJointValueTarget(target,inspection_tool_);
+        if (!ik_succ){
+            RCLCPP_WARN(get_logger(), "ik failed for viewpoint %zu",view_index);
+            continue;
+        }
+
         MoveGroupInterface::Plan plan;
-        // talk to the moveit action server
         const auto plan_result = move_group_->plan(plan);
-        move_group_->setJointValueTarget(target,"camera_visor");
-        // bool ik_success = planToPose(
-        //     target,"camera_visor",plan
-        // );
-        // if(!ik_success){
+
+
+
         if(plan_result != moveit::core::MoveItErrorCode::SUCCESS){
             RCLCPP_WARN(get_logger(), "planning failed for viewpoint %zu",view_index);
             

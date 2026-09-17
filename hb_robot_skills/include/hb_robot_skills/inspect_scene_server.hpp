@@ -36,4 +36,5 @@ class InspectSceneServer : public rclcpp::Node {
         bool execute_motion_;
         // std::unique_ptr<hb_robot_skills::motion::MotionPlanner> motion_planner_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+        std::string inspection_tool_;
 };
