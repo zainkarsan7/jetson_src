@@ -33,7 +33,6 @@ class ExplorationPlanner{
             const Eigen::Isometry3d& nominal_pose,
             const ExplorationRequest& request)const;
 
-
     private:
         std::vector<Eigen::Isometry3d> generateNominalViews(
             const ExplorationRequest& request
@@ -44,6 +43,12 @@ class ExplorationPlanner{
             const ExplorationRequest& request
         )const;    
 
+        std::optional<ViewSolution> solveCandidate(
+            const moveit::core::RobotState& seed_state,
+            const ViewCandidate& candidate,
+            const ExplorationRequest& request
+        )const;
+
         double scoreSoln(
             const moveit::core::RobotState& state_from, 
             const moveit::core::RobotState& state_to
@@ -53,7 +58,7 @@ class ExplorationPlanner{
         const moveit::core::JointModelGroup* joint_model_group_;
 
         std::string planning_group_;
-        std::string camera_link;
+        std::string camera_link_;
 };
 
 }

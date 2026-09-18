@@ -43,7 +43,7 @@ namespace hb_robot_skills::motion{
         robot_model_(std::move(robot_model)),
         joint_model_group_(nullptr),
         planning_group_(std::move(planning_group)),
-        camera_link(std::move(camera_link))
+        camera_link_(std::move(camera_link))
 
         {
             if(!robot_model){
@@ -130,6 +130,45 @@ namespace hb_robot_skills::motion{
         });
         
         }
+
+
+        std::optional<ViewSolution> ExplorationPlanner::solveCandidate(const moveit::core::RobotState& seed_state,
+            const ViewCandidate& candidate,
+            const ExplorationRequest& request
+        )const{
+            moveit::core::RobotState state(seed_state);
+            std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
+            request.joint_delta);
+            const bool found = state.setFromIK(joint_model_group_,
+                candidate.candidate_pose,
+                camera_link_,
+                consistency_limits,
+                request.ik_timeout
+            );
+
+            if(!found){
+                return std::nullopt;
+            }
+            state.update();
+            if(!state.satisfiesBounds(joint_model_group_)){
+                return std::nullopt;
+            }
+
+            ViewSolution solution(state);
+            solution.cam_pose = candidate.candidate_pose;
+            solution.motion_cost = scoreSoln(seed_state,state);
+            solution.nominal_pose = candidate.nominal_pose;
+            
+
+            return solution;
+        }
+
+
+
+
+
+
+
 
      
  }

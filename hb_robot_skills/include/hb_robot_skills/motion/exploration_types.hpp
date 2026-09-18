@@ -37,7 +37,10 @@ namespace hb_robot_skills::motion{
         Eigen::Isometry3d cam_pose = Eigen::Isometry3d::Identity();
         moveit::core::RobotState robot_state;
         double motion_cost{0.0};
-         
+        
+
+        ViewSolution(const moveit::core::RobotState& state):
+        robot_state(state){};
 
     };
 
