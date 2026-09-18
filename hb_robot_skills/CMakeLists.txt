@@ -24,7 +24,7 @@ find_package(tf2_eigen REQUIRED)
 include_directories(include)
 
 add_library(hb_motion
-  src/motion/motion_planner.cpp
+  src/motion/exploration_planner.cpp
   src/motion/trajectory_validator.cpp
 )
 
@@ -39,6 +39,7 @@ ament_target_dependencies(hb_motion
   geometry_msgs
   moveit_ros_planning_interface
   moveit_msgs
+  hb_robot_interfaces
 )
 
 

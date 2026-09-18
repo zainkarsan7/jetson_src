@@ -5,7 +5,7 @@
 <joint name="tool0_to_kinect" type="fixed">
     <parent link="${ur_type}_tool0"/>
     <child link="camera_base"/>
-    <origin xyz= "0.1 0.1 0.1" rpy="${pi} -${pi/2} 0"/>
+    <origin xyz= "-0.125 0 .15" rpy="0 ${-pi/2} 0"/>
 </joint>
 <!-- <link name="unilidar_lidar"/> -->
 <!-- <link name="unilidar_imu_initial"/> -->

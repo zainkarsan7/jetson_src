@@ -9,7 +9,7 @@
 #include "hb_robot_skills/inspect_scene_server.hpp"
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include "hb_robot_skills/motion/motion_planner.hpp"
+#include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/trajectory_validator.hpp"
 #include <cmath>
 

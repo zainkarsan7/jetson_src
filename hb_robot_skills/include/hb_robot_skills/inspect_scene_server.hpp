@@ -9,7 +9,7 @@
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include "hb_robot_skills/motion/motion_planner.hpp"
+#include "hb_robot_skills/motion/exploration_planner.hpp"
 using InspectScene = hb_robot_interfaces::action::InspectScene;
 using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;
 using MoveGroupInterface = moveit::planning_interface::MoveGroupInterface;
