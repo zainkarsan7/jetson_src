@@ -1,0 +1,30 @@
+handeye:
+  ros__parameters:
+    mode: eye_in_hand
+    base_frame: base_link
+    effector_frame: tool0
+    camera_frame: camera_color_optical_frame
+    # Optional known camera housing frame; must be rigidly connected to the optical frame.
+    mount_frame: ''
+    image_topic: /camera/color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    image_is_rectified: false
+    output_directory: ~/.ros/handeye/session
+    solver: park
+    min_samples: 5
+    detector_rate_hz: 10.0
+    max_sample_age_s: 1.0
+    settle_time_s: 0.5
+    stability_translation_m: 0.002
+    stability_rotation_deg: 0.5
+    max_reprojection_error_px: 2.0
+    max_translation_rms_m: 0.01
+    max_rotation_rms_deg: 2.0
+    board:
+      kind: charuco
+      dictionary: DICT_5X5_250
+      columns: 5
+      rows: 7
+      square_length_m: 0.04
+      marker_length_m: 0.03
+      marker_separation_m: 0.01

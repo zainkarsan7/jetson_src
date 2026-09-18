@@ -1,0 +1,6 @@
+include package.xml setup.cfg LICENSE NOTICE.md README.md Dockerfile
+recursive-include resource *
+recursive-include launch *.py
+recursive-include config *.yaml
+recursive-include test *.py
+recursive-include docs *.md

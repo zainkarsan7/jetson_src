@@ -1,0 +1,4 @@
+[console_scripts]
+calibration_gui = handeye_calibration_ros2.gui:main
+calibration_node = handeye_calibration_ros2.node:main
+handeye = handeye_calibration_ros2.cli:main

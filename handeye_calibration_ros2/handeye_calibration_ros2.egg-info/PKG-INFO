@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: handeye-calibration-ros2
+Version: 0.1.0
+Summary: Standalone ROS 2 hand-eye calibration
+Maintainer: Local workspace maintainer
+Maintainer-email: maintainer@example.com
+License: BSD-3-Clause
+License-File: LICENSE
+License-File: NOTICE.md

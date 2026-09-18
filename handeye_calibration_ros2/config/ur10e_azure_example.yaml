@@ -1,0 +1,23 @@
+# Example for the checked-in driver without namespace/tf_prefix.
+# Verify these topics and optical frame against the running camera driver.
+handeye:
+  ros__parameters:
+    mode: eye_in_hand
+    base_frame: ur10e_base_link
+    effector_frame: ur10e_tool0
+    camera_frame: rgb_camera_link
+    mount_frame: camera_base
+    image_topic: /rgb/image_raw
+    camera_info_topic: /rgb/camera_info
+    image_is_rectified: false
+    output_directory: ~/.ros/handeye/ur10e_azure_session
+    solver: park
+    min_samples: 5
+    board:
+      kind: charuco
+      dictionary: DICT_5X5_250
+      columns: 5
+      rows: 7
+      square_length_m: 0.04
+      marker_length_m: 0.03
+      marker_separation_m: 0.01
