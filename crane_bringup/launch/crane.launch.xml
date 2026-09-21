@@ -5,7 +5,9 @@
     <let name="control_urdf_path" value="$(find-pkg-share crane_description)/urdf/crane_control.urdf.xacro"/>
 
     <let name="rviz_config_path" value="$(find-pkg-share crane_description)/rviz/urdf_config.rviz"/>
-        
+    
+    <node pkg="crane_estimation" exec="chassis_estimator" name="chassis_pose_publisher"/>
+
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="hook_state_publisher">
         <param name="robot_description"
                 value="$(command 'xacro $(var hook_urdf_path)')" />
