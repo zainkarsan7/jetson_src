@@ -54,12 +54,13 @@ ament_target_dependencies(${PROJECT_NAME}
   tf2_eigen
   sensor_msgs
   geometry_msgs
+  crane_estimation
   )
 
   ### when controller uses crane attitude link them:
-target_link_libraries(${PROJECT_NAME}
-crane_attitude
-)
+# target_link_libraries(${PROJECT_NAME}
+# crane_estimation
+# )
 
 install(
   TARGETS ${PROJECT_NAME}
