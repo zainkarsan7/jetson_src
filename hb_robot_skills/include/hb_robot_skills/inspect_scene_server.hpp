@@ -53,8 +53,8 @@ namespace hb_robot_skills{
         bool registerView();
 
         void publishFeedback(const std::shared_ptr<GoalHandleInspectScene>& goal_handle,
-            uint32_t current_viewpoint, uint32_t total_viewpoints, uint8_t phase, uint8_t samples_acquired
-        );
+            uint32_t current_viewpoint, uint32_t total_viewpoints, uint8_t phase);
+        
 
         void abortGoal(const std::shared_ptr<GoalHandleInspectScene>& goal_handle,
             uint8_t result_code,
@@ -78,6 +78,7 @@ namespace hb_robot_skills{
         double planning_time_;
         double stability_timeout_;
         std::mutex execution_mutex_;
+        bool skip_motion_{true};
     
 };
 

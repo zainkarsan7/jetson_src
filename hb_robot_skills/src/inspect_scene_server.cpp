@@ -6,20 +6,43 @@ namespace hb_robot_skills{
 InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node("inspect_scene_server",options){
     // pass stuff to the private variables using some parameters
     planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
-    camera_link_ = declare_parameter<std::string>("camera_link","ur10e_tool0");
+    camera_link_ = declare_parameter<std::string>("camera_link","camera_visor");
     planning_time_ = declare_parameter<double>("planning_time",5.0);
     stability_timeout_ = declare_parameter<double>("stability_timeout",5.0);
+    skip_motion_ = declare_parameter<bool>("skip_motion", true);
 }
    
 void InspectSceneServer::initialize(){
     
     move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
     move_group_->setPlanningTime(planning_time_);
+
+    RCLCPP_INFO(
+    get_logger(),
+    "Exploration camera link parameter: '%s'",
+    camera_link_.c_str());
+
+const auto robot_model =
+    move_group_->getRobotModel();
+
+RCLCPP_INFO(
+    get_logger(),
+    "MoveIt model frame: '%s'",
+    robot_model->getModelFrame().c_str());
+
+for (const auto* link : robot_model->getLinkModels())
+{
+    RCLCPP_INFO(
+        get_logger(),
+        "MoveIt link: '%s'",
+        link->getName().c_str());
+}
+
     exploration_planner_ = std::make_unique<motion::ExplorationPlanner>(
         move_group_->getRobotModel(),
         planning_group_,
         camera_link_);
-    
+    viewpoint_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("inspection_viewpoints", 10);
     action_server_ = rclcpp_action::create_server<InspectScene>(
         shared_from_this(),
     "inspect_scene",
@@ -107,7 +130,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         return;
     }
 
-    publishFeedback(goal_handle,0,0,0,0);
+    publishFeedback(goal_handle,0,goal->num_viewpoints*goal->num_viewpoints,InspectScene::Feedback::PLANNING);
     const auto request = InspectSceneServer::makeExplorationRequest(*goal);
 
     auto exploration = exploration_planner_->plan(*current_state,request);
@@ -120,6 +143,26 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     }
 
     const uint32_t total_views=  static_cast<uint32_t>(exploration.views.size());
+    // draw all the views:
+    RCLCPP_INFO(get_logger(),"planned %d view solutions",total_views);
+    const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
+        
+    std::vector<geometry_msgs::msg::Pose> solved_viewpoints;
+    solved_viewpoints.reserve(total_views);
+    for (std::size_t i=0; i<exploration.views.size(); i++){
+        const auto& view = exploration.views[i];
+        std::vector<double> q;
+        view.robot_state.copyJointGroupPositions(jmg,q);
+        const auto& joint_names = jmg->getActiveJointModelNames();
+        RCLCPP_INFO(get_logger(),"view %zu IK solution",i);
+        for (std::size_t j = 0; j<q.size();j++){
+            RCLCPP_INFO(get_logger(),"%s = $.4f",joint_names[j].c_str(),q[j]);
+        }
+        solved_viewpoints.push_back(tf2::toMsg(view.cam_pose));
+    }
+
+    publishViewpointMarker(solved_viewpoints);
+
 
     // visit each view
 
@@ -127,15 +170,19 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         if(goal_handle->is_canceling()){
             move_group_->stop();
             result->result_code = InspectScene::Result::CANCELLED;
-            result->viewpoints_captured = i;
+            result->viewpoints_captured = i+1;
             result->message = "exploration cancelled";
             goal_handle->canceled(result);
             return;
         }
         const auto& view = exploration.views[i];
         
-        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::MOVING,i);
+        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::MOVING);
         // MOVE
+        if(skip_motion_){
+            result->viewpoints_captured = i+1;
+            continue;
+        }
         if(!moveToView(view.robot_state)){
             result->result_code = InspectScene::Result::MOTION_FAILED;
             result->viewpoints_captured = i;
@@ -144,7 +191,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             return;
         }
         // WAIT FOR SETTLING
-        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::SETTLING,i);
+        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::SETTLING);
 
         if(!waitForStability()){
             result->result_code =InspectScene::Result::STABILITY_TIMEOUT;
@@ -154,7 +201,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             return;
         }
         // ACQUIRE SAMPLES
-        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::ACQUIRING,i);
+        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::ACQUIRING);
         if(!acquireSamples(goal->samples_per_viewpoint)){
             result->result_code =InspectScene::Result::ACQUISITION_FAILED;
             result->viewpoints_captured = i;
@@ -163,7 +210,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             return;
         }
 
-        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::REGISTERING,i);
+        publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::REGISTERING);
         if(!registerView()){
             result->result_code =InspectScene::Result::REGISTRATION_FAILED;
             result->viewpoints_captured = i;
@@ -187,9 +234,8 @@ bool InspectSceneServer::moveToView(const moveit::core::RobotState& target_state
         return false;
     }
     move_group_->setStartState(*actual_state);
-    std::vector<double> joint_target;
-    target_state.copyJointGroupPositions(move_group_->getRobotModel()->getJointModelGroup(planning_group_),joint_target);
-    if(!move_group_->setJointValueTarget(joint_target)){
+    
+    if(!move_group_->setJointValueTarget(target_state)){
         return false;
     }
     moveit::planning_interface::MoveGroupInterface::Plan plan;
@@ -207,7 +253,7 @@ bool InspectSceneServer::moveToView(const moveit::core::RobotState& target_state
 
 void InspectSceneServer::publishFeedback(const std::shared_ptr<GoalHandleInspectScene>& goal_handle,
             uint32_t current_viewpoint, uint32_t total_viewpoints, 
-            uint8_t phase, uint8_t samples_acquired
+            uint8_t phase
         ){
             auto feedback = std::make_shared<InspectScene::Feedback>();
             feedback->phase = phase;
@@ -253,10 +299,22 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
     viewpoint_marker_pub_->publish(markers);
 }
 
+    bool InspectSceneServer::waitForStability()
+    {return true;
+    }
+    bool InspectSceneServer::acquireSamples(uint32_t sample_count)
+    {
+        (void)sample_count;
+        return true;
+    }
+    bool InspectSceneServer::registerView()
+    {return true;
+    }
+}
 int main(int argc, char **argv){
     rclcpp::init(argc,argv);
     auto options = rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true);
-    auto node = std::make_shared<InspectSceneServer>(options);
+    auto node = std::make_shared<hb_robot_skills::InspectSceneServer>(options);
 
     try{
     node->initialize();
@@ -271,5 +329,4 @@ int main(int argc, char **argv){
     rclcpp::shutdown();
 
     return 0;
-}
 }

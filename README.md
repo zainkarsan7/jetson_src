@@ -105,3 +105,14 @@ and later when adding more pkgs need to do sparse -add
 
 git sparse-checkout add new_folder_1 new_folder 2 
 
+## Can NEVER remember str keywords:
+%f -float
+%.2f - truncate to 2nd decimal 
+%s -string
+%d -integer what the fuck
+%zu -std::size_t what the actual fuck
+
+## can also never remember terminator shortcuts:
+
+- ctrl-shift o/e --> horiontal vertical split
+- ctrl-shift w --> close window

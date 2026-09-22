@@ -16,7 +16,7 @@ namespace hb_robot_skills::motion{
         // little function to make samples symmetric 
         std::vector<double> make_symmetric(double range, std::size_t count){
 
-            if (count<=1.0 || range <= 0.0){
+            if (count<=1 || range <= 0){
                 return{0.0};
 
             }
@@ -36,9 +36,9 @@ namespace hb_robot_skills::motion{
     }
 
     ExplorationPlanner::ExplorationPlanner(
-            const moveit::core::RobotModelConstPtr& robot_model,
-            const std::string& planning_group,
-            const std::string& camera_link
+            moveit::core::RobotModelConstPtr robot_model,
+            std::string planning_group,
+            std::string camera_link
         ):
         robot_model_(std::move(robot_model)),
         joint_model_group_(nullptr),
@@ -46,7 +46,7 @@ namespace hb_robot_skills::motion{
         camera_link_(std::move(camera_link))
 
         {
-            if(!robot_model){
+            if(!robot_model_){
                 throw std::invalid_argument("Exploration Planner: robot model null");
 
             }
@@ -57,7 +57,7 @@ namespace hb_robot_skills::motion{
 
             }
 
-            if(!robot_model_->hasLinkModel(camera_link)){
+            if(!robot_model_->hasLinkModel(camera_link_)){
                 throw std::invalid_argument("Exploration Planner: camera link doesnt exist");
 
             }
@@ -72,7 +72,7 @@ namespace hb_robot_skills::motion{
 
             std::vector<Eigen::Isometry3d>  views;
 
-            if (request.num_samples < 1.0){
+            if (request.num_samples < 1){
                 return views;
             }
 
@@ -122,10 +122,10 @@ namespace hb_robot_skills::motion{
                         for (double dr : orn_samples){
                             ViewCandidate candidate;                         
                             Eigen::AngleAxisd Rdr(dr,Eigen::Vector3d::UnitX());
-                            candidate.candidate_pose = request.center_pose;
+                            candidate.candidate_pose = nominal_pose;
                             candidate.candidate_pose.translation() += Eigen::Vector3d(dx,dy,dz);
-                            candidate.candidate_pose.linear() = request.center_pose.linear() * Rdr.toRotationMatrix();
-                            candidate.nominal_pose = request.center_pose;
+                            candidate.candidate_pose.linear() = nominal_pose.linear() * Rdr.toRotationMatrix();
+                            candidate.nominal_pose = nominal_pose;
                             candidate.pos_error = Eigen::Vector3d(dx,dy,dz).norm();
                             candidate.roll_offset = dr;
                             candidates.push_back(std::move(candidate));
@@ -213,7 +213,7 @@ namespace hb_robot_skills::motion{
 
             state_from.copyJointGroupPositions(joint_model_group_,q_from);
             state_to.copyJointGroupPositions(joint_model_group_,q_to);
-            double sq_q_delta;
+            double sq_q_delta= 0.0;
 
             for (size_t i = 0; i<q_from.size(); i++){
                 const double q_delta = q_to[i] - q_from[i];

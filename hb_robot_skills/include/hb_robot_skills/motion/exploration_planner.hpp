@@ -21,9 +21,9 @@ class ExplorationPlanner{
          * constructor for an inspection planner
          */
         ExplorationPlanner(
-            const moveit::core::RobotModelConstPtr& robot_model,
-            const std::string& planning_group,
-            const std::string& camera_link
+            moveit::core::RobotModelConstPtr robot_model,
+            std::string planning_group,
+            std::string camera_link
         ); 
         
         /**
