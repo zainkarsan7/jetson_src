@@ -63,6 +63,9 @@ namespace hb_robot_skills::motion{
             }
         }
 
+
+        
+
         std::vector<Eigen::Isometry3d> ExplorationPlanner::generateNominalViews(
             const ExplorationRequest& request
         )const{
@@ -78,21 +81,32 @@ namespace hb_robot_skills::motion{
             const auto xs = make_symmetric(request.range_x,request.num_samples);
             const auto ys = make_symmetric(request.range_y,request.num_samples);
 
-
-            for (double rx: xs){
-                for (double ry: ys){
+            auto addView = [&](double rx,double ry){
                     Eigen::AngleAxisd Rx(rx,Eigen::Vector3d::UnitX());
                     Eigen::AngleAxisd Ry(ry,Eigen::Vector3d::UnitY());
                     Eigen::Isometry3d T_view = request.center_pose;
                     T_view.linear() = request.center_pose.linear() * Rx.toRotationMatrix() * Ry.toRotationMatrix();
                     views.push_back(T_view);
+            };
+            for (std::size_t ix = 0; ix<xs.size(); ix++){
+                const double rx = xs[ix];
+                if (ix%2==0){
+                    for (double ry: ys){
+                        addView(rx,ry); 
+                    } 
                 }
+                else{
+                    for (auto it = ys.rbegin(); it!=ys.rend(); it++){
+                    addView(rx,*it);
+                }
+                }
+                
             }
             return views;
             
         }
 
-        std::vector<Eigen::Isometry3d> ExplorationPlanner::generateCandidates(
+        std::vector<ViewCandidate> ExplorationPlanner::generateCandidates(
             const Eigen::Isometry3d& nominal_pose,
             const ExplorationRequest& request
         )const{
@@ -128,6 +142,7 @@ namespace hb_robot_skills::motion{
             return (score_a < score_b);
 
         });
+        return candidates;
         
         }
 
@@ -149,11 +164,12 @@ namespace hb_robot_skills::motion{
             if(!found){
                 return std::nullopt;
             }
+
             state.update();
+
             if(!state.satisfiesBounds(joint_model_group_)){
                 return std::nullopt;
             }
-
             ViewSolution solution(state);
             solution.cam_pose = candidate.candidate_pose;
             solution.motion_cost = scoreSoln(seed_state,state);
@@ -163,12 +179,74 @@ namespace hb_robot_skills::motion{
             return solution;
         }
 
+        std::optional<ViewSolution> ExplorationPlanner::solveView(const moveit::core::RobotState& seed_state,
+            const Eigen::Isometry3d& nominal_pose,
+            const ExplorationRequest& request)const{
+
+                auto candidates = ExplorationPlanner::generateCandidates(
+                    nominal_pose,request);
+                
+                
+                std::optional<ViewSolution> best_soln;
+                
+                for(const auto &cand : candidates){
+                        auto viewSol = ExplorationPlanner::solveCandidate(
+                            seed_state,
+                            cand, request);
+                        if(!viewSol){
+                            continue;
+                        }
+                        if(!best_soln || viewSol->motion_cost < best_soln->motion_cost){
+                            best_soln = std::move(viewSol);
+                        }
+
+                }
+                return best_soln;
+            }
+
+        double ExplorationPlanner::scoreSoln(
+            const moveit::core::RobotState& state_from, 
+            const moveit::core::RobotState& state_to
+        ) const{
+            std::vector<double> q_from;
+            std::vector<double> q_to;
+
+            state_from.copyJointGroupPositions(joint_model_group_,q_from);
+            state_to.copyJointGroupPositions(joint_model_group_,q_to);
+            double sq_q_delta;
+
+            for (size_t i = 0; i<q_from.size(); i++){
+                const double q_delta = q_to[i] - q_from[i];
+
+                sq_q_delta += q_delta *q_delta;
+            }
+            return std::sqrt(sq_q_delta);
+
+        }
 
 
+        ExplorationPlan ExplorationPlanner::plan(
+            const moveit::core::RobotState& start_state,
+            const ExplorationRequest& request
+        ) const{
+            ExplorationPlan result;
+            
+            auto nom_views  = ExplorationPlanner::generateNominalViews(request);
 
-
-
-
-
+            result.n_requested_views = nom_views.size();
+            moveit::core::RobotState seed = start_state;
+            for (auto const & view: nom_views){
+                // candidates are generated in this function
+                auto best_view_soln = ExplorationPlanner::solveView(
+                    seed, view,request);
+                if (!best_view_soln){
+                    continue;
+                }
+                seed = best_view_soln->robot_state;
+                result.views.push_back(*best_view_soln);
+                result.n_succeeded_views ++;
+            }
+            return result;
+        }
      
  }

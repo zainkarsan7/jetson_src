@@ -43,19 +43,8 @@ ament_target_dependencies(hb_motion
 )
 
 
-
-add_executable(generate_explore_path_server
-src/generate_explore_path_server.cpp)
 add_executable(inspect_scene_server
 src/inspect_scene_server.cpp)
-
-ament_target_dependencies(generate_explore_path_server 
-  rclcpp
-  geometry_msgs
-  hb_robot_interfaces
-  Eigen3
-  tf2_eigen
-)
 
 ament_target_dependencies(inspect_scene_server 
   rclcpp
@@ -73,12 +62,8 @@ target_link_libraries(inspect_scene_server
 hb_motion
 )
 
-target_link_libraries(generate_explore_path_server
-Eigen3::Eigen)
-
 install(
   TARGETS
-    generate_explore_path_server
     inspect_scene_server
     hb_motion
   ARCHIVE DESTINATION lib
