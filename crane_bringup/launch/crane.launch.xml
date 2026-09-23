@@ -5,7 +5,20 @@
     <let name="control_urdf_path" value="$(find-pkg-share crane_description)/urdf/crane_control.urdf.xacro"/>
 
     <let name="rviz_config_path" value="$(find-pkg-share crane_description)/rviz/urdf_config.rviz"/>
-        
+    
+    <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
+    <arg name="camera_name" value="Spreader_RS"/>
+    <arg name="camera_namespace" value="Spreader_NS_RS"/>
+    <arg name="enable_gyro" value="true"/>
+    <arg name="enable_depth" value = "true"/>
+    <arg name="enable_accel" value="true"/>
+    <arg name="unite_imu_method" value="2"/>
+    <arg name="align_depth.enable" value="true"/>
+    <arg name="pointcloud.enable" value="true"/>
+    </include>
+
+    <node pkg="crane_estimation" exec="chassis_estimator" name="chassis_pose_publisher"/>
+
     <node pkg="robot_state_publisher" exec="robot_state_publisher" name="hook_state_publisher">
         <param name="robot_description"
                 value="$(command 'xacro $(var hook_urdf_path)')" />

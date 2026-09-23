@@ -1,14 +1,16 @@
 #pragma once
-
 #include <memory>
 #include <string>
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "realtime_tools/realtime_buffer.hpp"
 #include "crane_estimation/crane_attitude_estimator.hpp"
+#include "crane_estimation/crane_attitude_utils.hpp"
 
 namespace crane_controllers{
+    
     class CraneAttitudeController: public controller_interface::ControllerInterface
     {
         public:
@@ -22,13 +24,12 @@ namespace crane_controllers{
             controller_interface::return_type update(const rclcpp::Time &, const rclcpp::Duration &) override;
         private:
         
-            CraneAttitudeEstimator estimator_;
-            realtime_tools::RealtimeBuffer<CraneAttitudeState> state_buffer_;
+            crane_estimation::CraneAttitudeEstimator estimator_;
+            realtime_tools::RealtimeBuffer<crane_estimation::CraneAttitudeState> state_buffer_;
             rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr marker_pose_sub;
             rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
             std::string marker_pose_topic_;
             std::string imu_topic_;
 
     };
-
-}
+    }

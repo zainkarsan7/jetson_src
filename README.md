@@ -105,3 +105,35 @@ and later when adding more pkgs need to do sparse -add
 
 git sparse-checkout add new_folder_1 new_folder 2 
 
+## Can NEVER remember str keywords:
+%f -float
+%.2f - truncate to 2nd decimal 
+%s -string
+%d -integer what the fuck
+%zu -std::size_t or size() what the actual fuck
+
+## can also never remember terminator shortcuts:
+
+- ctrl-shift o/e --> horiontal vertical split
+- ctrl-shift w --> close window
+
+
+## action send goals
+
+ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
+"{
+  center_pose: {
+      position: {x: -0.027, y: 1.2, z: 0.725},
+      orientation: {x: 0.127, y: 0.222, z: 0.612, w: 0.748}
+  },
+  range_x: 0.25,
+  range_y: 0.25,
+  num_viewpoints: 3,
+  pos_tol: 0.03,
+  orn_tol: 0.10,
+  max_ang_vel: 0.2,
+  num_candidates: 1,
+  sample_attempts: 10
+}" --feedback
+
+ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"

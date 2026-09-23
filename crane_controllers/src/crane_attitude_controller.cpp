@@ -1,7 +1,6 @@
-#include "crane_controllers/crane_attitude_estimator.hpp"
 #include "crane_controllers/crane_attitude_controller.hpp"
-#include "crane_controllers/crane_attitude_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
+
 
 namespace crane_controllers{
     controller_interface::CallbackReturn CraneAttitudeController::on_init(){
@@ -37,7 +36,7 @@ namespace crane_controllers{
     controller_interface::CallbackReturn CraneAttitudeController::on_configure(const rclcpp_lifecycle::State &) {
         marker_pose_topic_ = get_node()->get_parameter("marker_pose_topic").as_string();
         imu_topic_ = get_node()->get_parameter("imu_topic").as_string();
-        CraneAttitudeState initial_state;
+        crane_estimation::CraneAttitudeState initial_state;
         state_buffer_.writeFromNonRT(initial_state);
 
         // make subscriptions 
@@ -85,7 +84,7 @@ namespace crane_controllers{
 
     controller_interface::return_type CraneAttitudeController::update(const rclcpp::Time &, const rclcpp::Duration &){
 
-        CraneAttitudeState * current_state_ptr= state_buffer_.readFromRT();
+        crane_estimation::CraneAttitudeState * current_state_ptr= state_buffer_.readFromRT();
 
         if(current_state_ptr==nullptr){
 

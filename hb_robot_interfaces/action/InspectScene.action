@@ -1,8 +1,16 @@
 # Goal
-geometry_msgs/Pose[] viewpoints
-float64 max_ang_vel
-uint32 samples_per_viewpoint
+geometry_msgs/Pose center_pose
 
+float64 range_x
+float64 range_y
+uint8 num_viewpoints
+
+float64 pos_tol
+float64 orn_tol
+
+float64 max_ang_vel
+uint32 num_candidates
+uint32 sample_attempts
 ---
 # Result
 bool success
@@ -26,6 +34,7 @@ uint32 current_viewpoint
 uint32 total_viewpoints
 geometry_msgs/Pose current_pose
 
+uint8 PLANNING=0
 uint8 MOVING=1
 uint8 SETTLING=2
 uint8 ACQUIRING=3

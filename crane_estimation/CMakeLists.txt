@@ -21,18 +21,18 @@ find_package(Eigen3 REQUIRED)
 
 ## add library crane_estimation.so , 
 ## add shared, include, dependencies ament and link
-add_library(crane_attitude SHARED
+add_library(crane_estimation SHARED
 src/crane_attitude_utils.cpp
 src/crane_attitude_estimator.cpp
 )
 
-target_include_directories(crane_attitude
+target_include_directories(crane_estimation
 PUBLIC 
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(crane_attitude
+ament_target_dependencies(crane_estimation
   geometry_msgs
   sensor_msgs
   tf2
@@ -41,7 +41,7 @@ ament_target_dependencies(crane_attitude
   tf2_geometry_msgs
   )
 
-target_link_libraries(crane_attitude
+target_link_libraries(crane_estimation
 Eigen3::Eigen
 )
 
@@ -50,7 +50,7 @@ Eigen3::Eigen
 
 
 install(
-  TARGETS crane_attitude 
+  TARGETS crane_estimation 
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -69,7 +69,7 @@ ament_export_targets(
 
 add_executable(chassis_estimator src/chassis_pose_estimator_node.cpp)
 ament_target_dependencies(chassis_estimator tf2 tf2_ros tf2_geometry_msgs geometry_msgs rclcpp)
-target_link_libraries(chassis_estimator Eigen3::Eigen crane_attitude)
+target_link_libraries(chassis_estimator Eigen3::Eigen crane_estimation)
 
 install(TARGETS chassis_estimator 
 DESTINATION lib/${PROJECT_NAME})

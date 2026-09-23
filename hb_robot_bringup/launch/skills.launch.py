@@ -22,7 +22,7 @@ def generate_launch_description():
         parameters = [moveit_config.robot_description,
         moveit_config.robot_description_semantic,
         moveit_config.robot_description_kinematics,
-        {"execute_inspection_motion": False},
+        {"skip_inspection_motion": False},
         ],
     )
     return LaunchDescription([

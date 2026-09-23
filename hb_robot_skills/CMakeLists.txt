@@ -24,7 +24,7 @@ find_package(tf2_eigen REQUIRED)
 include_directories(include)
 
 add_library(hb_motion
-  src/motion/motion_planner.cpp
+  src/motion/exploration_planner.cpp
   src/motion/trajectory_validator.cpp
 )
 
@@ -39,22 +39,18 @@ ament_target_dependencies(hb_motion
   geometry_msgs
   moveit_ros_planning_interface
   moveit_msgs
+  hb_robot_interfaces
+)
+add_executable(approve_motion_server
+src/approve_motion_server.cpp)
+
+ament_target_dependencies(approve_motion_server
+rclcpp
+hb_robot_interfaces
 )
 
-
-
-add_executable(generate_explore_path_server
-src/generate_explore_path_server.cpp)
 add_executable(inspect_scene_server
 src/inspect_scene_server.cpp)
-
-ament_target_dependencies(generate_explore_path_server 
-  rclcpp
-  geometry_msgs
-  hb_robot_interfaces
-  Eigen3
-  tf2_eigen
-)
 
 ament_target_dependencies(inspect_scene_server 
   rclcpp
@@ -72,13 +68,10 @@ target_link_libraries(inspect_scene_server
 hb_motion
 )
 
-target_link_libraries(generate_explore_path_server
-Eigen3::Eigen)
-
 install(
   TARGETS
-    generate_explore_path_server
     inspect_scene_server
+    approve_motion_server
     hb_motion
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

@@ -45,8 +45,8 @@
 
 
         <link name = "Swivel_Tag"/>
-        <joint name="swivel_bottom_tag_joint" type="fixed">
-            <parent link="swivel_bottom"/>
+        <joint name="swivel_top_tag_joint" type="fixed">
+            <parent link="swivel_top"/>
             <child link ="Swivel_Tag"/>
             <origin xyz ="0.0 0.1 0" rpy="-${pi} 0 ${pi/2}"/> 
         </joint>

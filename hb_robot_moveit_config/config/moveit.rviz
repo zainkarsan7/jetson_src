@@ -9,9 +9,10 @@ Panels:
         - /TF1
         - /AzureKinect1
         - /MarkerArray1
+        - /MarkerArray1/Topic1
         - /Trajectory1
       Splitter Ratio: 0.5
-    Tree Height: 388
+    Tree Height: 163
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_visual_tools/RvizVisualToolsGui
@@ -105,6 +106,11 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
+          ur10e_bracket_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           ur10e_flange:
             Alpha: 1
             Show Axes: false
@@ -127,6 +133,11 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          ur10e_torch_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           ur10e_upper_arm_link:
             Alpha: 1
             Show Axes: false
@@ -234,6 +245,11 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
+          ur10e_bracket_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           ur10e_flange:
             Alpha: 1
             Show Axes: false
@@ -256,6 +272,11 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          ur10e_torch_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
           ur10e_upper_arm_link:
             Alpha: 1
             Show Axes: false
@@ -346,6 +367,8 @@ Visualization Manager:
           Value: false
         ur10e_base_link_inertia:
           Value: false
+        ur10e_bracket_link:
+          Value: true
         ur10e_flange:
           Value: false
         ur10e_forearm_link:
@@ -358,6 +381,8 @@ Visualization Manager:
           Value: false
         ur10e_tool0_controller:
           Value: false
+        ur10e_torch_link:
+          Value: true
         ur10e_upper_arm_link:
           Value: false
         ur10e_wrist_1_link:
@@ -400,12 +425,15 @@ Visualization Manager:
                                         {}
                                       rgb_camera_link:
                                         {}
+                                  ur10e_bracket_link:
+                                    ur10e_torch_link:
+                                      {}
                               ur10e_ft_frame:
                                 {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
-      Enabled: true
+      Enabled: false
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -417,18 +445,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /k4a/depth/image_raw
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        inspection_viewpoints: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /inspect_scene/viewpoints
+        Value: /inspection_viewpoints
       Value: true
     - Class: moveit_rviz_plugin/Trajectory
       Color Enabled: false
@@ -477,6 +505,11 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        ur10e_bracket_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         ur10e_flange:
           Alpha: 1
           Show Axes: false
@@ -499,6 +532,11 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+        ur10e_torch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         ur10e_upper_arm_link:
           Alpha: 1
           Show Axes: false
@@ -554,45 +592,45 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.3267710208892822
+      Distance: 1.9579511880874634
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.37658581137657166
-        Y: 0.4413891136646271
-        Z: 0.5027444958686829
+        X: -0.462191104888916
+        Y: 0.9746847152709961
+        Z: 0.2827187478542328
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5447966456413269
+      Pitch: 0.38979676365852356
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.4085902273654938
+      Yaw: 0.3535902798175812
     Saved: ~
 Window Geometry:
   AzureKinect:
-    collapsed: false
+    collapsed: true
   Displays:
     collapsed: false
-  Height: 1136
+  Height: 842
   Help:
     collapsed: false
   Hide Left Dock: false
-  Hide Right Dock: false
+  Hide Right Dock: true
   MotionPlanning:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000002b400000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000490000004100fffffffb000000100044006900730070006c006100790073010000008c00000207000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000299000001ba0000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff000000010000014000000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074010000003d000004160000002800ffffff0000033a0000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000001f3000002f0fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000410000004100fffffffb000000100044006900730070006c006100790073010000008400000126000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000001b00000017d0000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff0000000100000140000002f0fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000002f00000002800ffffff00000372000002f000000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RvizVisualToolsGui:
     collapsed: false
   Trajectory - Trajectory Slider:
     collapsed: false
-  Width: 1850
-  X: 70
-  Y: 27
+  Width: 1387
+  X: 743
+  Y: 57
