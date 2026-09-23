@@ -2,7 +2,7 @@
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include "moveit/robot_model/joint_model_group.h"
-
+#include "rclcpp/rclcpp.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -65,8 +65,6 @@ namespace hb_robot_skills::motion{
         }
 
 
-        
-
         std::vector<Eigen::Isometry3d> ExplorationPlanner::generateNominalViews(
             const ExplorationRequest& request
         )const{
@@ -83,7 +81,7 @@ namespace hb_robot_skills::motion{
             const auto ys = make_symmetric(request.range_y,request.num_viewpoints);
 
             auto addView = [&](double rx,double ry){
-                    Eigen::AngleAxisd Rx(rx,Eigen::Vector3d::UnitX());
+                    Eigen::AngleAxisd Rx(rx,Eigen::Vector3d::UnitZ());
                     Eigen::AngleAxisd Ry(ry,Eigen::Vector3d::UnitY());
                     Eigen::Isometry3d T_view = request.center_pose;
                     T_view.linear() = request.center_pose.linear() * Rx.toRotationMatrix() * Ry.toRotationMatrix();
@@ -134,7 +132,7 @@ namespace hb_robot_skills::motion{
                 }
                 candidate.candidate_pose.translation() += offset;
 
-                
+
                 candidate.candidate_pose.linear() = nominal_pose.linear() * Rdr.toRotationMatrix();
                 candidate.pos_error = offset.norm();
                 candidates.push_back(std::move(candidate));
@@ -171,7 +169,7 @@ namespace hb_robot_skills::motion{
                 consistency_limits,
                 request.ik_timeout
             );
-
+            
             if(!found){
                 return std::nullopt;
             }
@@ -199,19 +197,24 @@ namespace hb_robot_skills::motion{
                 
                 
                 std::optional<ViewSolution> best_soln;
-                
+                uint8_t found_solutions= 0;
                 for(const auto &cand : candidates){
                         auto viewSol = ExplorationPlanner::solveCandidate(
                             seed_state,
                             cand, request);
                         if(!viewSol){
+                            
+
                             continue;
-                        }
+                        } 
+                        found_solutions+=1;
                         if(!best_soln || viewSol->motion_cost < best_soln->motion_cost){
                             best_soln = std::move(viewSol);
                         }
 
                 }
+
+                RCLCPP_INFO(rclcpp::get_logger("ExplorationPlanner"),"View : %d/%d solutions/candidates",found_solutions,candidates.size());
                 return best_soln;
             }
 

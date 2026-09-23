@@ -42,6 +42,7 @@ for (const auto* link : robot_model->getLinkModels())
         move_group_->getRobotModel(),
         planning_group_,
         camera_link_);
+    display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("inspection_trajectory",10);
     viewpoint_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("inspection_viewpoints", 10);
     action_server_ = rclcpp_action::create_server<InspectScene>(
         shared_from_this(),
@@ -136,7 +137,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     const auto request = InspectSceneServer::makeExplorationRequest(*goal);
 
     auto exploration = exploration_planner_->plan(*current_state,request);
-
+    
     if (exploration.views.empty()){
         result->result_code = InspectScene::Result::PLANNING_FAILED;
         result->message="couldnt reach anything";
@@ -151,24 +152,40 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         
     std::vector<geometry_msgs::msg::Pose> solved_viewpoints;
     solved_viewpoints.reserve(total_views);
-    for (std::size_t i=0; i<exploration.views.size(); i++){
+    std::vector<moveit::planning_interface::MoveGroupInterface::Plan> motion_plans;
+    moveit::core::RobotState planning_state(*current_state);
+
+    // visualization run
+    for (std::size_t i=0; i<total_views; i++){
         const auto& view = exploration.views[i];
-        std::vector<double> q;
-        view.robot_state.copyJointGroupPositions(jmg,q);
-        const auto& joint_names = jmg->getActiveJointModelNames();
-        RCLCPP_INFO(get_logger(),"view %zu IK solution",i);
-        for (std::size_t j = 0; j<q.size();j++){
-            RCLCPP_INFO(get_logger(),"%s = %.4f",joint_names[j].c_str(),q[j]);
+        auto plan = planToView(planning_state,view.robot_state);
+        if(!plan){
+            RCLCPP_ERROR(get_logger(),"planning failed at segment %zu",i);
+            return;
         }
+        motion_plans.push_back(std::move(*plan));
+        planning_state = exploration.views[i].robot_state;
+
+
+        // std::vector<double> q;
+        // view.robot_state.copyJointGroupPositions(jmg,q);
+        // const auto& joint_names = jmg->getActiveJointModelNames();
+        // RCLCPP_INFO(get_logger(),"view %zu IK solution",i);
+        // for (std::size_t j = 0; j<q.size();j++){
+        //     RCLCPP_INFO(get_logger(),"%s = %.4f",joint_names[j].c_str(),q[j]);
+        // }
         solved_viewpoints.push_back(tf2::toMsg(view.cam_pose));
     }
-
     publishViewpointMarker(solved_viewpoints);
 
-
-    // visit each view
-
-    for (uint32_t i = 0; i<total_views; i++){
+    moveit_msgs::msg::DisplayTrajectory display_msg;
+    display_msg.trajectory_start = motion_plans.front().start_state_;
+    for (const auto& plan : motion_plans){
+        display_msg.trajectory.push_back(plan.trajectory_);
+    }
+    display_traj_pub_->publish(display_msg);
+    // execution run
+    for (uint32_t i = 0; i<motion_plans.size(); i++){
         if(goal_handle->is_canceling()){
             move_group_->stop();
             result->result_code = InspectScene::Result::CANCELLED;
@@ -185,7 +202,16 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             result->viewpoints_captured = i+1;
             continue;
         }
-        if(!moveToView(view.robot_state)){
+        // if(!moveToView(view.robot_state)){
+        //     result->result_code = InspectScene::Result::MOTION_FAILED;
+        //     result->viewpoints_captured = i;
+        //     result->message = "motion failed";
+        //     goal_handle->abort(result);
+        //     return;
+        // }
+
+        auto exec_result = move_group_->execute(motion_plans[i]);
+        if(!static_cast<bool>(exec_result)){
             result->result_code = InspectScene::Result::MOTION_FAILED;
             result->viewpoints_captured = i;
             result->message = "motion failed";
@@ -227,6 +253,20 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     result->message = "finished exploration";
     goal_handle->succeed(result);
 }
+
+std::optional<moveit::planning_interface::MoveGroupInterface::Plan> InspectSceneServer::planToView(
+            const moveit::core::RobotState& start_state,
+            const motion::ViewSolution &view 
+
+        ){
+            move_group_->setStartState(start_state);
+            move_group_->setJointValueTarget(view.robot_state);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            if(!static_cast<bool>(move_group_->plan(plan))){
+                return std::nullopt;
+            }
+            return plan;
+        }
 
 
 bool InspectSceneServer::moveToView(const moveit::core::RobotState& target_state){

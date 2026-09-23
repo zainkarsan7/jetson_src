@@ -12,7 +12,6 @@
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/robot_state/robot_state.h>
-
 #include <Eigen/Geometry>
 
 #include <visualization_msgs/msg/marker.hpp>
@@ -46,6 +45,11 @@ namespace hb_robot_skills{
         void publishViewpointMarker(const std::vector<geometry_msgs::msg::Pose> &viewpoints);
         motion::ExplorationRequest makeExplorationRequest(
             const InspectScene::Goal& goal) const;
+        
+        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToView(
+            const moveit::core::RobotState& start_state,
+            const motion::ViewSolution &view 
+        );
         
         bool moveToView(const moveit::core::RobotState& target_state);
         bool waitForStability();

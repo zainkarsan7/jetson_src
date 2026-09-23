@@ -17,10 +17,10 @@ namespace hb_robot_skills::motion{
         double roll_tol{0.1};
 
         std::size_t num_viewpoints{1};
-        
+
         std::size_t num_candidates{3};
         double ik_timeout{0.02};
-        double joint_delta{0.5};
+        double joint_delta{0.85};
 
     };
 
