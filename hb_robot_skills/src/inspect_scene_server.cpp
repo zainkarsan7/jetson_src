@@ -144,6 +144,21 @@ motion::ExplorationRequest InspectSceneServer::makeExplorationRequest(
         return request;
     }
 
+// bool InspectSceneServer::moveHome(){
+//     auto current_state = move_group_->getCurrentState(2.0);
+//     if (!current_state){
+//         RCLCPP_ERROR(get_logger(), "coudlnt get state");
+//         return false;
+//     }
+//     move_group_->setStartState(*current_state);
+//     if(!move_group_->setNamedTarget("inspection_home")){
+//         RCLCPP_ERROR(get_logger(), "target home not defined");
+//     }
+//     moveit::planning_interface::MoveGroupInterface::Plan home_plan;
+//     const auto planning_result = move_group_
+
+// }
+
 void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> goal_handle){
     std::lock_guard<std::mutex> lock(execution_mutex_);
     {
@@ -207,6 +222,29 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         solved_viewpoints.push_back(tf2::toMsg(view.cam_pose));
     }
     publishViewpointMarker(solved_viewpoints);
+
+    // ADD RETURN HOME ROUTINE
+    moveit::core::RobotState home_state(move_group_->getRobotModel());
+    home_state = planning_state;
+    if(!home_state.setToDefaultValues(planning_group_,"inspection_home")){
+        RCLCPP_ERROR(get_logger(),"couldnt find inspection home");
+        
+
+            result->result_code = InspectScene::Result::PLANNING_FAILED;
+            result->viewpoints_captured = 0;
+            result->message = "failed planning to return home";
+            goal_handle->abort(result);
+            return;
+
+    }
+    const auto& joint_names = jmg->getVariableNames();
+    for (const auto jn: joint_names){
+        RCLCPP_INFO(get_logger(), "home state %s: %.2f",jn,home_state.getVariablePosition(jn));
+    }
+    
+
+
+    auto home_plan = planToState(planning_state,home_state);
     moveit_msgs::msg::RobotTrajectory combined_msg;
     robot_trajectory::RobotTrajectory combined_traj(move_group_->getRobotModel(),planning_group_);
     moveit_msgs::msg::DisplayTrajectory display_msg;
@@ -221,6 +259,12 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
 
         // display_msg.trajectory.push_back(plan.trajectory_);
     }
+    robot_trajectory::RobotTrajectory return_home_traj(move_group_->getRobotModel(),planning_group_);
+    moveit::core::RobotState home_start_state(move_group_->getRobotModel());
+    moveit::core::robotStateMsgToRobotState(home_plan->start_state_,home_start_state);
+    return_home_traj.setRobotTrajectoryMsg(home_start_state,home_plan->trajectory_);
+    combined_traj.append(return_home_traj,0.0);
+    
     combined_traj.getRobotTrajectoryMsg(combined_msg);
     display_msg.trajectory_start = motion_plans.front().start_state_;
     display_msg.trajectory.push_back(combined_msg);
@@ -322,11 +366,36 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         result->viewpoints_captured = i+1;
     }
+
+    auto exec_home_plan = move_group_->execute(*home_plan);
+    if(!static_cast<bool>(exec_home_plan)){
+            result->result_code = InspectScene::Result::MOTION_FAILED;
+            result->message = "motion failed returning home";
+            goal_handle->abort(result);
+            return;
+        }
+
+
+
+
     result->success = true;
     result->result_code = InspectScene::Result::SUCCESS;
     result->message = "finished exploration";
     goal_handle->succeed(result);
 }
+
+std::optional<moveit::planning_interface::MoveGroupInterface::Plan> InspectSceneServer::planToState(
+            const moveit::core::RobotState& start_state,
+            const moveit::core::RobotState& target_state
+        ){
+            move_group_->setStartState(start_state);
+            move_group_->setJointValueTarget(target_state);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            if(!static_cast<bool>(move_group_->plan(plan))){
+                return std::nullopt;
+            }
+            return plan;
+        }
 
 std::optional<moveit::planning_interface::MoveGroupInterface::Plan> InspectSceneServer::planToView(
             const moveit::core::RobotState& start_state,

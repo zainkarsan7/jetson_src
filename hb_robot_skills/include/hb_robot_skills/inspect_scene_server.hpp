@@ -61,11 +61,17 @@ namespace hb_robot_skills{
             const moveit::core::RobotState& start_state,
             const motion::ViewSolution &view 
         );
+
+        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToState(
+            const moveit::core::RobotState& start_state,
+            const moveit::core::RobotState& target_state
+        );
         
         bool moveToView(const moveit::core::RobotState& target_state);
         bool waitForStability();
         bool acquireSamples(uint32_t sample_count);
         bool registerView();
+        bool moveHome();
 
         void publishFeedback(const std::shared_ptr<GoalHandleInspectScene>& goal_handle,
             uint32_t current_viewpoint, uint32_t total_viewpoints, uint8_t phase);
