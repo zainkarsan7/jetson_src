@@ -20,7 +20,8 @@ namespace hb_robot_skills::motion{
 
         std::size_t num_candidates{3};
         double ik_timeout{0.02};
-        double joint_delta{0.85};
+        double joint_delta{1.2};
+        
 
     };
 

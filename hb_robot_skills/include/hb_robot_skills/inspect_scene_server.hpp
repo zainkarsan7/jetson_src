@@ -83,6 +83,7 @@ namespace hb_robot_skills{
         double stability_timeout_;
         std::mutex execution_mutex_;
         bool skip_motion_{true};
+        bool require_plan_approval_{false};
     
 };
 

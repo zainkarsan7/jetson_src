@@ -1,6 +1,8 @@
 #include "hb_robot_skills/inspect_scene_server.hpp"
 #include <thread>
 #include <tf2_eigen/tf2_eigen.hpp>
+#include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/robot_state/conversions.h>
 
 namespace hb_robot_skills{ 
 InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node("inspect_scene_server",options){
@@ -42,7 +44,11 @@ for (const auto* link : robot_model->getLinkModels())
         move_group_->getRobotModel(),
         planning_group_,
         camera_link_);
-    display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("inspection_trajectory",10);
+
+    display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
+        10
+        //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
+    );
     viewpoint_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("inspection_viewpoints", 10);
     action_server_ = rclcpp_action::create_server<InspectScene>(
         shared_from_this(),
@@ -154,6 +160,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     solved_viewpoints.reserve(total_views);
     std::vector<moveit::planning_interface::MoveGroupInterface::Plan> motion_plans;
     moveit::core::RobotState planning_state(*current_state);
+    
 
     // visualization run
     for (std::size_t i=0; i<total_views; i++){
@@ -165,25 +172,34 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         motion_plans.push_back(std::move(*plan));
         planning_state = exploration.views[i].robot_state;
-
-
-        // std::vector<double> q;
-        // view.robot_state.copyJointGroupPositions(jmg,q);
-        // const auto& joint_names = jmg->getActiveJointModelNames();
-        // RCLCPP_INFO(get_logger(),"view %zu IK solution",i);
-        // for (std::size_t j = 0; j<q.size();j++){
-        //     RCLCPP_INFO(get_logger(),"%s = %.4f",joint_names[j].c_str(),q[j]);
-        // }
         solved_viewpoints.push_back(tf2::toMsg(view.cam_pose));
     }
     publishViewpointMarker(solved_viewpoints);
-
+    moveit_msgs::msg::RobotTrajectory combined_msg;
+    robot_trajectory::RobotTrajectory combined_traj(move_group_->getRobotModel(),planning_group_);
     moveit_msgs::msg::DisplayTrajectory display_msg;
     display_msg.trajectory_start = motion_plans.front().start_state_;
     for (const auto& plan : motion_plans){
-        display_msg.trajectory.push_back(plan.trajectory_);
+        robot_trajectory::RobotTrajectory traj_seg(move_group_->getRobotModel(),planning_group_);
+        // conversion bullshit
+        moveit::core::RobotState start_state(move_group_->getRobotModel());
+        moveit::core::robotStateMsgToRobotState(plan.start_state_,start_state);
+        traj_seg.setRobotTrajectoryMsg(start_state,plan.trajectory_);
+        combined_traj.append(traj_seg,0.0);
+
+        // display_msg.trajectory.push_back(plan.trajectory_);
     }
+    combined_traj.getRobotTrajectoryMsg(combined_msg);
+    display_msg.trajectory_start = motion_plans.front().start_state_;
+    display_msg.trajectory.push_back(combined_msg);
     display_traj_pub_->publish(display_msg);
+    RCLCPP_INFO(get_logger(),"publishing combined trajectory with %zu points",combined_msg.joint_trajectory.points.size());
+    RCLCPP_INFO(get_logger(),"publishing %zu trajectories",display_msg.trajectory.size());
+    for (size_t i=0;i<motion_plans.size();i++){
+        RCLCPP_INFO(get_logger(),"traj %zu : %zu points",i,motion_plans[i].trajectory_.joint_trajectory.points.size());
+    }
+
+
     // execution run
     for (uint32_t i = 0; i<motion_plans.size(); i++){
         if(goal_handle->is_canceling()){
@@ -198,6 +214,9 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::MOVING);
         // MOVE
+
+      
+
         if(skip_motion_){
             result->viewpoints_captured = i+1;
             continue;
