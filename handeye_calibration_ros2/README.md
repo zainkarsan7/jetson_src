@@ -19,6 +19,38 @@ The ROS tests and a Humble Docker build/test recipe are included. See
 
 ## 1. Build in your ROS workspace
 
+**Version 0.1.1 — delayed camera streams:** detection now runs on one background
+worker while ROS receives images and TF. Only the newest waiting image is kept;
+image subscription QoS is best-effort/volatile/depth 1. Image age, detection
+duration and paired observation age are shown in the GUI. Timestamp matching
+still uses historical robot TF at the image timestamp; no timestamp is rewritten.
+
+If upgrading with your existing YAML, update these overrides explicitly (existing
+values continue to override the new defaults):
+
+```yaml
+    max_sample_age_s: 5.0
+    settle_time_s: 1.0
+    max_observation_gap_s: 1.0
+    detector_rate_hz: 5.0
+    tf_wait_timeout_s: 2.0
+    tf_buffer_duration_s: 30.0
+```
+
+These are for stop-and-capture calibration. Keep the robot and target stationary
+through the delayed observation interval. The gap setting tolerates low-rate
+observations but still requires at least three stable samples over the settling
+window. TF wait timeout starts after detection, separately from image age. The
+TF buffer must be longer than the maximum sample age. If image age keeps growing,
+fix the upstream throughput/backlog instead of repeatedly increasing the limit.
+
+`/handeye/status` includes `timing.image_age_at_receive_s`,
+`timing.detection_duration_s`, `timing.paired_observation_age_s`,
+`timing.replaced_waiting_images` and `timing.tf_error`. The paired age is the
+current age of the last successfully paired observation, not just its age when
+it was received. A positive age by itself does not distinguish delivery delay
+from a host clock offset; compare host clocks if publishers run on different PCs.
+
 Extract/copy this directory as `YOUR_WORKSPACE/src/handeye_calibration_ros2`.
 Do not install the old ROS 1 MoveIt calibration repository for this package.
 Use the system Python supplied with Humble; do not build from a Conda shell.

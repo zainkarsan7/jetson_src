@@ -84,4 +84,4 @@ def test_capture_requires_fresh_distinct_settled_data():
 def test_observation_gap_cannot_count_as_settling():
     history = stable_history()
     with pytest.raises(ValueError, match='continuous'):
-        check_capture([history[0], history[-2], history[-1]], [], 1800000000)
+        check_capture([history[0], history[-2], history[-1]], [], 1800000000, max_gap_s=0.25)

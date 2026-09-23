@@ -9,7 +9,7 @@ import numpy as np
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.time import Time
 from rcl_interfaces.msg import ParameterDescriptor
 from cv_bridge import CvBridge, CvBridgeError
@@ -23,6 +23,7 @@ from .calibration import Sample, check_capture, solve
 from .geometry import from_quaternion, quaternion, transform
 from .storage import complete_result, export_result, load_session, save_session
 from .target import BoardSpec, Target, camera_model
+from .timing import LatestWorker, check_age
 
 
 def tf_matrix(message):
@@ -38,11 +39,12 @@ class CalibrationNode(Node):
             'camera_frame': 'camera_color_optical_frame', 'mount_frame': '',
             'image_topic': '/camera/color/image_raw', 'camera_info_topic': '/camera/color/camera_info',
             'image_is_rectified': False, 'output_directory': '~/.ros/handeye/session',
-            'solver': 'park', 'min_samples': 5, 'max_sample_age_s': 1.0,
-            'settle_time_s': 0.5, 'stability_translation_m': 0.002,
+            'solver': 'park', 'min_samples': 5, 'max_sample_age_s': 5.0,
+            'max_observation_gap_s': 1.0, 'tf_wait_timeout_s': 2.0, 'tf_buffer_duration_s': 30.0,
+            'settle_time_s': 1.0, 'stability_translation_m': 0.002,
             'stability_rotation_deg': 0.5, 'max_reprojection_error_px': 2.0,
             'max_translation_rms_m': 0.01, 'max_rotation_rms_deg': 2.0,
-            'detector_rate_hz': 10.0, 'board.kind': 'charuco',
+            'detector_rate_hz': 5.0, 'board.kind': 'charuco',
             'board.dictionary': 'DICT_5X5_250', 'board.columns': 5, 'board.rows': 7,
             'board.square_length_m': 0.04, 'board.marker_length_m': 0.03,
             'board.marker_separation_m': 0.01,
@@ -59,9 +61,12 @@ class CalibrationNode(Node):
             raise ValueError('Base, effector, and optical frames must be distinct')
         for key in ('max_sample_age_s', 'settle_time_s', 'stability_translation_m',
                     'stability_rotation_deg', 'max_reprojection_error_px', 'detector_rate_hz',
-                    'max_translation_rms_m', 'max_rotation_rms_deg'):
+                    'max_translation_rms_m', 'max_rotation_rms_deg', 'max_observation_gap_s',
+                    'tf_wait_timeout_s', 'tf_buffer_duration_s'):
             if not np.isfinite(self.cfg[key]) or self.cfg[key] <= 0:
                 raise ValueError(f'{key} must be positive')
+        if self.cfg['max_sample_age_s'] >= self.cfg['tf_buffer_duration_s']:
+            raise ValueError('tf_buffer_duration_s must exceed max_sample_age_s')
         if not 5 <= self.cfg['min_samples'] <= 500:
             raise ValueError('min_samples must be 5..500')
         from .calibration import METHODS
@@ -79,21 +84,28 @@ class CalibrationNode(Node):
         self.directory = Path(self.cfg['output_directory']).expanduser()
         self.samples, self.result = [], None
         self.history = deque(maxlen=1000)
-        self.pending = None
+        self.pending = deque(maxlen=32)
+        self.epoch = 0
         self.info = None
+        self.timing = {}
+        self.last_tf_error = ""
         self.last_image_ns = -1
         self.last_processed = -float('inf')
         self.message = 'Waiting for matching Image, CameraInfo and robot TF'
         self.bridge = CvBridge()
-        self.tf = Buffer(cache_time=Duration(seconds=30.0))
+        self.worker = LatestWorker(self.detect_frame)
+        self.tf = Buffer(cache_time=Duration(seconds=self.cfg['tf_buffer_duration_s']))
         self.listener = TransformListener(self.tf, self)
-        self.image_sub = self.create_subscription(Image, self.cfg['image_topic'], self.on_image, qos_profile_sensor_data)
+        image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
+        self.image_sub = self.create_subscription(Image, self.cfg['image_topic'], self.on_image, image_qos)
         self.info_sub = self.create_subscription(CameraInfo, self.cfg['camera_info_topic'], self.on_info, qos_profile_sensor_data)
         self.debug_pub = self.create_publisher(Image, '~/target_detection', qos_profile_sensor_data)
         self.pose_pub = self.create_publisher(PoseStamped, '~/target_pose', qos_profile_sensor_data)
         self.status_pub = self.create_publisher(String, '~/status', 10)
         self.calibration_services = [self.create_service(Trigger, '~/'+name, self.service_handler(name))
                          for name in ('capture', 'undo', 'clear', 'solve', 'save', 'load')]
+        self.detector_timer = self.create_timer(0.02, self.pump_detector)
         self.tf_timer = self.create_timer(0.02, self.pair_pending)
         self.status_timer = self.create_timer(0.25, self.publish_status)
         self.get_logger().info(f'{self.cfg["mode"]}: {self.cfg["base_frame"]} -> {self.cfg["effector_frame"]}; '
@@ -107,78 +119,130 @@ class CalibrationNode(Node):
 
     def invalidate_observation(self, message):
         self.history.clear()
-        self.pending = None
+        self.pending.clear()
         self.message = str(message)
 
+    def reset_observations(self):
+        self.epoch += 1  # Ignore a detector job started before this reset.
+        self.worker.waiting = None
+        self.history.clear()
+        self.pending.clear()
+
     def on_image(self, msg):
-        if time.monotonic() - self.last_processed < 1.0/self.cfg['detector_rate_hz']:
-            return
-        self.last_processed = time.monotonic()
-        debug = None
+        # Lightweight callback: never decode or run OpenCV on the ROS executor.
+        stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        self.timing['image_age_at_receive_s'] = (self.get_clock().now().nanoseconds-stamp_ns)/1e9
         try:
             if self.info is None:
                 raise ValueError('Waiting for CameraInfo')
             if msg.header.frame_id != self.cfg['camera_frame'] or self.info.header.frame_id != msg.header.frame_id:
                 raise ValueError('Image and CameraInfo frame_id must match configured optical camera_frame')
-            stamp = Time.from_msg(msg.header.stamp)
-            if stamp.nanoseconds <= 0:
+            if stamp_ns <= 0:
                 raise ValueError('Image has zero timestamp')
-            if stamp.nanoseconds <= self.last_image_ns:
-                self.invalidate_observation('Image clock reset or out-of-order image; waiting for fresh frames')
-                self.last_image_ns = stamp.nanoseconds
-                return
-            self.last_image_ns = stamp.nanoseconds
-            age = (self.get_clock().now().nanoseconds-stamp.nanoseconds)/1e9
-            if age < -0.05 or age > self.cfg['max_sample_age_s']:
-                raise ValueError('Image timestamp is stale/future; check clocks and use_sim_time')
-            debug = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            k, d, correction = camera_model(self.info, msg.width, msg.height, self.cfg['image_is_rectified'])
+            if stamp_ns <= self.last_image_ns:
+                self.last_image_ns = stamp_ns
+                raise ValueError('Image clock reset or out-of-order image; waiting for fresh frames')
+            self.last_image_ns = stamp_ns
+            check_age(stamp_ns, self.get_clock().now().nanoseconds, self.cfg['max_sample_age_s'], 'Image')
+            self.worker.put((msg, self.info, self.epoch))
+        except ValueError as exc:
+            self.reset_observations()
+            self.message = str(exc)
+
+    def detect_frame(self, item):
+        # Called by the single detector worker; no ROS state/TF/session mutation.
+        msg, info, _ = item
+        started = time.monotonic()
+        debug = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        failure, model, pose, error = None, None, None, None
+        try:
+            k, d, correction = camera_model(info, msg.width, msg.height, self.cfg['image_is_rectified'])
             model = {'k': k.tolist(), 'd': d.tolist(), 'optical_from_rectified': correction.tolist(),
                      'width': msg.width, 'height': msg.height}
-            if self.samples and model != self.session_context['camera_model']:
-                raise ValueError('Camera intrinsics changed: clear samples or restore original camera settings')
-            self.session_context['camera_model'] = model
             pose, error, debug = self.target.detect(debug, k, d, self.cfg['max_reprojection_error_px'])
             pose = transform(correction) @ pose
-            # Retain the oldest unpaired observation until TF catches up or it expires.
-            if self.pending is None:
-                self.pending = (stamp, pose, error)
-            target_msg = PoseStamped()
-            target_msg.header = msg.header
-            target_msg.pose.position.x, target_msg.pose.position.y, target_msg.pose.position.z = map(float, pose[:3, 3])
-            q = quaternion(pose)
-            target_msg.pose.orientation.x, target_msg.pose.orientation.y, target_msg.pose.orientation.z, target_msg.pose.orientation.w = q
-            self.pose_pub.publish(target_msg)
         except (ValueError, cv2.error, RuntimeError, CvBridgeError) as exc:
-            self.invalidate_observation(exc)
-            if debug is not None:
-                cv2.putText(debug, 'NO VALID SAMPLE: '+str(exc)[:70], (10, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        if debug is not None:
-            image = self.bridge.cv2_to_imgmsg(debug, encoding='bgr8')
-            image.header = msg.header
-            self.debug_pub.publish(image)
+            failure = str(exc)
+            cv2.putText(debug, 'NO VALID SAMPLE: '+failure[:70], (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        image = self.bridge.cv2_to_imgmsg(debug, encoding='bgr8')
+        image.header = msg.header
+        return model, pose, error, image, failure, time.monotonic()-started
+
+    def pump_detector(self):
+        completed = self.worker.take_done()
+        if completed is not None:
+            item, output, exception = completed
+            msg, _, epoch = item
+            if epoch == self.epoch:
+                if exception is not None:
+                    self.invalidate_observation('Detector failed: '+str(exception))
+                else:
+                    model, pose, error, debug, failure, duration = output
+                    self.timing['detection_duration_s'] = duration
+                    self.debug_pub.publish(debug)
+                    try:
+                        stamp = Time.from_msg(msg.header.stamp)
+                        check_age(stamp.nanoseconds, self.get_clock().now().nanoseconds,
+                                  self.cfg['max_sample_age_s'], 'Processed image')
+                        if failure:
+                            raise ValueError(failure)
+                        if self.samples and model != self.session_context['camera_model']:
+                            raise ValueError('Camera intrinsics changed: clear samples or restore original settings')
+                        if model != self.session_context['camera_model']:
+                            self.history.clear()
+                            self.pending.clear()
+                        self.session_context['camera_model'] = model
+                        self.pending.append((stamp, pose, error, time.monotonic()))
+                        target_msg = PoseStamped()
+                        target_msg.header = msg.header
+                        target_msg.pose.position.x, target_msg.pose.position.y, target_msg.pose.position.z = map(float, pose[:3, 3])
+                        q = quaternion(pose)
+                        target_msg.pose.orientation.x, target_msg.pose.orientation.y, target_msg.pose.orientation.z, target_msg.pose.orientation.w = q
+                        self.pose_pub.publish(target_msg)
+                    except ValueError as exc:
+                        self.invalidate_observation(exc)
+        if time.monotonic()-self.last_processed >= 1.0/self.cfg['detector_rate_hz']:
+            if self.worker.start():
+                self.last_processed = time.monotonic()
 
     def pair_pending(self):
-        if self.pending is None:
-            return
-        stamp, pose, error = self.pending
-        if (self.get_clock().now().nanoseconds-stamp.nanoseconds)/1e9 > self.cfg['max_sample_age_s']:
-            self.invalidate_observation('TF did not arrive at image timestamp before observation expired')
-            return
-        try:
-            tf = self.tf.lookup_transform(self.cfg['base_frame'], self.cfg['effector_frame'], stamp)
-        except TransformException as exc:
-            self.message = 'Waiting for robot TF at image timestamp: '+str(exc)
-            return  # Never block executor callbacks that deliver TF.
-        self.history.append(Sample(tf_matrix(tf), pose, stamp.nanoseconds, error))
-        self.pending = None
-        self.message = f'Target paired with robot TF; reprojection RMS {error:.3f}px'
+        while self.pending:
+            stamp, pose, error, waiting_since = self.pending[0]
+            try:
+                check_age(stamp.nanoseconds, self.get_clock().now().nanoseconds,
+                          self.cfg['max_sample_age_s'], 'Observation waiting for TF')
+            except ValueError as exc:
+                self.pending.popleft()
+                self.history.clear()
+                self.message = str(exc)
+                continue
+            try:
+                tf = self.tf.lookup_transform(self.cfg['base_frame'], self.cfg['effector_frame'], stamp)
+            except TransformException as exc:
+                self.last_tf_error = str(exc)
+                if time.monotonic()-waiting_since > self.cfg['tf_wait_timeout_s']:
+                    self.pending.popleft()
+                    self.history.clear()
+                    self.message = 'TF wait timed out: '+str(exc)
+                    continue
+                self.message = 'Waiting for robot TF at image timestamp: '+str(exc)
+                return
+            self.history.append(Sample(tf_matrix(tf), pose, stamp.nanoseconds, error))
+            self.pending.popleft()
+            self.last_tf_error = ''
+            self.message = f'Target paired with robot TF; reprojection RMS {error:.3f}px'
+
+    def destroy_node(self):
+        if hasattr(self, 'worker'):
+            self.worker.close()
+        return super().destroy_node()
 
     def capture_candidate(self):
         return check_capture(self.history, self.samples, self.get_clock().now().nanoseconds,
                              self.cfg['max_sample_age_s'], self.cfg['settle_time_s'],
-                             self.cfg['stability_translation_m'], self.cfg['stability_rotation_deg'])
+                             self.cfg['stability_translation_m'], self.cfg['stability_rotation_deg'],
+                             max_gap_s=self.cfg['max_observation_gap_s'])
 
     def change_samples(self, samples):
         if len(samples) > 500:
@@ -201,14 +265,14 @@ class CalibrationNode(Node):
                     message = f'Removed last sample; {len(self.samples)} remain'
                 elif name == 'clear':
                     self.change_samples([])
-                    self.history.clear()
+                    self.reset_observations()
                     message = 'Session cleared'
                 elif name == 'load':
                     if self.session_context['camera_model'] is None:
                         raise ValueError('Wait for a valid camera image before loading; intrinsics must match')
                     _, samples = load_session(self.directory/'session.yaml', self.session_context)
                     self.samples, self.result = samples, None
-                    self.history.clear()
+                    self.reset_observations()
                     message = f'Loaded {len(samples)} samples'
                 elif name == 'solve':
                     result = complete_result(solve(self.samples, self.cfg['mode'], self.cfg['solver'],
@@ -249,7 +313,12 @@ class CalibrationNode(Node):
             self.capture_candidate()
         except ValueError as exc:
             ready, reason = False, str(exc)
-        payload = {'context': self.session_context, 'sample_count': len(self.samples), 'capture_ready': ready,
+        timing = dict(self.timing)
+        timing['replaced_waiting_images'] = self.worker.replaced
+        timing['tf_error'] = self.last_tf_error
+        if self.history:
+            timing['paired_observation_age_s'] = (self.get_clock().now().nanoseconds-self.history[-1].stamp_ns)/1e9
+        payload = {'timing': timing, 'context': self.session_context, 'sample_count': len(self.samples), 'capture_ready': ready,
                    'min_samples': self.cfg['min_samples'],
                    'capture_reason': reason, 'message': self.message, 'result': self.result,
                    'output_directory': str(self.directory),

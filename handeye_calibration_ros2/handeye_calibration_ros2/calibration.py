@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .geometry import average, distance, inverse, quaternion, rigid, transform
+from .timing import check_age
 
 METHODS = {
     'park': cv2.CALIB_HAND_EYE_PARK,
@@ -102,22 +103,25 @@ def solve(samples, mode='eye_in_hand', method='park', min_samples=5):
 
 def check_capture(history, samples, now_ns, max_age_s=1.0, settle_s=0.5,
                   stability_translation_m=0.002, stability_rotation_deg=0.5,
-                  duplicate_translation_m=0.005, duplicate_rotation_deg=3.0):
+                  duplicate_translation_m=0.005, duplicate_rotation_deg=3.0,
+                  max_gap_s=1.0):
     """Require a fresh, uninterrupted, stable interval and a distinct robot pose."""
     if not history:
         raise ValueError('No valid target observation paired with timestamped robot TF')
     latest = history[-1]
-    age = (now_ns - latest.stamp_ns) / 1e9
-    if age < -0.05 or age > max_age_s:
-        raise ValueError('Latest observation is stale or from a different clock')
+    check_age(latest.stamp_ns, now_ns, max_age_s, 'Latest paired observation')
     cutoff = latest.stamp_ns - int(settle_s * 1e9)
     earlier = [i for i, s in enumerate(history) if s.stamp_ns <= cutoff]
     if not earlier:
         raise ValueError('Wait for the robot and target to settle')
-    window = list(history)[earlier[-1]:]
-    if len(window) < 3 or any((b.stamp_ns-a.stamp_ns)/1e9 > max(0.25, settle_s/2)
-                              for a, b in zip(window, window[1:])):
-        raise ValueError('Insufficient continuous observations during settling')
+    # At low detector rates, include enough older samples to have at least three.
+    window = list(history)[min(earlier[-1], max(0, len(history)-3)):]
+    if len(window) < 3:
+        raise ValueError(f'Need at least 3 settled observations; have {len(window)}')
+    gaps = [(b.stamp_ns-a.stamp_ns)/1e9 for a, b in zip(window, window[1:])]
+    if min(gaps) <= 0 or max(gaps) > max_gap_s:
+        raise ValueError(f'Insufficient continuous observations: largest gap {max(gaps):.3f}s; '
+                         f'limit {max_gap_s:.3f}s (max_observation_gap_s)')
     for s in window:
         for attr in ('base_from_effector', 'camera_from_target'):
             d, a = distance(getattr(s, attr), getattr(latest, attr))

@@ -35,9 +35,10 @@ def test_timestamped_tf_pairing_uses_image_time_not_latest(node):
         msg.transform.translation.x = x
         node.tf.set_transform(msg, 'test')
     stamp = Time(nanoseconds=now-150000000)
-    node.pending = (stamp, np.eye(4), 0.2)
+    import time
+    node.pending.append((stamp, np.eye(4), 0.2, time.monotonic()))
     node.pair_pending()
-    assert node.pending is None
+    assert not node.pending
     assert node.history[-1].base_from_effector[0, 3] == pytest.approx(0.15)
     assert node.history[-1].stamp_ns == stamp.nanoseconds
 
@@ -74,7 +75,10 @@ def test_real_ros_messages_image_to_paired_sample(node):
     tf.transform.rotation.w = 1.0
     node.tf.set_transform(tf, 'test')
     node.on_image(msg)
-    assert node.pending is not None, node.message
+    node.pump_detector()
+    node.worker.running[1].result(timeout=10)
+    node.pump_detector()
+    assert node.pending, node.message
     node.pair_pending()
     assert len(node.history) == 1
     # A missing target must invalidate capture history, not silently reuse it.
@@ -83,6 +87,9 @@ def test_real_ros_messages_image_to_paired_sample(node):
     msg.header.frame_id = node.cfg['camera_frame']
     msg.header.stamp = node.get_clock().now().to_msg()
     node.on_image(msg)
+    node.pump_detector()
+    node.worker.running[1].result(timeout=10)
+    node.pump_detector()
     assert not node.history
 
 

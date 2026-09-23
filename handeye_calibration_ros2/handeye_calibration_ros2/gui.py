@@ -108,6 +108,12 @@ class CalibrationWindow(QtWidgets.QMainWindow):
         self.target_button.setEnabled(True)
         self.readiness.setText('Ready to capture' if state['capture_ready'] else state['capture_reason'])
         self.readiness.setStyleSheet('color: #167040;' if state['capture_ready'] else 'color: #975514;')
+        timing = state.get('timing', {})
+        fields = [('image_age_at_receive_s', 'Image age at receive'),
+                  ('detection_duration_s', 'Detection'), ('paired_observation_age_s', 'Paired age')]
+        details = ' | '.join(f'{label}: {timing[key]:.3f}s' for key, label in fields if key in timing)
+        if details:
+            self.readiness.setText(self.readiness.text()+'\n'+details)
         if result:
             res = result['residuals']
             text = (f'Parent: {result["parent_frame"]}\nCamera: {result["camera_frame"]}\n'

@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 name = 'handeye_calibration_ros2'
 setup(
-    name=name, version='0.1.0', packages=find_packages(exclude=['test']),
+    name=name, version='0.1.1', packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + name]),
         ('share/' + name, ['package.xml', 'README.md', 'LICENSE', 'NOTICE.md']),

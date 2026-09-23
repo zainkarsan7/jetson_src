@@ -18,11 +18,14 @@ not available to this task. No robot was connected or commanded.
   translation/RPY conversion.
 - Qt window state transitions and Capture button dispatch offscreen.
 
-The final suite passed **26 tests** on OpenCV **4.5.5** and **4.6.0**;
+The version 0.1.1 suite passed **31 tests** on OpenCV **4.5.5** and **4.6.0**;
 the ROS-specific test module was skipped because `rclpy` is unavailable here.
-The final test adds the complete offline target → solve → held-out validation
-workflow. Python source distribution and wheel builds also completed locally;
-these are packaging checks, not a ROS workspace build.
+This includes the offline target → solve → held-out validation workflow, plus
+regressions for delayed/low-rate stationary observations, long gaps, distinct
+age/clock diagnostics, latest-frame queue replacement and worker error recovery.
+Version 0.1.0 Python source distribution and wheel builds completed locally;
+version 0.1.1 source archives were regenerated and Python 3.10 syntax checked.
+These are packaging checks, not a ROS workspace build.
 
 ## Included but not executed here
 

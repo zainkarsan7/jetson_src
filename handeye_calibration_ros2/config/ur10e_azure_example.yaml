@@ -21,3 +21,9 @@ handeye:
       square_length_m: 0.04
       marker_length_m: 0.03
       marker_separation_m: 0.01
+    max_sample_age_s: 5.0
+    settle_time_s: 1.0
+    detector_rate_hz: 5.0
+    max_observation_gap_s: 1.0
+    tf_wait_timeout_s: 2.0
+    tf_buffer_duration_s: 30.0
