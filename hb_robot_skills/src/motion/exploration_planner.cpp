@@ -72,14 +72,14 @@ namespace hb_robot_skills::motion{
 
             std::vector<Eigen::Isometry3d>  views;
 
-            if (request.num_samples < 1){
+            if (request.num_viewpoints < 1){
                 return views;
             }
 
-            views.reserve(request.num_samples * request.num_samples);
+            views.reserve(request.num_viewpoints * request.num_viewpoints);
 
-            const auto xs = make_symmetric(request.range_x,request.num_samples);
-            const auto ys = make_symmetric(request.range_y,request.num_samples);
+            const auto xs = make_symmetric(request.range_x,request.num_viewpoints);
+            const auto ys = make_symmetric(request.range_y,request.num_viewpoints);
 
             auto addView = [&](double rx,double ry){
                     Eigen::AngleAxisd Rx(rx,Eigen::Vector3d::UnitX());
@@ -113,8 +113,8 @@ namespace hb_robot_skills::motion{
 
             std::vector<ViewCandidate> candidates;
             
-            const auto pos_samples = make_symmetric(request.pos_tol,request.sample_attempts);
-            const auto orn_samples = make_symmetric(request.roll_tol,request.sample_attempts);
+            const auto pos_samples = make_symmetric(request.pos_tol,request.num_candidates);
+            const auto orn_samples = make_symmetric(request.roll_tol,request.num_candidates);
 
             for (double dx : pos_samples){
                 for (double dy: pos_samples){

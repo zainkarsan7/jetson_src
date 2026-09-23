@@ -116,3 +116,21 @@ git sparse-checkout add new_folder_1 new_folder 2
 
 - ctrl-shift o/e --> horiontal vertical split
 - ctrl-shift w --> close window
+
+
+## action send goals
+
+ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
+"{
+  center_pose: {
+      position: {x: -0.027, y: 1.107, z: 0.725},
+      orientation: {x: 0.127, y: 0.222, z: 0.612, w: 0.748}
+  },
+  range_x: 0.35,
+  range_y: 0.25,
+  num_viewpoints: 9,
+  pos_tol: 0.03,
+  orn_tol: 0.10,
+  max_ang_vel: 0.2,
+  samples_per_viewpoint: 10
+}" --feedback

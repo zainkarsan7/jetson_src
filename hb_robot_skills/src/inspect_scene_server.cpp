@@ -107,7 +107,8 @@ motion::ExplorationRequest InspectSceneServer::makeExplorationRequest(
         request.range_y = goal.range_y;
         request.pos_tol = goal.pos_tol;
         request.roll_tol = goal.orn_tol;
-        request.num_samples = goal.num_viewpoints;
+        request.num_candidates = goal.num_candidates;
+        
              
         
         return request;
@@ -156,7 +157,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         const auto& joint_names = jmg->getActiveJointModelNames();
         RCLCPP_INFO(get_logger(),"view %zu IK solution",i);
         for (std::size_t j = 0; j<q.size();j++){
-            RCLCPP_INFO(get_logger(),"%s = $.4f",joint_names[j].c_str(),q[j]);
+            RCLCPP_INFO(get_logger(),"%s = %.4f",joint_names[j].c_str(),q[j]);
         }
         solved_viewpoints.push_back(tf2::toMsg(view.cam_pose));
     }
@@ -202,7 +203,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         // ACQUIRE SAMPLES
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::ACQUIRING);
-        if(!acquireSamples(goal->samples_per_viewpoint)){
+        if(!acquireSamples(goal->sample_attempts)){
             result->result_code =InspectScene::Result::ACQUISITION_FAILED;
             result->viewpoints_captured = i;
             result->message = "couldnt acquire samples";

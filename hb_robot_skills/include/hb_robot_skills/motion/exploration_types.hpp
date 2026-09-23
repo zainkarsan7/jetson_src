@@ -16,9 +16,9 @@ namespace hb_robot_skills::motion{
         double pos_tol{0.05};
         double roll_tol{0.1};
 
-        std::size_t num_samples{1};
-
-        std::size_t sample_attempts{3};
+        std::size_t num_viewpoints{1};
+        
+        std::size_t num_candidates{3};
         double ik_timeout{0.02};
         double joint_delta{0.5};
 
