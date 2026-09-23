@@ -107,6 +107,7 @@ motion::ExplorationRequest InspectSceneServer::makeExplorationRequest(
         request.range_y = goal.range_y;
         request.pos_tol = goal.pos_tol;
         request.roll_tol = goal.orn_tol;
+        request.num_viewpoints = goal.num_viewpoints;
         request.num_candidates = goal.num_candidates;
         
              

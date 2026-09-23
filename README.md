@@ -128,9 +128,10 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
   },
   range_x: 0.35,
   range_y: 0.25,
-  num_viewpoints: 9,
+  num_viewpoints: 3,
   pos_tol: 0.03,
   orn_tol: 0.10,
   max_ang_vel: 0.2,
-  samples_per_viewpoint: 10
+  num_candidates: 3,
+  sample_attempts: 10
 }" --feedback
