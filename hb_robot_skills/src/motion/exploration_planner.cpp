@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <random>
 
 
 namespace hb_robot_skills::motion{
@@ -112,28 +113,33 @@ namespace hb_robot_skills::motion{
         )const{
 
             std::vector<ViewCandidate> candidates;
-            
-            const auto pos_samples = make_symmetric(request.pos_tol,request.num_candidates);
-            const auto orn_samples = make_symmetric(request.roll_tol,request.num_candidates);
+            /// make offsets 
+            candidates.reserve(request.num_candidates);
+            ViewCandidate nom;
+            nom.candidate_pose = nominal_pose;
+            nom.nominal_pose = nominal_pose;
+            nom.pos_error = 0.0;
+            nom.roll_offset = 0.0;
+            candidates.push_back(nom);
+            std::mt19937 rng(std::random_device{}());
+            std::uniform_real_distribution<double> dist(-1.0,1.0);
+            auto makeOffset = [&](double dp, double dr,ViewCandidate candidate){
+                candidate.roll_offset = dr * dist(rng);
+                Eigen::AngleAxisd Rdr(candidate.roll_offset,Eigen::Vector3d::UnitX());
+                Eigen::Vector3d offset(dist(rng),dist(rng),dist(rng));
+                candidate.candidate_pose = nominal_pose;
+                candidate.nominal_pose = nominal_pose;
+                candidate.candidate_pose.translation() += offset*dp;
+                candidate.candidate_pose.linear() = nominal_pose.linear() * Rdr.toRotationMatrix();
+                candidate.pos_error = offset.norm();
+                candidates.push_back(std::move(candidate));
+            };
 
-            for (double dx : pos_samples){
-                for (double dy: pos_samples){
-                    for(double dz: pos_samples){
-                        for (double dr : orn_samples){
-                            ViewCandidate candidate;                         
-                            Eigen::AngleAxisd Rdr(dr,Eigen::Vector3d::UnitX());
-                            candidate.candidate_pose = nominal_pose;
-                            candidate.candidate_pose.translation() += Eigen::Vector3d(dx,dy,dz);
-                            candidate.candidate_pose.linear() = nominal_pose.linear() * Rdr.toRotationMatrix();
-                            candidate.nominal_pose = nominal_pose;
-                            candidate.pos_error = Eigen::Vector3d(dx,dy,dz).norm();
-                            candidate.roll_offset = dr;
-                            candidates.push_back(std::move(candidate));
-
-                        }
-                    }
-                }
+            for (size_t ic = 0; ic<request.num_candidates;ic++){
+                ViewCandidate candidate;
+                makeOffset(request.pos_tol,request.roll_tol,candidate);
             }
+            
         
             std::sort(candidates.begin(),candidates.end(),
         [](const ViewCandidate& cand_a,const ViewCandidate& cand_b){
