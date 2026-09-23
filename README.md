@@ -110,7 +110,7 @@ git sparse-checkout add new_folder_1 new_folder 2
 %.2f - truncate to 2nd decimal 
 %s -string
 %d -integer what the fuck
-%zu -std::size_t what the actual fuck
+%zu -std::size_t or size() what the actual fuck
 
 ## can also never remember terminator shortcuts:
 

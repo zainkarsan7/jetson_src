@@ -214,7 +214,7 @@ namespace hb_robot_skills::motion{
 
                 }
 
-                RCLCPP_INFO(rclcpp::get_logger("ExplorationPlanner"),"View : %d/%d solutions/candidates",found_solutions,candidates.size());
+                RCLCPP_INFO(rclcpp::get_logger("ExplorationPlanner"),"View : %d/%zu solutions/candidates",found_solutions,candidates.size());
                 return best_soln;
             }
 

@@ -11,6 +11,7 @@ float64 orn_tol
 float64 max_ang_vel
 uint32 num_candidates
 uint32 sample_attempts
+bool require_plan_approval
 
 ---
 # Result

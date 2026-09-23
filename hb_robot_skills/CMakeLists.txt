@@ -41,7 +41,13 @@ ament_target_dependencies(hb_motion
   moveit_msgs
   hb_robot_interfaces
 )
+add_executable(approve_motion_server
+src/approve_motion_server.cpp)
 
+ament_target_dependencies(approve_motion_server
+rclcpp
+hb_robot_interfaces
+)
 
 add_executable(inspect_scene_server
 src/inspect_scene_server.cpp)
@@ -65,6 +71,7 @@ hb_motion
 install(
   TARGETS
     inspect_scene_server
+    approve_motion_server
     hb_motion
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

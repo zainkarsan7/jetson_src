@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskState.msg"
   "srv/GenerateExplorePath.srv"
   "srv/GenerateCutPath.srv"
+  "srv/ApproveMotion.srv"
   "action/ExecuteCut.action"
   "action/InspectCut.action"
   "action/InspectScene.action"
