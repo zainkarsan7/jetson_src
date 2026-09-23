@@ -135,3 +135,5 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
   num_candidates: 1,
   sample_attempts: 10
 }" --feedback
+
+ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"

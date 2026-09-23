@@ -20,6 +20,8 @@
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_scene.hpp>
+#include "hb_robot_interfaces/srv/approve_motion.hpp"
+#include <condition_variable>
 
 namespace hb_robot_skills{
 
@@ -33,6 +35,15 @@ namespace hb_robot_skills{
         void initialize();
     
     private :
+
+        ///APPROVAL STUFF
+        rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
+        std::mutex approval_mutex_;
+        std::condition_variable approval_cv_;
+        bool motion_approved_{false};
+
+        void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
+        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
 
         rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID & uuid, 
             std::shared_ptr<const InspectScene::Goal> goal);

@@ -2,7 +2,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include <thread>
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
-
+#include <mutex>
+#include <condition_variable>
 
 class ApproveMotionServer: public rclcpp::Node{
     public:
@@ -14,8 +15,8 @@ class ApproveMotionServer: public rclcpp::Node{
         );
     };
     private:
-        void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion> request,
-        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion>response){
+        void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
+        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
             
             {std::lock_guard<std::mutex> lock(approval_mutex);
             motion_approved_ = request->approve;}

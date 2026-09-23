@@ -11,7 +11,7 @@ InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node
     camera_link_ = declare_parameter<std::string>("camera_link","camera_visor");
     planning_time_ = declare_parameter<double>("planning_time",5.0);
     stability_timeout_ = declare_parameter<double>("stability_timeout",5.0);
-    skip_motion_ = declare_parameter<bool>("skip_motion", true);
+    skip_motion_ = declare_parameter<bool>("skip_inspection_motion", true);
 }
    
 void InspectSceneServer::initialize(){
@@ -69,6 +69,12 @@ for (const auto* link : robot_model->getLinkModels())
         std::placeholders::_1
     ));
 
+    approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
+            "approve_motion",
+            std::bind(&InspectSceneServer::handleApproval,this,
+                std::placeholders::_1,std::placeholders::_2)
+        );
+
     RCLCPP_INFO(get_logger(),"Inspect Scene Server Initialized");  
     RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
     RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
@@ -76,6 +82,22 @@ for (const auto* link : robot_model->getLinkModels())
     RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
 
 }
+
+void InspectSceneServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
+        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
+            
+            {std::lock_guard<std::mutex> lock(approval_mutex_);
+            motion_approved_ = request->approve;}
+            response->accepted = true;
+            if(request->approve){
+                response->message = "motion approved";
+                approval_cv_.notify_all();
+            }
+            else{
+                response->message = "motion not approved";
+            }
+
+        }
 
 rclcpp_action::GoalResponse InspectSceneServer::handleGoal(const rclcpp_action::GoalUUID & , 
     std::shared_ptr<const InspectScene::Goal> goal){
@@ -124,6 +146,10 @@ motion::ExplorationRequest InspectSceneServer::makeExplorationRequest(
 
 void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> goal_handle){
     std::lock_guard<std::mutex> lock(execution_mutex_);
+    {
+        std::lock_guard<std::mutex> lock(approval_mutex_);
+        motion_approved_ = false;
+    }
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectScene::Result>();
     result->success = false;
@@ -168,7 +194,13 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         auto plan = planToView(planning_state,view.robot_state);
         if(!plan){
             RCLCPP_ERROR(get_logger(),"planning failed at segment %zu",i);
+
+            result->result_code = InspectScene::Result::PLANNING_FAILED;
+            result->viewpoints_captured = 0;
+            result->message = "failed planning at segment" + std::to_string(i);
+            goal_handle->abort(result);
             return;
+            
         }
         motion_plans.push_back(std::move(*plan));
         planning_state = exploration.views[i].robot_state;
@@ -199,6 +231,32 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         RCLCPP_INFO(get_logger(),"traj %zu : %zu points",i,motion_plans[i].trajectory_.joint_trajectory.points.size());
     }
 
+    if(skip_motion_){
+        RCLCPP_INFO(get_logger(),"skip motion is true, no motion executed");
+    }
+    else{
+        RCLCPP_INFO(get_logger(),"skip motion is false, awaiting approval");
+        while(rclcpp::ok()){
+            if (goal_handle->is_canceling()){
+                move_group_->stop();
+                result->result_code = InspectScene::Result::CANCELLED;
+                result->viewpoints_captured = 0;
+                result->message = "exploration cancelled while awaiting approval";
+                goal_handle->canceled(result);
+                return;
+            }
+            std::unique_lock<std::mutex> approval_lock(
+                approval_mutex_
+            );
+            if(approval_cv_.wait_for(approval_lock, std::chrono::milliseconds(100),
+        [this](){return motion_approved_;})){break;}
+
+        }
+        RCLCPP_INFO(get_logger(),"motion_approved");
+    
+    
+    }
+    
 
     // execution run
     for (uint32_t i = 0; i<motion_plans.size(); i++){
@@ -211,16 +269,13 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             return;
         }
         const auto& view = exploration.views[i];
-        
+        if(skip_motion_){
+            RCLCPP_INFO(get_logger(),"skipping motion");
+            continue;
+        }
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::MOVING);
         // MOVE
 
-      
-
-        if(skip_motion_){
-            result->viewpoints_captured = i+1;
-            continue;
-        }
         // if(!moveToView(view.robot_state)){
         //     result->result_code = InspectScene::Result::MOTION_FAILED;
         //     result->viewpoints_captured = i;
@@ -374,7 +429,7 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 }
 int main(int argc, char **argv){
     rclcpp::init(argc,argv);
-    auto options = rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true);
+    auto options = rclcpp::NodeOptions();//.automatically_declare_parameters_from_overrides(true);
     auto node = std::make_shared<hb_robot_skills::InspectSceneServer>(options);
 
     try{
