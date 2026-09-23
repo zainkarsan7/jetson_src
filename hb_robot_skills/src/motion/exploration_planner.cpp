@@ -129,7 +129,12 @@ namespace hb_robot_skills::motion{
                 Eigen::Vector3d offset(dist(rng),dist(rng),dist(rng));
                 candidate.candidate_pose = nominal_pose;
                 candidate.nominal_pose = nominal_pose;
-                candidate.candidate_pose.translation() += offset*dp;
+                if (offset.norm()>1e-9){
+                    offset = offset.normalized() * std::cbrt(std::abs(dist(rng)))* dp;
+                }
+                candidate.candidate_pose.translation() += offset;
+
+                
                 candidate.candidate_pose.linear() = nominal_pose.linear() * Rdr.toRotationMatrix();
                 candidate.pos_error = offset.norm();
                 candidates.push_back(std::move(candidate));
