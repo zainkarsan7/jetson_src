@@ -7,8 +7,8 @@ handeye:
     effector_frame: ur10e_tool0
     camera_frame: rgb_camera_link
     mount_frame: camera_base
-    image_topic: /rgb/image_raw
-    camera_info_topic: /rgb/camera_info
+    image_topic: /k4a/rgb/image_raw
+    camera_info_topic: /k4a/rgb/camera_info
     image_is_rectified: false
     output_directory: ~/.ros/handeye/ur10e_azure_session
     solver: park
@@ -18,9 +18,9 @@ handeye:
       dictionary: DICT_5X5_250
       columns: 5
       rows: 7
-      square_length_m: 0.04
-      marker_length_m: 0.03
-      marker_separation_m: 0.01
+      square_length_m: 0.055000
+      marker_length_m: 0.041248
+      marker_separation_m: 0.00688
     max_sample_age_s: 5.0
     settle_time_s: 1.0
     detector_rate_hz: 5.0
