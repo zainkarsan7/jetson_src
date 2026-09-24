@@ -123,8 +123,8 @@ git sparse-checkout add new_folder_1 new_folder 2
 ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
 "{
   center_pose: {
-      position: {x: -0.027, y: 1.2, z: 0.725},
-      orientation: {x: 0.127, y: 0.222, z: 0.612, w: 0.748}
+      position: {x: -0.312, y: 1.18, z: 0.552},
+      orientation: {x: -0.312, y: -0.148, z: 0.918, w: 0.193}
   },
   range_x: 0.25,
   range_y: 0.25,
