@@ -1349,12 +1349,17 @@ void K4AROS2Device::updateTimestampOffset(const std::chrono::microseconds& k4a_d
   std::chrono::nanoseconds device_to_realtime =
       k4a_system_timestamp_ns - k4a_device_timestamp_us + monotonic_to_realtime;
   // If we're over a second off, just snap into place.
-
+  const auto offset_error = device_to_realtime_offset_.count()- device_to_realtime.count();
   if (device_to_realtime_offset_.count() == 0 ||
       std::abs((device_to_realtime_offset_ - device_to_realtime).count()) > 1e7) // ZK - CHANGED THIS FROM 1e7
   {
-    RCLCPP_WARN_STREAM(this->get_logger(), "Initializing or re-initializing the device to realtime offset: "
-      << device_to_realtime.count() << " ns");
+    // RCLCPP_WARN_STREAM(this->get_logger(), "Initializing or re-initializing the device to realtime offset: "
+    //   << device_to_realtime.count() << " ns");
+
+    RCLCPP_WARN(this->get_logger(),"timestamp offset reset: "
+              "old=%ld ns, new=%ld ns error = %.3f ms", device_to_realtime_offset_.count(),device_to_realtime.count(),
+              static_cast<double>(offset_error.count()/1e6));
+  
 
     device_to_realtime_offset_ = device_to_realtime;
   }
