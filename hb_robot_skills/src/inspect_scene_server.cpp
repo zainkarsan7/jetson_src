@@ -490,6 +490,12 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
     bool InspectSceneServer::acquireSamples(uint32_t sample_count)
     {
         (void)sample_count;
+
+        const auto acquisition_start_time = now();
+        // auto observation = acquisition_.acquireAfter(acquisition_start_time,
+        // std::chrono::milliseconds(1000));
+        // if(!observation){return false;}
+        // observations_.add(std::move(*observation));
         return true;
     }
     bool InspectSceneServer::registerView()
