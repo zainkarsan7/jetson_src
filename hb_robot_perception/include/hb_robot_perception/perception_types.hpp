@@ -12,8 +12,9 @@ struct Observation{
     // put image header, camera pose?
     sensor_msgs::msg::Image::ConstSharedPtr rgb;
     sensor_msgs::msg::Image::ConstSharedPtr depth_to_rgb;
-    sensor_msgs::msg::CameraInfo::ConstSharedPtr rgb_camera_pose;
+    sensor_msgs::msg::CameraInfo::ConstSharedPtr rgb_camera_info;
     geometry_msgs::msg::TransformStamped camera_pose;
+    
     rclcpp::Time stamp;
 
 };
