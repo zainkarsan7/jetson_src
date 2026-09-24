@@ -166,7 +166,7 @@ OpenCV 4.6. The board frame itself need not be surveyed in world coordinates.
 ## 4. Collect and solve
 
 ```bash
-ros2 launch handeye_calibration_ros2 calibration.launch.py config:=/tmp/handeye.yaml
+ros2 launch handeye_calibration_ros2 calibration.launch.py config:=/home/zk-pac/ros2_pac_ws/src/handeye_calibration_ros2/config/ur10e_azure_example.yaml
 ```
 
 The window shows annotated images, capture readiness, samples and results.

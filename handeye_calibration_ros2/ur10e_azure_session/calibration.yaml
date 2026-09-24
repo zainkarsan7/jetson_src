@@ -1,0 +1,209 @@
+schema_version: 1
+mode: eye_in_hand
+method: park
+sample_count: 25
+parent_from_camera:
+- - 0.016671992179123612
+  - 0.9998515226090223
+  - -0.00435630728946671
+  - -0.05800833689554896
+- - -0.7051529239418081
+  - 0.014846693807171563
+  - 0.7088998021859642
+  - 0.034248384111423315
+- - 0.7088592233533273
+  - -0.008746909135070674
+  - 0.7052957486384683
+  - 0.17167886376745778
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+translation_m:
+- -0.05800833689554896
+- 0.034248384111423315
+- 0.17167886376745778
+quaternion_xyzw:
+- -0.2722726343821056
+- -0.27059146004150725
+- -0.6468726811846693
+- 0.6589412786100068
+excitation:
+  rotation_singular_values:
+  - 25.83372837342468
+  - 7.776056257824692
+  - 7.2955511105388045
+  translation_constraint_singular_values:
+  - 21.862921828391936
+  - 21.646002084715192
+  - 9.49223590651608
+  maximum_relative_rotation_deg: 177.54450129322638
+residuals:
+  closure_reference:
+  - - -0.005609803721229091
+    - -0.8707812571314405
+    - -0.4916386196494292
+    - 0.6113387001952717
+  - - -0.999635526525875
+    - 0.017866530344270607
+    - -0.02023860669098341
+    - 0.505252042031037
+  - - 0.02640727569334595
+    - 0.49134589580258486
+    - -0.8705641081898617
+    - 1.7674107839695024
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  translation_rms_m: 0.007750089656859643
+  rotation_rms_deg: 0.46574480314008276
+  translation_max_m: 0.014631665863337239
+  rotation_max_deg: 0.994924677795768
+  per_sample:
+  - index: 0
+    translation_m: 0.010784546262375986
+    rotation_deg: 0.1702335300828688
+  - index: 1
+    translation_m: 0.014046194823289861
+    rotation_deg: 0.5603451761457829
+  - index: 2
+    translation_m: 0.008589799949034128
+    rotation_deg: 0.33283999767322126
+  - index: 3
+    translation_m: 0.012540737844579479
+    rotation_deg: 0.4466072631212171
+  - index: 4
+    translation_m: 0.014631665863337239
+    rotation_deg: 0.3533623818177259
+  - index: 5
+    translation_m: 0.0037978085473151734
+    rotation_deg: 0.32173210746827197
+  - index: 6
+    translation_m: 0.006887174294210162
+    rotation_deg: 0.0833476802419954
+  - index: 7
+    translation_m: 0.007415160071553031
+    rotation_deg: 0.4101587163635199
+  - index: 8
+    translation_m: 0.004092474717445869
+    rotation_deg: 0.6826652607660387
+  - index: 9
+    translation_m: 0.007046266080517065
+    rotation_deg: 0.38206944906733564
+  - index: 10
+    translation_m: 0.010033407071160183
+    rotation_deg: 0.6566806812922383
+  - index: 11
+    translation_m: 0.006021060679867525
+    rotation_deg: 0.42768126310911975
+  - index: 12
+    translation_m: 0.00279937042405251
+    rotation_deg: 0.1840154474969895
+  - index: 13
+    translation_m: 0.005329704970636676
+    rotation_deg: 0.30891274073266894
+  - index: 14
+    translation_m: 0.004446358099227055
+    rotation_deg: 0.3500472392286432
+  - index: 15
+    translation_m: 0.006080542580048602
+    rotation_deg: 0.4801949046865311
+  - index: 16
+    translation_m: 0.004901993987752093
+    rotation_deg: 0.13560055495103124
+  - index: 17
+    translation_m: 0.004527490732984258
+    rotation_deg: 0.21598640384747245
+  - index: 18
+    translation_m: 0.006864238198938369
+    rotation_deg: 0.37138761276449106
+  - index: 19
+    translation_m: 0.005033015402513016
+    rotation_deg: 0.9129925040771881
+  - index: 20
+    translation_m: 0.005258605520499796
+    rotation_deg: 0.3401262998486272
+  - index: 21
+    translation_m: 0.010252067776619075
+    rotation_deg: 0.994924677795768
+  - index: 22
+    translation_m: 0.0055038329055355755
+    rotation_deg: 0.1831215090761135
+  - index: 23
+    translation_m: 0.005506786264043536
+    rotation_deg: 0.23256429527592676
+  - index: 24
+    translation_m: 0.004399577787756682
+    rotation_deg: 0.6541668611589508
+context:
+  mode: eye_in_hand
+  base_frame: ur10e_base_link
+  effector_frame: ur10e_tool0
+  camera_frame: rgb_camera_link
+  image_topic: /k4a/rgb/image_raw
+  camera_info_topic: /k4a/rgb/camera_info
+  image_is_rectified: false
+  board:
+    kind: charuco
+    dictionary: DICT_5X5_250
+    columns: 5
+    rows: 7
+    square_length_m: 0.055
+    marker_length_m: 0.041248
+    marker_separation_m: 0.00688
+  detector_opencv_version: 4.5.4
+  camera_model:
+    k:
+    - - 608.9832763671875
+      - 0.0
+      - 640.851806640625
+    - - 0.0
+      - 609.0643310546875
+      - 369.2041320800781
+    - - 0.0
+      - 0.0
+      - 1.0
+    d:
+    - 0.09108368307352066
+    - -2.5290956497192383
+    - 0.00046168884728103876
+    - -0.0008212794200517237
+    - 1.7366060018539429
+    - -0.023102279752492905
+    - -2.334582567214966
+    - 1.6425261497497559
+    optical_from_rectified:
+    - - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+    width: 1280
+    height: 720
+parent_frame: ur10e_tool0
+camera_frame: rgb_camera_link
+opencv_version: 4.5.4
+mount_frame: camera_base
+parent_from_mount:
+- - -0.010283436456475005
+  - -0.013800542026159974
+  - -0.9998518870184877
+  - -0.05878718188937343
+- - 0.7122867316465562
+  - 0.7016824368086403
+  - -0.01701087283296927
+  - 0.059510573280679324
+- - 0.7018132677962915
+  - -0.7123561629648872
+  - 0.002614236223218772
+  - 0.1513621946385637
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+quality_passed: true

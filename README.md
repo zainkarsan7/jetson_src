@@ -137,3 +137,19 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
 }" --feedback
 
 ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
+
+
+### CAMERA CALIBRATION
+
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="ur10e_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05936830394761276 0.06008521367175501 0.1516701649741268" rpy="-1.5650543563273984 -0.7780553473289481 1.58389776401603"/>
+</joint>
+
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="ur10e_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
+</joint>
+

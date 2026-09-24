@@ -1,0 +1,6 @@
+<!-- Replace the existing mount joint; do not add a second parent. -->
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="ur10e_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
+</joint>

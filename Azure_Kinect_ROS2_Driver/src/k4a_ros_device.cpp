@@ -252,9 +252,13 @@ K4AROS2Device::K4AROS2Device()
 
 
   // TODO: QoS Params
+  // qos_.history(RMW_QOS_POLICY_HISTORY_KEEP_LAST);
+  // qos_.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
+  // qos_.durability(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
   qos_.history(RMW_QOS_POLICY_HISTORY_KEEP_LAST);
-  qos_.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
-  qos_.durability(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
+  qos_.keep_last(1);
+  qos_.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
+  qos_.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
 
   std::string topic_prefix = "k4a/";
 
@@ -796,15 +800,19 @@ void K4AROS2Device::framePublisherThread()
   RCLCPP_INFO(this->get_logger(), "Starting image grab loop...");
   while (running_ && rclcpp::ok())
   {
-
+    const auto cycle_start = std::chrono::steady_clock::now();
+    auto after_capture  = cycle_start;
+    bool live_capture = false;
     rclcpp::Time cycle_start_time = this->now();
 
     if (k4a_device_)
     {
+      live_capture=false;
       RCLCPP_DEBUG(this->get_logger(), "Processing k4a device loop");
-      // TODO: consider appropriate capture timeout based on camera framerate
       const auto before_capture = std::chrono::steady_clock::now();
 
+      // TODO: consider appropriate capture timeout based on camera framerate
+      
       if (!k4a_device_.get_capture(&capture, std::chrono::milliseconds(K4A_WAIT_INFINITE)))
       {
         RCLCPP_FATAL(this->get_logger(), "Failed to poll cameras: node cannot continue.");
@@ -813,7 +821,34 @@ void K4AROS2Device::framePublisherThread()
       }
       else
       {
-        
+        // const auto steady_now =
+        // std::chrono::steady_clock::now().time_since_epoch();
+
+        // const auto k4a_system =
+        //     capture.get_color_image().get_system_timestamp();
+
+        // const auto system_age =
+        //     std::chrono::duration<double, std::milli>(
+        //         steady_now - k4a_system).count();
+
+        // RCLCPP_INFO(
+        //     this->get_logger(),
+        //     "K4A system age: %.3f ms",
+        //     system_age);
+
+
+        // const auto capture_time =
+        // timestampToROS(capture.get_color_image().get_device_timestamp());
+
+        // const auto now = this->now();
+
+        // RCLCPP_INFO(
+        //     this->get_logger(),
+        //     "IMMEDIATE COLOR age: %.3f ms",
+        //     (now - capture_time).seconds() * 1000.0);
+        // after_capture = std::chrono::steady_clock::now();
+        // const double capture_wait_ms = std::chrono::duration<double,std::milli>(after_capture-before_capture).count();
+        // RCLCPP_INFO(this->get_logger(),"capture time %.3f ms", capture_wait_ms);
         if (this->get_parameter("depth_enabled").as_bool())
         {
           // Update the timestamp offset based on the difference between the system timestamp (i.e., arrival at USB bus)
@@ -827,9 +862,7 @@ void K4AROS2Device::framePublisherThread()
                                 capture.get_color_image().get_system_timestamp());
         }
       }
-      const auto after_capture = std::chrono::steady_clock::now();
-      const double capture_wait_ms = std::chrono::duration<double,std::milli>(after_capture-before_capture).count();
-      RCLCPP_INFO(this->get_logger(),"capture time %.3f ms", capture_wait_ms);
+      
     }
     else if (k4a_playback_handle_)
     {
@@ -997,6 +1030,10 @@ void K4AROS2Device::framePublisherThread()
           }
 
           capture_time = timestampToROS(capture.get_color_image().get_device_timestamp());
+          
+          
+          
+          
           this->printTimestampDebugMessage("Color image", capture_time);
 
           rgb_jpeg_frame->header.stamp = capture_time;
@@ -1025,6 +1062,15 @@ void K4AROS2Device::framePublisherThread()
           }
 
           capture_time = timestampToROS(capture.get_color_image().get_device_timestamp());
+          // const auto now = this->now();
+
+          // RCLCPP_INFO(
+          //     this->get_logger(),
+          //     "COLOR: capture=%.9f now=%.9f age=%.3f ms",
+          //     capture_time.seconds(),
+          //     now.seconds(),
+          //     (now - capture_time).seconds() * 1000.0);
+          
           this->printTimestampDebugMessage("Color image", capture_time);
 
           rgb_raw_frame->header.stamp = capture_time;
@@ -1032,8 +1078,15 @@ void K4AROS2Device::framePublisherThread()
 
           // Re-synchronize the header timestamps since we cache the camera calibration message
           rgb_raw_camera_info->header.stamp = capture_time;
-
+          const auto pub_start = std::chrono::steady_clock::now();
           rgb_raw_publisher_.publish(rgb_raw_frame, rgb_raw_camera_info);
+          const auto pub_end = std::chrono::steady_clock::now();
+
+          // RCLCPP_INFO(
+          //     this->get_logger(),
+          //     "RGB publish took %.3f ms",
+          //     std::chrono::duration<double, std::milli>(
+          //         pub_end - pub_start).count());
         }
 
         // We can only rectify the color into the depth co-ordinates if the depth camera is enabled and processing depth
@@ -1121,13 +1174,17 @@ void K4AROS2Device::framePublisherThread()
     //                                     << "Expected max loop time: " << loop_rate.period().count() / 1000000000. << std::endl
     //                                     << "Actual loop time: " << cycle_time.seconds() << std::endl);
     // }
-    const auto before_sleep = std::chrono::steady_clock::now();
-    const double processing_ms = std::chrono::duration<double,std::milli>(before_sleep-after_capture).count();
-    RCLCPP_INFO(this->get_logger(),"processing time %.3f ms", processing_ms);
+    // const auto before_sleep = std::chrono::steady_clock::now();
+    // if(live_capture)
+    // {
+    // const double processing_ms = std::chrono::duration<double,std::milli>(before_sleep-after_capture).count();
+    // RCLCPP_INFO(this->get_logger(),"processing time %.3f ms", processing_ms);}
     loop_rate.sleep();
-    const auto after_sleep = std::chrono::steady_clock::now();
-    const double sleep_ms = std::chrono::duration<double,std::milli>(after_sleep-before_sleep).count();
-    RCLCPP_INFO(this->get_logger(),"sleep time %.3f ms", sleep_ms);
+    // const auto after_sleep = std::chrono::steady_clock::now();
+    // if(live_capture)
+    // {const double sleep_ms = std::chrono::duration<double,std::milli>(after_sleep-before_sleep).count();
+    //   const double total_ms = std::chrono::duration<double,std::milli>(after_sleep - cycle_start).count();
+    // RCLCPP_INFO(this->get_logger(),"sleep time %.3f ms | total %.3f ms", sleep_ms,total_ms);}
   }
 }
 
@@ -1349,7 +1406,7 @@ void K4AROS2Device::updateTimestampOffset(const std::chrono::microseconds& k4a_d
   std::chrono::nanoseconds device_to_realtime =
       k4a_system_timestamp_ns - k4a_device_timestamp_us + monotonic_to_realtime;
   // If we're over a second off, just snap into place.
-  const auto offset_error = device_to_realtime_offset_.count()- device_to_realtime.count();
+  const auto offset_error = device_to_realtime_offset_- device_to_realtime;
   if (device_to_realtime_offset_.count() == 0 ||
       std::abs((device_to_realtime_offset_ - device_to_realtime).count()) > 1e7) // ZK - CHANGED THIS FROM 1e7
   {
@@ -1357,10 +1414,12 @@ void K4AROS2Device::updateTimestampOffset(const std::chrono::microseconds& k4a_d
     //   << device_to_realtime.count() << " ns");
 
     RCLCPP_WARN(this->get_logger(),"timestamp offset reset: "
-              "old=%ld ns, new=%ld ns error = %.3f ms", device_to_realtime_offset_.count(),device_to_realtime.count(),
-              static_cast<double>(offset_error.count()/1e6));
+              "old=%ld ns, new=%ld ns error = %.3f ms", 
+              static_cast<long>(device_to_realtime_offset_.count()),
+              static_cast<long>(device_to_realtime.count()),
+              static_cast<double>(offset_error.count())/1e6);
   
-
+    
     device_to_realtime_offset_ = device_to_realtime;
   }
   else
