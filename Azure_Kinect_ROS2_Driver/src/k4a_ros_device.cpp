@@ -803,12 +803,17 @@ void K4AROS2Device::framePublisherThread()
     {
       RCLCPP_DEBUG(this->get_logger(), "Processing k4a device loop");
       // TODO: consider appropriate capture timeout based on camera framerate
+      const auto before_capture = std::chrono::steady_clock::now();
+
       if (!k4a_device_.get_capture(&capture, std::chrono::milliseconds(K4A_WAIT_INFINITE)))
       {
         RCLCPP_FATAL(this->get_logger(), "Failed to poll cameras: node cannot continue.");
         rclcpp::shutdown();
         return;
       }
+      const auto after_capture = std::chrono::steady_clock::now();
+      const double capture_wait_ms = std::chrono::duration<double,std::milli>(after_capture-before_capture).count();
+      RCLCPP_INFO(this->get_logger(),"capture time %.3f ms", capture_wait_ms);
       else
       {
 
@@ -1107,17 +1112,22 @@ void K4AROS2Device::framePublisherThread()
       }
     }
     rclcpp::Duration cycle_time = this->now() - cycle_start_time;
-
+    
     // If the cycle took longer than the expected rate (1/fps)
     // if (cycle_time > loop_rate.period())
     // {
     //   RCLCPP_WARN_STREAM(this->get_logger(), "Image processing thread is running behind."
-    //                                    << std::endl
-    //                                    << "Expected max loop time: " << loop_rate.period().count() / 1000000000. << std::endl
-    //                                    << "Actual loop time: " << cycle_time.seconds() << std::endl);
+    //                                     << std::endl
+    //                                     << "Expected max loop time: " << loop_rate.period().count() / 1000000000. << std::endl
+    //                                     << "Actual loop time: " << cycle_time.seconds() << std::endl);
     // }
-
+    const auto before_sleep = std::chrono::steady_clock::now();
+    const double processing_ms = std::chrono::duration<double,std::milli>(before_sleep-after_capture).count();
+    RCLCPP_INFO(this->get_logger(),"processing time %.3f ms", processing_ms);
     loop_rate.sleep();
+    const auto after_sleep = std::chrono::steady_clock::now();
+    const double sleep_ms = std::chrono::duration<double,std::milli>(after_sleep-before_sleep).count();
+    RCLCPP_INFO(this->get_logger(),"sleep time %.3f ms", sleep_ms);
   }
 }
 
@@ -1339,8 +1349,9 @@ void K4AROS2Device::updateTimestampOffset(const std::chrono::microseconds& k4a_d
   std::chrono::nanoseconds device_to_realtime =
       k4a_system_timestamp_ns - k4a_device_timestamp_us + monotonic_to_realtime;
   // If we're over a second off, just snap into place.
+
   if (device_to_realtime_offset_.count() == 0 ||
-      std::abs((device_to_realtime_offset_ - device_to_realtime).count()) > 1e7)
+      std::abs((device_to_realtime_offset_ - device_to_realtime).count()) > 1e7) // ZK - CHANGED THIS FROM 1e7
   {
     RCLCPP_WARN_STREAM(this->get_logger(), "Initializing or re-initializing the device to realtime offset: "
       << device_to_realtime.count() << " ns");
