@@ -811,12 +811,9 @@ void K4AROS2Device::framePublisherThread()
         rclcpp::shutdown();
         return;
       }
-      const auto after_capture = std::chrono::steady_clock::now();
-      const double capture_wait_ms = std::chrono::duration<double,std::milli>(after_capture-before_capture).count();
-      RCLCPP_INFO(this->get_logger(),"capture time %.3f ms", capture_wait_ms);
       else
       {
-
+        
         if (this->get_parameter("depth_enabled").as_bool())
         {
           // Update the timestamp offset based on the difference between the system timestamp (i.e., arrival at USB bus)
@@ -830,6 +827,9 @@ void K4AROS2Device::framePublisherThread()
                                 capture.get_color_image().get_system_timestamp());
         }
       }
+      const auto after_capture = std::chrono::steady_clock::now();
+      const double capture_wait_ms = std::chrono::duration<double,std::milli>(after_capture-before_capture).count();
+      RCLCPP_INFO(this->get_logger(),"capture time %.3f ms", capture_wait_ms);
     }
     else if (k4a_playback_handle_)
     {
