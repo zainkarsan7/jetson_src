@@ -16,17 +16,20 @@ find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common)
 include_directories(include)
 
 add_library(hb_perception
   src/observation_buffer.cpp
   src/rgbd_acquisition.cpp
+  src/scene_model.cpp
 )
 
 target_include_directories(hb_perception
   PUBLIC 
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
+  ${PCL_INCLUDE_DIRS}
 )
 ament_target_dependencies(hb_perception
   rclcpp
@@ -39,6 +42,7 @@ ament_target_dependencies(hb_perception
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
+${PCL_LIBRARIES}
 )  
 install(
   TARGETS hb_perception
@@ -67,6 +71,7 @@ ament_export_dependencies(
   tf2
   tf2_ros
   message_filters
+  PCL
 )
 
 if(BUILD_TESTING)

@@ -23,12 +23,12 @@
     </group_state>
 
     <group_state name="inspection_home" group="manipulator">
-        <joint name="ur10e_elbow_joint" value="2.6"/>
+        <joint name="ur10e_elbow_joint" value="1.8"/>
         <joint name="ur10e_shoulder_lift_joint" value="-3"/>
-        <joint name="ur10e_shoulder_pan_joint" value="-0.9"/>
-        <joint name="ur10e_wrist_1_joint" value="-1.5"/>
-        <joint name="ur10e_wrist_2_joint" value="1.5"/>
-        <joint name="ur10e_wrist_3_joint" value="0"/>
+        <joint name="ur10e_shoulder_pan_joint" value="-1.65"/>
+        <joint name="ur10e_wrist_1_joint" value="-0.1"/>
+        <joint name="ur10e_wrist_2_joint" value="2.1"/>
+        <joint name="ur10e_wrist_3_joint" value="-1.2"/>
     </group_state>
     <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
     <disable_collisions link1="robot_mount" link2="ur10e_base_link_inertia" reason="Adjacent"/>
