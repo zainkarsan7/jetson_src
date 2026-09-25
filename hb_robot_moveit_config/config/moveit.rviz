@@ -7,11 +7,9 @@ Panels:
         - /Global Options1
         - /Status1
         - /AzureKinect1/Topic1
-        - /MarkerArray1
-        - /Trajectory1
         - /DepthCloud1
+        - /DepthCloud1/Status1
         - /DepthCloud1/Auto Size1
-        - /DepthCloud1/Occlusion Compensation1
       Splitter Ratio: 0.5
     Tree Height: 264
   - Class: rviz_common/Help
@@ -307,40 +305,6 @@ Visualization Manager:
         Show Robot Visual: true
       Value: true
       Velocity_Scaling_Factor: 0.1
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 7.9642333984375
-        Min Value: 0.010097658261656761
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: AxisColor
-      Decay Time: 1
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Max Intensity: 85
-      Min Color: 0; 0; 0
-      Min Intensity: 0
-      Name: PointCloud2
-      Position Transformer: XYZ
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.009999999776482582
-      Style: Points
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /unilidar/cloud
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: true
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
@@ -609,7 +573,7 @@ Visualization Manager:
       Queue Size: 1
       Reliability Policy: Best effort
       Selectable: true
-      Size (Pixels): 1
+      Size (Pixels): 3
       Style: Points
       Topic Filter: true
       Use Fixed Frame: true
@@ -633,25 +597,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.235996961593628
+      Distance: 5.203258037567139
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.19904325902462006
-        Y: 1.5861119031906128
-        Z: 0.35838037729263306
+        X: -0.6413010358810425
+        Y: 2.1154258251190186
+        Z: 0.14670024812221527
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.31479611992836
+      Pitch: 0.5047959685325623
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.8481407165527344
+      Yaw: 5.268143653869629
     Saved: ~
 Window Geometry:
   AzureKinect:
