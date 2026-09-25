@@ -68,7 +68,7 @@ ament_target_dependencies(inspect_scene_server
 
 target_link_libraries(inspect_scene_server
 hb_motion
-hb_robot_perception
+hb_perception
 )
 
 install(

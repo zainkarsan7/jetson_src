@@ -16,8 +16,8 @@
 
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include "hb"
-#include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_perception/observation_buffer.hpp"
+#include "hb_perception/rgbd_acquisition.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_scene.hpp>

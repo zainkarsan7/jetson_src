@@ -38,9 +38,9 @@ ament_target_dependencies(hb_perception
   message_filters
 )
 target_link_libraries(hb_perception
-Eigen3
+Eigen3::Eigen
 )  
-
+set_target_properties(hb_perception PROPERTIES EXPORT_NAME hb_perception)
 install(
   TARGETS hb_perception
   EXPORT hb_perceptionTargets
@@ -56,7 +56,7 @@ install(
 
 ament_export_targets(
   hb_perceptionTargets
-  HAS_TARGET_LIBRARY
+  HAS_LIBRARY_TARGET
 )
 
 
