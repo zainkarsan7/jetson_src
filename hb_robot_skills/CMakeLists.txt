@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
+find_package(hb_robot_perception REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
@@ -57,6 +58,7 @@ ament_target_dependencies(inspect_scene_server
   rclcpp_action
   geometry_msgs
   hb_robot_interfaces
+  hb_robot_perception
   Eigen3
   tf2_eigen
   moveit_msgs
@@ -66,6 +68,7 @@ ament_target_dependencies(inspect_scene_server
 
 target_link_libraries(inspect_scene_server
 hb_motion
+hb_robot_perception
 )
 
 install(

@@ -15,7 +15,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
-
+find_package(message_filters REQUIRED)
 include_directories(include)
 
 add_library(hb_perception
@@ -35,23 +35,41 @@ ament_target_dependencies(hb_perception
   tf2_eigen
   tf2
   tf2_ros
+  message_filters
 )
 target_link_libraries(hb_perception
 Eigen3
 )  
 
 install(
-  TARGETS
-    hb_perception
+  TARGETS hb_perception
+  EXPORT hb_perceptionTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
+  RUNTIME DESTINATION bin
 )
 
 install(
   DIRECTORY include/
   DESTINATION include
 )
+
+ament_export_targets(
+  hb_perceptionTargets
+  HAS_TARGET_LIBRARY
+)
+
+
+ament_export_dependencies(
+  rclcpp
+  geometry_msgs
+  sensor_msgs
+  tf2_eigen
+  tf2
+  tf2_ros
+  message_filters
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights

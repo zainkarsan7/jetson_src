@@ -51,7 +51,7 @@ class RGBDAcquisition{
             std::optional<Observation> latest_observation_;
             std::mutex observation_mutex_;
             std::condition_variable observation_cv_;
-            CameraInfo::ConstSharedPtr latest_camera_info_;
+            CameraInfo::ConstSharedPtr camera_info_;
 };
 
 }
