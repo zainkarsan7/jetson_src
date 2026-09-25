@@ -40,7 +40,6 @@ ament_target_dependencies(hb_perception
 target_link_libraries(hb_perception
 Eigen3::Eigen
 )  
-set_target_properties(hb_perception PROPERTIES EXPORT_NAME hb_perception)
 install(
   TARGETS hb_perception
   EXPORT hb_perceptionTargets

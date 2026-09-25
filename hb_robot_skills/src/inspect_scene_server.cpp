@@ -1,5 +1,7 @@
 #include "hb_robot_skills/inspect_scene_server.hpp"
+#include <chrono>
 #include <thread>
+#include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <moveit/robot_state/conversions.h>
@@ -12,6 +14,11 @@ InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node
     planning_time_ = declare_parameter<double>("planning_time",5.0);
     stability_timeout_ = declare_parameter<double>("stability_timeout",5.0);
     skip_motion_ = declare_parameter<bool>("skip_inspection_motion", true);
+    rgb_topic_ = declare_parameter<std::string>("perception_rgb_topic","/k4a/depth_to_rgb/image_raw");
+    depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/rgb/image_raw");
+    camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","k4a/depth_to_rgb/camera_info");
+    observation_frame_= declare_parameter<std::string>("observation_base_frame","world");
+    acquisition_timeout_ = declare_parameter<double>("acquisition timeout",2.0);
 }
    
 void InspectSceneServer::initialize(){
@@ -44,7 +51,13 @@ for (const auto* link : robot_model->getLinkModels())
         move_group_->getRobotModel(),
         planning_group_,
         camera_link_);
-
+    ///initialize acquistision stuff:
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+    rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
+        tf_buffer_.get(),observation_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
+    RCLCPP_INFO(get_logger(),"Acquisition Initialized");
+    
     display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
         10
         //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
@@ -80,6 +93,9 @@ for (const auto* link : robot_model->getLinkModels())
     RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
     RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
     RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+
+    
+    
 
 }
 
@@ -164,6 +180,8 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     {
         std::lock_guard<std::mutex> lock(approval_mutex_);
         motion_approved_ = false;
+        observation_buffer_.clear();
+
     }
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectScene::Result>();
@@ -241,8 +259,6 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
     for (const auto jn: joint_names){
         RCLCPP_INFO(get_logger(), "home state %s: %.2f",jn,home_state.getVariablePosition(jn));
     }
-    
-
 
     auto home_plan = planToState(planning_state,home_state);
     moveit_msgs::msg::RobotTrajectory combined_msg;
@@ -313,10 +329,6 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
             return;
         }
         const auto& view = exploration.views[i];
-        if(skip_motion_){
-            RCLCPP_INFO(get_logger(),"skipping motion");
-            continue;
-        }
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::MOVING);
         // MOVE
 
@@ -327,15 +339,20 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         //     goal_handle->abort(result);
         //     return;
         // }
-
-        auto exec_result = move_group_->execute(motion_plans[i]);
-        if(!static_cast<bool>(exec_result)){
-            result->result_code = InspectScene::Result::MOTION_FAILED;
-            result->viewpoints_captured = i;
-            result->message = "motion failed";
-            goal_handle->abort(result);
-            return;
+        if(!skip_motion_){
+            auto exec_result = move_group_->execute(motion_plans[i]);
+            if(!static_cast<bool>(exec_result)){
+                result->result_code = InspectScene::Result::MOTION_FAILED;
+                result->viewpoints_captured = i;
+                result->message = "motion failed";
+                goal_handle->abort(result);
+                return;
+            }
         }
+        else{
+            RCLCPP_INFO(get_logger(),"skipping motion for segment %zu", i);
+        }
+        
         // WAIT FOR SETTLING
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::SETTLING);
 
@@ -366,7 +383,7 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         result->viewpoints_captured = i+1;
     }
-
+    // DONE THE INSPECTION SWEEP
     auto exec_home_plan = move_group_->execute(*home_plan);
     if(!static_cast<bool>(exec_home_plan)){
             result->result_code = InspectScene::Result::MOTION_FAILED;
@@ -489,13 +506,36 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
     }
     bool InspectSceneServer::acquireSamples(uint32_t sample_count)
     {
-        (void)sample_count;
+        if(!rgbd_acquisition_){
+            RCLCPP_ERROR(get_logger(),"acquisition not initialized");
+            return false;
+        }
+        if (sample_count==0){
+            RCLCPP_ERROR(get_logger(),"sample_count is 0");
+                return false;
+            
+        }
+        rclcpp::Time capture_boundary = now();
 
-        const auto acquisition_start_time = now();
-        // auto observation = acquisition_.acquireAfter(acquisition_start_time,
-        // std::chrono::milliseconds(1000));
-        // if(!observation){return false;}
-        // observations_.add(std::move(*observation));
+        for (uint32_t i = 0; i<sample_count; i++){
+            auto observation = rgbd_acquisition_->acquireAfter(capture_boundary,
+                std::chrono::milliseconds(static_cast<int64_t>(acquisition_timeout_*1000.0)));
+
+            if(!observation){
+                RCLCPP_ERROR(get_logger(),"capture failed for sample %zu/%zu",i,sample_count);
+                continue;    
+            }
+            capture_boundary = observation->stamp;
+            observation_buffer_.addObservation(std::move(*observation));
+            
+            RCLCPP_INFO(get_logger(),"Captured sample %u/%u at %.6f",
+            i,sample_count, observation->stamp.seconds()
+        );
+
+
+
+        }
+        RCLCPP_INFO(get_logger(),"observation buffer has %d captures",observation_buffer_.size());
         return true;
     }
     bool InspectSceneServer::registerView()
@@ -516,7 +556,9 @@ int main(int argc, char **argv){
         rclcpp::shutdown();
         return 1;
     }
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
     rclcpp::shutdown();
 
     return 0;

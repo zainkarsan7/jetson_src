@@ -13,11 +13,13 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/robot_state/robot_state.h>
 #include <Eigen/Geometry>
+#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_listener.hpp>
 
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include "hb_perception/observation_buffer.hpp"
-#include "hb_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/observation_buffer.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_scene.hpp>
@@ -102,6 +104,21 @@ namespace hb_robot_skills{
         std::mutex execution_mutex_;
         bool skip_motion_{true};
         bool require_plan_approval_{false};
+        
+        hb_perception::ObservationBuffer observation_buffer_;
+        std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
+        // configure acquisition stuff
+        std::string rgb_topic_;
+        std::string depth_topic_;
+        std::string camera_info_topic_;
+        std::string observation_frame_;
+        double acquisition_timeout_;
+
+
+        // tf buffer stuff
+        std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+        std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+
     
 };
 

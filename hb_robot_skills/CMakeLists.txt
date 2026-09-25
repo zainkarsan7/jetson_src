@@ -58,7 +58,6 @@ ament_target_dependencies(inspect_scene_server
   rclcpp_action
   geometry_msgs
   hb_robot_interfaces
-  hb_robot_perception
   Eigen3
   tf2_eigen
   moveit_msgs
@@ -68,7 +67,7 @@ ament_target_dependencies(inspect_scene_server
 
 target_link_libraries(inspect_scene_server
 hb_motion
-hb_perception
+hb_robot_perception::hb_perception
 )
 
 install(
