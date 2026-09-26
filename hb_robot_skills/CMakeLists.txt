@@ -60,6 +60,7 @@ ament_target_dependencies(inspect_scene_server
   hb_robot_interfaces
   Eigen3
   tf2_eigen
+  sensor_msgs
   moveit_msgs
   moveit_ros_planning_interface
   visualization_msgs

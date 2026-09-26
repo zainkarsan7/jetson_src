@@ -3,6 +3,7 @@
 #include <thread>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
+#include <pcl_conversions/pcl_conversions.h>
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <moveit/robot_state/conversions.h>
 
@@ -17,7 +18,7 @@ InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node
     rgb_topic_ = declare_parameter<std::string>("perception_rgb_topic","/k4a/depth_to_rgb/image_raw");
     depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/rgb/image_raw");
     camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","k4a/depth_to_rgb/camera_info");
-    observation_frame_= declare_parameter<std::string>("observation_base_frame","world");
+    scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
     acquisition_timeout_ = declare_parameter<double>("acquisition timeout",2.0);
 }
    
@@ -52,10 +53,11 @@ for (const auto* link : robot_model->getLinkModels())
         planning_group_,
         camera_link_);
     ///initialize acquistision stuff:
+    scene_model_ = std::make_shared<hb_perception::SceneModel>();
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
-        tf_buffer_.get(),observation_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
+        tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
     RCLCPP_INFO(get_logger(),"Acquisition Initialized");
     
     display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
@@ -63,6 +65,8 @@ for (const auto* link : robot_model->getLinkModels())
         //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
     );
     viewpoint_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("inspection_viewpoints", 10);
+    scene_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("scene_cloud",
+            rclcpp::QoS(1).transient_local().reliable());
     action_server_ = rclcpp_action::create_server<InspectScene>(
         shared_from_this(),
     "inspect_scene",
@@ -176,13 +180,19 @@ motion::ExplorationRequest InspectSceneServer::makeExplorationRequest(
 // }
 
 void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> goal_handle){
+
+    
+
+
     std::lock_guard<std::mutex> lock(execution_mutex_);
     {
         std::lock_guard<std::mutex> lock(approval_mutex_);
         motion_approved_ = false;
-        observation_buffer_.clear();
+        scene_model_->clear();
 
     }
+    
+
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectScene::Result>();
     result->success = false;
@@ -501,6 +511,19 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
     viewpoint_marker_pub_->publish(markers);
 }
 
+    void InspectSceneServer::publishSceneCloud(){
+        const auto cloud = scene_model_->cloud();
+        if(!cloud||cloud->empty()){
+            return;
+        }
+        sensor_msgs::msg::PointCloud2 msg;
+        pcl::toROSMsg(*cloud, msg);
+        msg.header.frame_id  = scene_frame_;
+        msg.header.stamp = this->now();
+        scene_cloud_pub_->publish(msg);
+    
+    };
+
     bool InspectSceneServer::waitForStability()
     {return true;
     }
@@ -526,8 +549,11 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
                 continue;    
             }
             capture_boundary = observation->stamp;
-            observation_buffer_.addObservation(std::move(*observation));
-            
+            // observation_buffer_.addObservation(std::move(*observation));
+            if(!scene_model_->addObservation(std::move(*observation))){
+                RCLCPP_ERROR(get_logger(),"Couldnt integrate point cloud");
+
+            }
             RCLCPP_INFO(get_logger(),"Captured sample %u/%u at %.6f",
             i,sample_count, observation->stamp.seconds()
         );
@@ -535,7 +561,7 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
 
 
         }
-        RCLCPP_INFO(get_logger(),"observation buffer has %d captures",observation_buffer_.size());
+        RCLCPP_INFO(get_logger(),"observation buffer has %d captures",scene_model_->observationCount());
         return true;
     }
     bool InspectSceneServer::registerView()

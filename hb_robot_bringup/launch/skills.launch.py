@@ -19,6 +19,7 @@ def generate_launch_description():
         executable = "inspect_scene_server",
         name = "inspect_scene_server",
         output="screen",
+        # prefix = ["gdb -ex run --args"],
         parameters = [moveit_config.robot_description,
         moveit_config.robot_description_semantic,
         moveit_config.robot_description_kinematics,

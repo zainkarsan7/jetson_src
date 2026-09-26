@@ -153,3 +153,5 @@ ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approv
   <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
 </joint>
 
+## debugging line 
+prefix = ["gdb -ex run --args"],

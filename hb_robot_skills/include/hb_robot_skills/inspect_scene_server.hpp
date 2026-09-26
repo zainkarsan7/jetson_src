@@ -15,11 +15,11 @@
 #include <Eigen/Geometry>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
-
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include "hb_robot_perception/rgbd_acquisition.hpp"
-#include "hb_robot_perception/observation_buffer.hpp"
+#include "hb_robot_perception/scene_model.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_scene.hpp>
@@ -60,6 +60,9 @@ namespace hb_robot_skills{
         motion::ExplorationRequest makeExplorationRequest(
             const InspectScene::Goal& goal) const;
         
+        
+        void publishSceneCloud();
+
         std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToView(
             const moveit::core::RobotState& start_state,
             const motion::ViewSolution &view 
@@ -93,7 +96,7 @@ namespace hb_robot_skills{
 
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr viewpoint_marker_pub_;
-
+        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scene_cloud_pub_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
         std::unique_ptr<motion::ExplorationPlanner> exploration_planner_;
         
@@ -105,13 +108,13 @@ namespace hb_robot_skills{
         bool skip_motion_{true};
         bool require_plan_approval_{false};
         
-        hb_perception::ObservationBuffer observation_buffer_;
+        std::shared_ptr<hb_perception::SceneModel> scene_model_;
         std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
         // configure acquisition stuff
         std::string rgb_topic_;
         std::string depth_topic_;
         std::string camera_info_topic_;
-        std::string observation_frame_;
+        std::string scene_frame_;
         double acquisition_timeout_;
 
 
