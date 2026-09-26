@@ -18,6 +18,7 @@ find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common)
 find_package(pcl_conversions REQUIRED)
+find_package(cv_bridge REQUIRED)
 
 
 include_directories(include)
@@ -44,6 +45,7 @@ ament_target_dependencies(hb_perception
   tf2_ros
   message_filters
   pcl_conversions
+  cv_bridge
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
@@ -78,6 +80,7 @@ ament_export_dependencies(
   message_filters
   PCL
   pcl_conversions
+  cv_bridge
 )
 
 if(BUILD_TESTING)

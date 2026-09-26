@@ -11,21 +11,12 @@ namespace hb_perception{
         const std::string& target_frame,
         const std::string& rgb_topic, 
         const std::string& depth_topic,
-        const std::string& pc_topic,
         const std::string& camera_info_topic):
         node_(node),tf_buffer_(tf_buffer),target_frame_(target_frame)
         {
             rgb_sub_.subscribe(node_,rgb_topic,rmw_qos_profile_sensor_data);
 
-            depth_sub_.subscribe(node_,depth_topic,rmw_qos_profile_sensor_data);
-
-            auto cloud_qos = rclcpp::SensorDataQoS();
-            cloud_qos.keep_last(1);
-            
-            pc_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>(this,
-            "/k4a/points2",cloud_qos.get_rmw_qos_profile());
-            
-            
+            depth_sub_.subscribe(node_,depth_topic,rmw_qos_profile_sensor_data);           
 
             /**
              * queue depth is the synchronizer queu not the ros dds queue
@@ -50,6 +41,17 @@ namespace hb_perception{
             RCLCPP_INFO(node->get_logger(),"Target: %s",target_frame.c_str());
             
         }
+
+
+        // void RGBDAcquisition::pointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud){
+        //         RCLCPP_INFO_THROTTLE(node_->get_logger(),
+        //         *node_->get_clock(),2000,
+        //             "Cloud Recieved : %u, x %u , %.1f MB",
+        //             cloud->width,cloud->height,
+        //             static_cast<double>(cloud->data.size())/1e6);
+
+        // }
+
 
         void RGBDAcquisition::cameraInfoCallback(const CameraInfo::ConstSharedPtr& camera_info){
             if (camera_info_){return;}

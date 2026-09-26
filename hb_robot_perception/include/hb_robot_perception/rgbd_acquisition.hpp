@@ -28,7 +28,6 @@ class RGBDAcquisition{
         RGBDAcquisition(rclcpp::Node * node, tf2_ros::Buffer* tf_buffer, const std::string& target_frame, 
         const std::string& rgb_topic = "/k4a/rgb/image_raw", 
         const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw" ,
-        const std::string& pc_topic = "/k4a/points2" ,
         const std::string& camera_info_topic = "k4a/depth_to_rgb/camera_info");
 
         /**
@@ -37,7 +36,9 @@ class RGBDAcquisition{
         std::optional<Observation> acquireAfter(const rclcpp::Time& min_stamp,
         std::chrono::milliseconds timeout);
     private:
-
+            // void pointCloudCallback(
+            //     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
+            
             void synchronizedCallback(const Image::ConstSharedPtr& rgb,
             const Image::ConstSharedPtr& depth);
             void cameraInfoCallback(const CameraInfo::ConstSharedPtr& camera_info);
@@ -46,8 +47,11 @@ class RGBDAcquisition{
             tf2_ros::Buffer* tf_buffer_;
             message_filters::Subscriber<Image> rgb_sub_;
             message_filters::Subscriber<Image> depth_sub_;
-            std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> pc_sub_;
+            // std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> pc_sub_;
+            // rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc_sub_;
+            
             const std::string target_frame_;
+
             rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
             std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> synchronizer_;
             std::optional<Observation> latest_observation_;

@@ -15,7 +15,6 @@ struct Observation{
     sensor_msgs::msg::Image::ConstSharedPtr depth_to_rgb;
     sensor_msgs::msg::CameraInfo::ConstSharedPtr rgb_camera_info;
     geometry_msgs::msg::TransformStamped camera_pose;
-    sensor_msgs::msg::PointCloud2::ConstSharedPtr point_cloud_;
         
     rclcpp::Time stamp;
 

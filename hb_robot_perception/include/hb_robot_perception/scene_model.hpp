@@ -21,6 +21,11 @@ namespace hb_perception{
             SceneModel();
             
             /**
+             * transform the depth map to point cloud
+             */
+            SceneModel::PointCloud::Ptr observationToCloud(const Observation& ob)const;
+
+            /**
              * add an observation, convert it to a point cloud
              * maybe need to transform but i dont think so
              * return false if cant be done

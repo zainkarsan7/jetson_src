@@ -17,9 +17,9 @@ InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node
     planning_time_ = declare_parameter<double>("planning_time",5.0);
     stability_timeout_ = declare_parameter<double>("stability_timeout",5.0);
     skip_motion_ = declare_parameter<bool>("skip_inspection_motion", true);
-    rgb_topic_ = declare_parameter<std::string>("perception_rgb_topic","/k4a/depth_to_rgb/image_raw");
-    depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/rgb/image_raw");
-    camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","k4a/depth_to_rgb/camera_info");
+    rgb_topic_ = declare_parameter<std::string>("perception_rgb_topic","/k4a/rgb/image_raw");
+    depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/depth_to_rgb/image_raw");
+    camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
     scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
     acquisition_timeout_ = declare_parameter<double>("acquisition timeout",2.0);
 }
@@ -522,11 +522,15 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
         msg.header.frame_id  = scene_frame_;
         msg.header.stamp = this->now();
         scene_cloud_pub_->publish(msg);
-    
+
     };
 
     bool InspectSceneServer::waitForStability()
-    {return true;
+    {
+        RCLCPP_INFO(get_logger(), "Waiting for camera to settle...");
+        rclcpp::sleep_for(std::chrono::seconds(5));
+        
+        return true;
     }
     bool InspectSceneServer::acquireSamples(uint32_t sample_count)
     {
@@ -552,14 +556,13 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
             capture_boundary = observation->stamp;
             // observation_buffer_.addObservation(std::move(*observation));
             RCLCPP_INFO(get_logger(),"scene_model is %s",scene_model_?"valid":"null");
-            RCLCPP_INFO(get_logger(),"observation contains cloud %s",observation->point_cloud_->data.empty() ?"empty":"poplated");
             if(!scene_model_->addObservation(std::move(*observation))){
                 RCLCPP_ERROR(get_logger(),"Couldnt integrate point cloud");
 
             }
             RCLCPP_INFO(get_logger(),"Captured sample %u/%u at %.6f",
-            i,sample_count, observation->stamp.seconds()
-        );
+            i,sample_count, observation->stamp.seconds());
+            publishSceneCloud();
 
 
 

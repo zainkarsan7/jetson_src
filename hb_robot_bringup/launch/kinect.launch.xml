@@ -11,8 +11,8 @@
     <param name="color_resolution" value="720P"/>
     
     <param name="fps" value="30"/>
-    <param name="point_cloud" value="true"/>
-    <param name="rgb_point_cloud" value="true"/>
-    <param name="point_cloud_in_depth_frame" value="false"/>
+    <param name="point_cloud" value="false"/>
+    <param name="rgb_point_cloud" value="false"/>
+    <!-- <param name="point_cloud_in_depth_frame" value="false"/> -->
     </node>
 </launch>
