@@ -28,7 +28,8 @@
 
 namespace hb_robot_skills{
 
-    class InspectSceneServer : public rclcpp::Node {
+    class InspectSceneServer : public rclcpp::Node
+     {
     public:
         using InspectScene = hb_robot_interfaces::action::InspectScene;
         using GoalHandleInspectScene = rclcpp_action::ServerGoalHandle<InspectScene>;

@@ -10,7 +10,8 @@ namespace hb_perception{
      RGBDAcquisition::RGBDAcquisition(rclcpp::Node * node, tf2_ros::Buffer* tf_buffer, 
         const std::string& target_frame,
         const std::string& rgb_topic, 
-        const std::string& depth_topic, 
+        const std::string& depth_topic,
+        const std::string& pc_topic,
         const std::string& camera_info_topic):
         node_(node),tf_buffer_(tf_buffer),target_frame_(target_frame)
         {
@@ -18,6 +19,13 @@ namespace hb_perception{
 
             depth_sub_.subscribe(node_,depth_topic,rmw_qos_profile_sensor_data);
 
+            auto cloud_qos = rclcpp::SensorDataQoS();
+            cloud_qos.keep_last(1);
+            
+            pc_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>(this,
+            "/k4a/points2",cloud_qos.get_rmw_qos_profile());
+            
+            
 
             /**
              * queue depth is the synchronizer queu not the ros dds queue

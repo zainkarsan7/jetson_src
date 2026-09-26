@@ -8,7 +8,9 @@
 #include <moveit/robot_state/conversions.h>
 
 namespace hb_robot_skills{ 
-InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node("inspect_scene_server",options){
+InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node("inspect_scene_server",options)
+, scene_model_(std::make_shared<hb_perception::SceneModel>())
+{
     // pass stuff to the private variables using some parameters
     planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
     camera_link_ = declare_parameter<std::string>("camera_link","camera_visor");
@@ -53,7 +55,6 @@ for (const auto* link : robot_model->getLinkModels())
         planning_group_,
         camera_link_);
     ///initialize acquistision stuff:
-    scene_model_ = std::make_shared<hb_perception::SceneModel>();
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
@@ -550,6 +551,8 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
             }
             capture_boundary = observation->stamp;
             // observation_buffer_.addObservation(std::move(*observation));
+            RCLCPP_INFO(get_logger(),"scene_model is %s",scene_model_?"valid":"null");
+            RCLCPP_INFO(get_logger(),"observation contains cloud %s",observation->point_cloud_->data.empty() ?"empty":"poplated");
             if(!scene_model_->addObservation(std::move(*observation))){
                 RCLCPP_ERROR(get_logger(),"Couldnt integrate point cloud");
 

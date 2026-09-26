@@ -10,7 +10,7 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
-
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <hb_robot_perception/perception_types.hpp>
 
 
@@ -27,7 +27,8 @@ class RGBDAcquisition{
 
         RGBDAcquisition(rclcpp::Node * node, tf2_ros::Buffer* tf_buffer, const std::string& target_frame, 
         const std::string& rgb_topic = "/k4a/rgb/image_raw", 
-        const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw" , 
+        const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw" ,
+        const std::string& pc_topic = "/k4a/points2" ,
         const std::string& camera_info_topic = "k4a/depth_to_rgb/camera_info");
 
         /**
@@ -45,6 +46,7 @@ class RGBDAcquisition{
             tf2_ros::Buffer* tf_buffer_;
             message_filters::Subscriber<Image> rgb_sub_;
             message_filters::Subscriber<Image> depth_sub_;
+            std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> pc_sub_;
             const std::string target_frame_;
             rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
             std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> synchronizer_;
