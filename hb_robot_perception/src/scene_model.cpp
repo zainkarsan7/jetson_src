@@ -5,6 +5,7 @@
 #include <utility>
 #include <Eigen/Geometry>
 #include <pcl/common/transforms.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/image_encodings.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 
@@ -16,48 +17,55 @@ namespace hb_perception{
 
 
     bool SceneModel::addObservation(Observation ob){
-        if(!ob.rgb || !ob.depth_to_rgb || !ob.rgb_camera_info){
-            return false;
-        }
-        auto camera_cloud = observationToCloud(ob);
-        if(!camera_cloud || camera_cloud->empty()){
+        if(!ob.point_cloud_||ob.point_cloud_->data.empty()){
             return false;
         }
 
+        PointCloud cam_cloud;
 
+        pcl::fromROSMsg(*ob.point_cloud_,cam_cloud);
+        if (cam_cloud.empty()){return false;}
 
+        const Eigen::Isometry3d T_scene_cam = tf2::transformToEigen(ob.camera_pose);
         
+        /*
+        * exprss the incoming camera - point cloud to base frame.
+        */
+        PointCloud transformed_cloud_;
+        pcl::transformPointCloud(cam_cloud,transformed_cloud_,T_scene_cam.matrix().cast<float>());
+
+
+        PointCloud valid_cloud;
+        valid_cloud.points.reserve(transformed_cloud_.points.size());
+        for (const auto& pt: transformed_cloud_.points){
+            if (!std::isfinite(pt.x)||
+            !std::isfinite(pt.y)||
+            !std::isfinite(pt.z)){
+                continue;
+            }
+            valid_cloud.points.push_back(pt);
+
+        }
+
+        if(valid_cloud.empty()){return false;}
+        valid_cloud.width = static_cast<uint32_t>(valid_cloud.points.size());
+        valid_cloud.height = 1;
+        valid_cloud.is_dense = true;
+
+        {std::lock_guard<std::mutex> lock(scene_mutex);
+        *scene_cloud_+=valid_cloud;
+        }
+        observation_buffer_.addObservation(ob);
         return true;
     }
-    SceneModel::PointCloud::Ptr SceneModel::observationToCloud(const Observation& ob)const{
-        const auto& rgb = *ob.rgb;
-        const auto& depth = *ob.depth_to_rgb;
-        const auto& info = *ob.rgb_camera_info;
     
-
-    // theres some encoding check here
-         if (depth.encoding != sensor_msgs::image_encodings::TYPE_16UC1){
-            return nullptr;
-         }
-
-         const double fx = info.k[0];
-         const double fy = info.k[4];
-         const double cx = info.k[2];
-         const double cy = info.k[5];
-
-         auto cloud = std::make_shared<PointCloud>();
-         cloud->reserve()
-
-            // PointCloud::Ptr transformObsCloud(const PointCloud &cloud, const Observation & ob)const;
-
-    }
     void SceneModel::clear(){
         observation_buffer_.clear();
         std::lock_guard<std::mutex>lock(scene_mutex);
         scene_cloud_->clear();
     }
 
-    const std::vector<Observation>& SceneModel::observations() const{
+    std::vector<Observation> SceneModel::observations() const{
         return observation_buffer_.observations();
     }
 
@@ -66,8 +74,13 @@ namespace hb_perception{
         return std::make_shared<PointCloud>(*scene_cloud_);
     }
 
-    const std::size_t SceneModel::observationCount() const{
+    std::size_t SceneModel::observationCount() const{
         return observation_buffer_.size();
+    }
+
+    std::size_t SceneModel::pointCount() const{
+        std::lock_guard<std::mutex>lock(scene_mutex);
+        return scene_cloud_->size();
     }
 
 

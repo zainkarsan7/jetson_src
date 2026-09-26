@@ -17,6 +17,9 @@ find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common)
+find_package(pcl_conversions REQUIRED)
+
+
 include_directories(include)
 
 add_library(hb_perception
@@ -30,6 +33,7 @@ target_include_directories(hb_perception
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
+ 
 )
 ament_target_dependencies(hb_perception
   rclcpp
@@ -39,10 +43,11 @@ ament_target_dependencies(hb_perception
   tf2
   tf2_ros
   message_filters
+  pcl_conversions
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
-${PCL_LIBRARIES}
+pcl_common
 )  
 install(
   TARGETS hb_perception
@@ -72,6 +77,7 @@ ament_export_dependencies(
   tf2_ros
   message_filters
   PCL
+  pcl_conversions
 )
 
 if(BUILD_TESTING)

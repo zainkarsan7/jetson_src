@@ -18,7 +18,7 @@ namespace hb_perception{
         using PointT = pcl::PointXYZRGB;
         using PointCloud = pcl::PointCloud<PointT>;
 
-            SceneModel() = default;
+            SceneModel();
             
             /**
              * add an observation, convert it to a point cloud
@@ -27,21 +27,18 @@ namespace hb_perception{
              */
             bool addObservation(Observation ob);
             /*get all the observations*/
-            const std::vector<Observation>& observations() const;
+            std::vector<Observation> observations() const;
             /*remove all observations*/
             void clear();
             /*get number of observations*/
-            const std::size_t observationCount() const;
+            std::size_t observationCount() const;
+            /*get number of points in cloud*/
+            std::size_t pointCount() const;
             /*return the current point cloud*/
             PointCloud::Ptr cloud() const;
 
         private:
 
-            PointCloud::Ptr observationToCloud(const Observation& ob)const;
-            PointCloud::Ptr transformObsCloud(const PointCloud &cloud, const Observation & ob)const;
-            /*integrate a cloud into the accumulated scene*/
-            void integrateCloud(const PointCloud& cloud);
-            
             mutable std::mutex scene_mutex;
             PointCloud::Ptr scene_cloud_;
             ObservationBuffer observation_buffer_;
