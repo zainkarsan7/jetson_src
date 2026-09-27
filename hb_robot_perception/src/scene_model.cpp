@@ -43,6 +43,7 @@ namespace hb_perception{
         auto rgb_cv = cv_bridge::toCvShare(ob.rgb);
         const cv::Mat& depth_mat = depth_cv->image;
         const cv::Mat& rgb_mat = rgb_cv->image;
+
         double min_val;
         double max_val;
 
@@ -55,9 +56,14 @@ namespace hb_perception{
 
         std::size_t valid = 0;
         
-        for (std::uint32_t v = 0; v<depth.height; ++v){
-            for(std::uint32_t u=0; u<depth.width; ++u){
-                const auto* depth_row = reinterpret_cast<const float*>(depth.data.data()+v*depth.step);
+        // for (std::uint32_t v = 0; v<depth.height; ++v){
+        //     for(std::uint32_t u=0; u<depth.width; ++u){
+
+        for (std::uint32_t v = 0; v<depth_mat.rows; ++v){
+            const float* depth_row = depth_mat.ptr<float>(v);
+            const cv::Vec4b* rgb_row = rgb_mat.ptr<cv::Vec4b>(v);
+            for (std::uint32_t u=0; u<depth_mat.cols; ++u){
+                // const auto* depth_row = reinterpret_cast<const float*>(depth.data.data()+v*depth.step);
                 const float raw_depth = depth_row[u];
                 if (!std::isfinite(raw_depth) || raw_depth < MIN_DEPTH || raw_depth > depth_range){
                     continue;
@@ -70,6 +76,13 @@ namespace hb_perception{
                 pt.x = static_cast<float>((u-cx)* z / fx);
                 pt.y = static_cast<float>((v-cy)*z/fy);
                 pt.z = z;
+
+                // color stuff
+                const cv::Vec4b& pixel = rgb_row[u];
+                pt.b = pixel[0];
+                pt.g = pixel[1];
+                pt.r = pixel[2];
+
                 cloud->points.push_back(pt);
             }
         }

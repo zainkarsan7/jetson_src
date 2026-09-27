@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Status1
         - /AzureKinect1/Topic1
+        - /DepthCloud1
         - /DepthCloud1/Auto Size1
         - /PointCloud21
       Splitter Ratio: 0.5
@@ -544,8 +545,8 @@ Visualization Manager:
         Value: true
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
+        Max Value: 3.2867512702941895
+        Min Value: -0.887954831123352
         Value: true
       Axis: Z
       CameraInfo Topic: /k4a/depth_to_rgb/camera_info
@@ -572,7 +573,7 @@ Visualization Manager:
       Queue Size: 1
       Reliability Policy: Best effort
       Selectable: true
-      Size (Pixels): 3
+      Size (Pixels): 2
       Style: Points
       Topic Filter: true
       Use Fixed Frame: true
@@ -581,14 +582,14 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 1.0874578952789307
-        Min Value: -0.9110677242279053
+        Max Value: 1.071526050567627
+        Min Value: -0.9112403392791748
         Value: true
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255
-      Color Transformer: AxisColor
+      Color Transformer: RGB8
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -599,7 +600,7 @@ Visualization Manager:
       Name: PointCloud2
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 3
+      Size (Pixels): 1
       Size (m): 0.009999999776482582
       Style: Points
       Topic:
@@ -630,25 +631,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 0.8099741339683533
+      Distance: 5.4144287109375
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.16297703981399536
-        Y: 2.3211820125579834
-        Z: 0.2643238306045532
+        X: -0.4477382004261017
+        Y: 2.5161306858062744
+        Z: -0.21048377454280853
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3847966492176056
+      Pitch: 0.4847954511642456
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 4.818144798278809
+      Yaw: 4.8481597900390625
     Saved: ~
 Window Geometry:
   AzureKinect:

@@ -158,9 +158,8 @@ ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approv
 prefix = ["gdb -ex run --args"],
 
 ##
-rm -rf build/hb_robot_interfaces install/hb_robot_interfaces
 rm -rf build/hb_robot_perception install/hb_robot_perception
 rm -rf build/hb_robot_skills install/hb_robot_skills
 
 colcon build \
-  --packages-select hb_robot_interfaces hb_robot_skills hb_robot_perception
+  --packages-select hb_robot_skills hb_robot_perception
