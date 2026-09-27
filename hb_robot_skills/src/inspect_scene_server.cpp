@@ -22,6 +22,7 @@ InspectSceneServer::InspectSceneServer(const rclcpp::NodeOptions & options):Node
     camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
     scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
     acquisition_timeout_ = declare_parameter<double>("acquisition timeout",2.0);
+    
 }
    
 void InspectSceneServer::initialize(){
@@ -376,13 +377,24 @@ void InspectSceneServer::execute(const std::shared_ptr<GoalHandleInspectScene> g
         }
         // ACQUIRE SAMPLES
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::ACQUIRING);
-        if(!acquireSamples(goal->sample_attempts)){
+        if(!acquireSamples(goal->sample_attempts, goal->depth_range)){
             result->result_code =InspectScene::Result::ACQUISITION_FAILED;
             result->viewpoints_captured = i;
             result->message = "couldnt acquire samples";
             goal_handle->abort(result);
             return;
         }
+        try{
+            RCLCPP_INFO(get_logger(),"Collected PC size %zu",scene_model_->pointCount());
+            scene_model_->downsample(0.005f);
+            publishSceneCloud();
+            RCLCPP_INFO(get_logger(),"Downsampled PC size %zu",scene_model_->pointCount());
+        }
+        catch(std::exception &e){ RCLCPP_ERROR(get_logger(),"coudlnt publish/downsample %s",e.what());
+
+        }
+
+
 
         publishFeedback(goal_handle,i,total_views,InspectScene::Feedback::REGISTERING);
         if(!registerView()){
@@ -532,7 +544,7 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
         
         return true;
     }
-    bool InspectSceneServer::acquireSamples(uint32_t sample_count)
+    bool InspectSceneServer::acquireSamples(uint32_t sample_count,double depth_range)
     {
         if(!rgbd_acquisition_){
             RCLCPP_ERROR(get_logger(),"acquisition not initialized");
@@ -555,8 +567,7 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
             }
             capture_boundary = observation->stamp;
             // observation_buffer_.addObservation(std::move(*observation));
-            RCLCPP_INFO(get_logger(),"scene_model is %s",scene_model_?"valid":"null");
-            if(!scene_model_->addObservation(std::move(*observation))){
+            if(!scene_model_->addObservation(std::move(*observation), depth_range)){
                 RCLCPP_ERROR(get_logger(),"Couldnt integrate point cloud");
 
             }

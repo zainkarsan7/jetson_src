@@ -133,7 +133,8 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
   orn_tol: 0.10,
   max_ang_vel: 0.2,
   num_candidates: 1,
-  sample_attempts: 10
+  sample_attempts: 3,
+  depth_range: 1.5
 }" --feedback
 
 ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
@@ -155,3 +156,11 @@ ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approv
 
 ## debugging line 
 prefix = ["gdb -ex run --args"],
+
+##
+rm -rf build/hb_robot_interfaces install/hb_robot_interfaces
+rm -rf build/hb_robot_perception install/hb_robot_perception
+rm -rf build/hb_robot_skills install/hb_robot_skills
+
+colcon build \
+  --packages-select hb_robot_interfaces hb_robot_skills hb_robot_perception

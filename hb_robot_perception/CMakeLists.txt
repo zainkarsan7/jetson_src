@@ -16,7 +16,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common)
+find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 
@@ -50,6 +50,7 @@ ament_target_dependencies(hb_perception
 target_link_libraries(hb_perception
 Eigen3::Eigen
 pcl_common
+pcl_filters
 )  
 install(
   TARGETS hb_perception

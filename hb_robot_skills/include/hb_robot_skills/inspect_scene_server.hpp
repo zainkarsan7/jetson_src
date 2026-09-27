@@ -76,7 +76,7 @@ namespace hb_robot_skills{
         
         bool moveToView(const moveit::core::RobotState& target_state);
         bool waitForStability();
-        bool acquireSamples(uint32_t sample_count);
+        bool acquireSamples(uint32_t sample_count, double depth_range);
         bool registerView();
         bool moveHome();
 

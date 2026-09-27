@@ -23,14 +23,19 @@ namespace hb_perception{
             /**
              * transform the depth map to point cloud
              */
-            SceneModel::PointCloud::Ptr observationToCloud(const Observation& ob)const;
+            SceneModel::PointCloud::Ptr observationToCloud(const Observation& ob, double depth_range)const;
 
             /**
              * add an observation, convert it to a point cloud
              * maybe need to transform but i dont think so
              * return false if cant be done
              */
-            bool addObservation(Observation ob);
+            bool addObservation(Observation ob, double depth_range);
+            /**
+             * voxel downsize the scene_cloud
+             */
+            void downsample(float leafsize);
+
             /*get all the observations*/
             std::vector<Observation> observations() const;
             /*remove all observations*/
