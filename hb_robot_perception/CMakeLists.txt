@@ -16,6 +16,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -23,10 +24,14 @@ find_package(cv_bridge REQUIRED)
 
 include_directories(include)
 
+
+
+
 add_library(hb_perception
   src/observation_buffer.cpp
   src/rgbd_acquisition.cpp
   src/scene_model.cpp
+  src/workpiece_extractor.cpp
 )
 
 target_include_directories(hb_perception
@@ -52,12 +57,38 @@ Eigen3::Eigen
 pcl_common
 pcl_filters
 )  
+
+add_executable(perception_node
+src/perception_node.cpp
+)
+
+ament_target_dependencies(perception_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  visualization_msgs
+  pcl_conversions
+  tf2_ros
+  
+)
+target_link_libraries(perception_node
+hb_perception
+)
+
+
 install(
-  TARGETS hb_perception
+  TARGETS 
+  hb_perception
   EXPORT hb_perceptionTargets
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+
+install(
+  TARGETS 
+  perception_node
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(

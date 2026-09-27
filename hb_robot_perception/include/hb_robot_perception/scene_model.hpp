@@ -23,7 +23,7 @@ namespace hb_perception{
             /**
              * transform the depth map to point cloud
              */
-            SceneModel::PointCloud::Ptr observationToCloud(const Observation& ob, double depth_range)const;
+            // SceneModel::PointCloud::Ptr observationToCloud(const Observation& ob, double depth_range)const;
 
             /**
              * add an observation, convert it to a point cloud
