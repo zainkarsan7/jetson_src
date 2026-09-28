@@ -91,15 +91,14 @@ class PerceptionDebugNode : public rclcpp::Node {
         wkpiece->cloud->size(),wkpiece->eigs.x(),
         wkpiece->eigs.y(),wkpiece->eigs.z(),
         wkpiece->l_axes.x(),wkpiece->l_axes.y(),wkpiece->l_axes.z());
-
-        auto section_model = extractor_.extractSection(*wkpiece,0.1f,0.005f);
+        RCLCPP_INFO(get_logger(), "entering etraction section");
+        auto section_model = extractor_.extractSection(*wkpiece,0.01f,0.015f);
         if(!section_model){
             RCLCPP_WARN(get_logger(),"SOMETHING WRONG IN SECTION EXTRACTION");
+            return;
         }
         publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
-
-
-        
+ 
     }
 
     void publishPCA(const WorkpieceModel& model,std::string frame_id){

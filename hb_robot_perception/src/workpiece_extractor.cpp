@@ -128,15 +128,25 @@ namespace hb_perception{
         std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
         float long_pos,
         float thickness)const{
+            if(!model.cloud || model.cloud->empty()){
+                std::cout<<"either workpiece or cloud is empty"<<std::endl;
+                return std::nullopt;
+            }
+
+            std::cout<<"entered extract section"<<std::endl;
+
             Eigen::Vector3f section_point = Eigen::Vector3f::Zero();
             try{
+                std::cout<<"model l axes norm : "<<model.l_axes.norm()<<std::endl;
                section_point = long_pos * model.l_axes.normalized() + model.centroid;
             }
             catch(std::exception &e){
+                std::cout<<"couldnt calculate section_point"<<std::endl;
                 std::cout<<e.what()<<std::endl;
                 return std::nullopt;
             }
-            
+            std::cout<<"section point is x: "<<section_point.x()<<" y:"<<section_point.y()<<" z:"<<section_point.z()<<std::endl;
+            std::cout<<"entered extract section with different overload"<<std::endl;
             auto section = extractSection(model,section_point,thickness);
 
             if(section){
@@ -157,8 +167,6 @@ namespace hb_perception{
                 std::cout<<"thikcness is zeor"<<std::endl;
                 return std::nullopt;
             }
-
-            
             SectionModel section_model_;
             auto section_cloud_ = std::make_shared<PointCloud>();
             section_cloud_->reserve(model.cloud->points.size());
