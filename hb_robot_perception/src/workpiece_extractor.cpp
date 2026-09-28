@@ -133,7 +133,6 @@ namespace hb_perception{
                 return std::nullopt;
             }
 
-            std::cout<<"entered extract section"<<std::endl;
 
             Eigen::Vector3f section_point = Eigen::Vector3f::Zero();
             try{
@@ -146,7 +145,6 @@ namespace hb_perception{
                 return std::nullopt;
             }
             std::cout<<"section point is x: "<<section_point.x()<<" y:"<<section_point.y()<<" z:"<<section_point.z()<<std::endl;
-            std::cout<<"entered extract section with different overload"<<std::endl;
             auto section = extractSection(model,section_point,thickness);
 
             if(section){
@@ -176,7 +174,7 @@ namespace hb_perception{
                 return std::nullopt;
             }
             dir.normalize();
-
+            std::cout<<"culling points"<<std::endl;
             for (auto mp: model.cloud->points){
                 if(!pcl::isFinite(mp)){
                     continue;
@@ -184,7 +182,7 @@ namespace hb_perception{
                 Eigen::Vector3f pt(mp.x,mp.y,mp.z);
                 float dist = (pt - section_point).dot(dir);
                 if (std::abs(dist) <= thickness/2.0){
-                    section_model_.cloud->points.push_back(mp);
+                    section_cloud_->points.push_back(mp);
                 }
             }
             if (section_cloud_->empty()){

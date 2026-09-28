@@ -91,7 +91,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         wkpiece->cloud->size(),wkpiece->eigs.x(),
         wkpiece->eigs.y(),wkpiece->eigs.z(),
         wkpiece->l_axes.x(),wkpiece->l_axes.y(),wkpiece->l_axes.z());
-        RCLCPP_INFO(get_logger(), "entering etraction section");
+        RCLCPP_INFO(get_logger(), "Extracting section");
         auto section_model = extractor_.extractSection(*wkpiece,0.01f,0.015f);
         if(!section_model){
             RCLCPP_WARN(get_logger(),"SOMETHING WRONG IN SECTION EXTRACTION");
