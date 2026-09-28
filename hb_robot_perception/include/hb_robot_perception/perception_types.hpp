@@ -20,9 +20,18 @@ struct Observation{
     sensor_msgs::msg::Image::ConstSharedPtr depth_to_rgb;
     sensor_msgs::msg::CameraInfo::ConstSharedPtr rgb_camera_info;
     geometry_msgs::msg::TransformStamped camera_pose;
-        
     rclcpp::Time stamp;
 
+};
+
+struct SectionModel{
+    PointCloud::Ptr cloud;
+    float longitudinal_position = 0.0f;
+    Eigen::Isometry3f frame = Eigen::Isometry3f::Identity();
+    Eigen::Vector3f origin = Eigen::Vector3f::Zero();
+    Eigen::Vector3f normal = Eigen::Vector3f::UnitX();
+    std::vector<Eigen::Vector2f> points_2d;
+    float thickness = 0.0f;
 };
 
 struct CutCandidate{

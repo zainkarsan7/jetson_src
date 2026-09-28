@@ -124,6 +124,79 @@ namespace hb_perception{
         }
 
 
+        ///SECTION STUFF
+
+        std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
+        const Eigen::Vector3f& section_point,
+        float thickness)const{
+            if(!model.cloud || model.cloud->empty()){
+                std::cout<<"either workpiece or cloud is empty"<<std::endl;
+                return std::nullopt;
+            }
+            if(thickness <=0.0f){
+                std::cout<<"thikcness is zeor"<<std::endl;
+                return std::nullopt;
+            }
+
+            
+            SectionModel section_model_;
+            auto section_cloud_ = std::make_shared<PointCloud>();
+            section_cloud_->reserve(model.cloud->points.size());
+            Eigen::Vector3f dir = model.l_axes;
+            if(dir.norm() < 1e-6f){
+                std::cout<<"long axis is fucked"<<std::endl;
+                return std::nullopt;
+            }
+            dir.normalize();
+
+            for (auto mp: model.cloud->points){
+                if(!pcl::isFinite(mp)){
+                    continue;
+                }
+                Eigen::Vector3f pt(mp.x,mp.y,mp.z);
+                float dist = (pt - section_point).dot(dir);
+                if (std::abs(dist) <= thickness/2.0){
+                    section_model_.cloud->points.push_back(mp);
+                }
+            }
+            if (section_cloud_->empty()){
+                std::cout<<"empty fucking section"<<std::endl;
+                return std::nullopt;
+            }
+            section_cloud_->width = static_cast<uint32_t>(section_cloud_->points.size());
+            section_cloud_->height = 1;
+            section_cloud_->is_dense= true;
+
+
+            section_model_.cloud = section_cloud_;
+            section_model_.origin = section_point;
+            section_model_.normal = dir;
+            section_model_.thickness = thickness;
+            section_model_.frame = makeSectionFrame(model,section_point);
+            section_model_.longitudinal_position = (section_point - model.centroid).dot(dir);
+            return section_model_;
+
+
+        }
+
+
+        std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
+        float long_pos,
+        float thickness)const{
+
+
+
+        }
+
+
+        Eigen::Isometry3f WorkpieceExtractor::makeSectionFrame(const WorkpieceModel &model, const Eigen::Vector3f &origin)const{
+
+
+
+        }
+
+
+
 
 
 }
