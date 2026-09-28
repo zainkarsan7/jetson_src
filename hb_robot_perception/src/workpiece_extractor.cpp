@@ -34,6 +34,7 @@ namespace hb_perception{
             tree->setInputCloud(input);
             std::vector<pcl::PointIndices> clust_ind;
             pcl::EuclideanClusterExtraction<PointT> clustering;
+            clustering.setInputCloud(input);
             clustering.setClusterTolerance(0.04);
             clustering.setMinClusterSize(100);
             clustering.setMaxClusterSize(input->size());
@@ -60,7 +61,12 @@ namespace hb_perception{
             auto result = std::make_shared<PointCloud>();
             result->points.reserve(best_->indices.size());
             for (const int index: best_->indices){
-                result->points.push_back(input->points[index]);
+                auto colored_pt = input->points[index];
+                colored_pt.r = 1.0;
+                colored_pt.g = 0.0;
+                colored_pt.b = 0.0;
+
+                result->points.push_back(colored_pt);
             }
             result->width = static_cast<uint32_t>(result->points.size());
             result->height = 1;

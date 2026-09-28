@@ -76,7 +76,7 @@ namespace hb_perception{
                 catch(const tf2::TransformException &ex){
                     RCLCPP_WARN_THROTTLE(node_->get_logger(),*node_->get_clock(),1000,
                 "couldnt get %s to %s transform at timestamp %s",
-            rgb->header.frame_id,target_frame_,ex.what());
+            rgb->header.frame_id.c_str(),target_frame_.c_str(),ex.what());
                     return;
                 }
 

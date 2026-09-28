@@ -19,7 +19,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     public:
         PerceptionDebugNode():
         Node("perception_debug_node"){
-            scene_frame_ = declare_parameter<std::string>("scene_frame", "world");
+            scene_frame_ = declare_parameter<std::string>("scene_frame", "camera_visor");
             rgb_topic_ = declare_parameter<std::string>("rgb_topic", "/k4a/rgb/image_raw");
             depth_topic_ = declare_parameter<std::string>("depth_topic", "/k4a/depth_to_rgb/image_raw");
             camera_info_topic_ = declare_parameter<std::string>("info_topic","k4a/depth_to_rgb/camera_info");
@@ -27,7 +27,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             
             // make a buffer listener combo
             tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
-            tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+            tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
             //construct an rgbd acuiqision object
             rgbd_acquisition_= std::make_unique<hb_perception::RGBDAcquisition>(
                 this,tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
@@ -51,11 +51,27 @@ class PerceptionDebugNode : public rclcpp::Node {
     void process(){
 
         rclcpp::Time capture_boundary = now();
-
-        auto observation = rgbd_acquisition_->latest();
+        std::optional<Observation> observation;
+        try{
+            observation = rgbd_acquisition_->latest();
+        }
+        catch(std::exception &e){
+            RCLCPP_WARN(get_logger(),"couldnt get acquisition: %s",e.what());
+            return;
+        }
+        if(!observation){
+            RCLCPP_WARN(get_logger(),"couldnt get acquisition null");
+            return;
+        }
+        RCLCPP_INFO(get_logger(),"latest observation at %ld",observation->stamp);
         
         auto cloud = observationToCloud(*observation, depth_range_);
-
+        if(!cloud){
+            RCLCPP_INFO(get_logger(),"no cloud");
+        }
+        RCLCPP_INFO(get_logger(),"got cloud with %zu",cloud->points.size());
+        
+        PointCloud voxel_downsampled_;
         publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
 
         auto result = extractor_.extract(cloud);

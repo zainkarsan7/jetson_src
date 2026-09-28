@@ -61,15 +61,16 @@ inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_ra
         const double fy = info.k[4];
         const double cx = info.k[2];
         const double cy = info.k[5];
+        
 
 
-        cloud->points.reserve(static_cast<std::size_t>(depth.width)*depth.height);
-
-        auto depth_cv = cv_bridge::toCvShare(ob.depth_to_rgb);
-        auto rgb_cv = cv_bridge::toCvShare(ob.rgb);
+        auto depth_cv = cv_bridge::toCvShare(ob.depth_to_rgb, sensor_msgs::image_encodings::TYPE_32FC1);
+        auto rgb_cv = cv_bridge::toCvShare(ob.rgb,sensor_msgs::image_encodings::BGRA8);
         const cv::Mat& depth_mat = depth_cv->image;
         const cv::Mat& rgb_mat = rgb_cv->image;
-
+        cloud->points.reserve(
+            static_cast<std::size_t>(depth_mat.rows) *
+            static_cast<std::size_t>(depth_mat.cols));
         double min_val;
         double max_val;
 
@@ -78,7 +79,23 @@ inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_ra
         std::cout << "depth min/max = "
                 << min_val << " / "
                 << max_val << std::endl;
-        
+        if (depth_mat.type() != CV_32FC1) {
+        std::cerr << "Unexpected depth type: "
+                << depth_mat.type()
+                << " encoding: "
+                << ob.depth_to_rgb->encoding
+                << std::endl;
+        return cloud;
+        }
+
+        if (rgb_mat.type() != CV_8UC4) {
+            std::cerr << "Unexpected RGB type: "
+                    << rgb_mat.type()
+                    << " encoding: "
+                    << ob.rgb->encoding
+                    << std::endl;
+            return cloud;
+        }
 
         std::size_t valid = 0;
         
