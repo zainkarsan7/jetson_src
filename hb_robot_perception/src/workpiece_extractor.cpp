@@ -5,7 +5,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/filters/voxel_grid.h>
-
+#include <pcl/common/point_tests.h>
 
 namespace hb_perception{
 
@@ -125,7 +125,27 @@ namespace hb_perception{
 
 
         ///SECTION STUFF
+        std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
+        float long_pos,
+        float thickness)const{
+            Eigen::Vector3f section_point = Eigen::Vector3f::Zero();
+            try{
+               section_point = long_pos * model.l_axes.normalized() + model.centroid;
+            }
+            catch(std::exception &e){
+                std::cout<<e.what()<<std::endl;
+                return std::nullopt;
+            }
+            
+            auto section = extractSection(model,section_point,thickness);
 
+            if(section){
+                section->longitudinal_position = long_pos;
+                return section;
+            }
+            return std::nullopt;
+            
+        }
         std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
         const Eigen::Vector3f& section_point,
         float thickness)const{
@@ -174,22 +194,41 @@ namespace hb_perception{
             section_model_.thickness = thickness;
             section_model_.frame = makeSectionFrame(model,section_point);
             section_model_.longitudinal_position = (section_point - model.centroid).dot(dir);
+            
+            // scene to section transform
+            const Eigen::Isometry3f scene_to_section = section_model_.frame.inverse();
+            section_model_.points_2d.reserve(section_cloud_->points.size());
+            for (const auto& sp: section_cloud_->points){
+                Eigen::Vector3f pt(sp.x,sp.y,sp.z);
+                Eigen::Vector3f t_pt = scene_to_section * pt;
+                section_model_.points_2d.emplace_back(t_pt.x(),t_pt.y());
+            }
+            
             return section_model_;
 
-
         }
 
+        Eigen::Isometry3f WorkpieceExtractor::makeSectionFrame(const WorkpieceModel &model, 
+            const Eigen::Vector3f &origin)const{
 
-        std::optional<SectionModel> WorkpieceExtractor::extractSection(const WorkpieceModel& model, 
-        float long_pos,
-        float thickness)const{
+                Eigen::Vector3f z_ax = model.l_axes.normalized();
+                Eigen::Vector3f x_ax = model.p_axes.col(1).normalized(); //the second largest eigV
+                x_ax -= x_ax.dot(z_ax)*z_ax; //pointless subtraction 
+                if(x_ax.norm()<1e-6f){
+                    x_ax = z_ax.unitOrthogonal(); // weird trick to get a random x axis just in case
+                }
+                x_ax.normalize();
+                Eigen::Vector3f y_ax = z_ax.cross(x_ax).normalized();
+                x_ax = y_ax.cross(z_ax).normalized();
+                Eigen::Matrix3f Rot;
+                Rot.col(0) = x_ax;
+                Rot.col(1) = y_ax;
+                Rot.col(2) = z_ax;
+                Eigen::Isometry3f frame = Eigen::Isometry3f::Identity();
+                frame.translation() = origin;
+                frame.linear() = Rot;
+                return frame;
 
-
-
-        }
-
-
-        Eigen::Isometry3f WorkpieceExtractor::makeSectionFrame(const WorkpieceModel &model, const Eigen::Vector3f &origin)const{
 
 
 

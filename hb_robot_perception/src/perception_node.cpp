@@ -36,7 +36,8 @@ class PerceptionDebugNode : public rclcpp::Node {
             ob_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/ob_cloud",1);
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
-            
+            sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
+
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this));
             
             //get an observation pass it to workpiece extractor
@@ -77,19 +78,27 @@ class PerceptionDebugNode : public rclcpp::Node {
         
         publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
 
-        auto result = extractor_.extract(cloud);
-        if (!result){
+        auto wkpiece = extractor_.extract(cloud);
+        if (!wkpiece){
             RCLCPP_ERROR(get_logger(),"couldnt get cluster");
             return;
         }
 
-        publishCloud(result->cloud,observation->camera_pose.header.frame_id,wk_pub_);
-        publishPCA(*result,observation->camera_pose.header.frame_id);
+        publishCloud(wkpiece->cloud,observation->camera_pose.header.frame_id,wk_pub_);
+        publishPCA(*wkpiece,observation->camera_pose.header.frame_id);
 
         RCLCPP_INFO(get_logger(),"Workpiece model: %zu points, | eigs %0.5f,%0.5f,%0.5f | axis %0.3f,%0.3f,%0.3f",
-        result->cloud->size(),result->eigs.x(),
-        result->eigs.y(),result->eigs.z(),
-        result->l_axes.x(),result->l_axes.y(),result->l_axes.z());
+        wkpiece->cloud->size(),wkpiece->eigs.x(),
+        wkpiece->eigs.y(),wkpiece->eigs.z(),
+        wkpiece->l_axes.x(),wkpiece->l_axes.y(),wkpiece->l_axes.z());
+
+        auto section_model = extractor_.extractSection(*wkpiece,0.1f,0.005f);
+        if(!section_model){
+            RCLCPP_WARN(get_logger(),"SOMETHING WRONG IN SECTION EXTRACTION");
+        }
+        publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
+
+
         
     }
 
@@ -148,6 +157,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     hb_perception::WorkpieceExtractor extractor_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ob_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr wk_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     double depth_range_;
