@@ -34,7 +34,8 @@ class RGBDAcquisition{
          * wait for RGBD observation captuered after min stamp and before timout may return nullopt
          */
         std::optional<Observation> acquireAfter(const rclcpp::Time& min_stamp,
-        std::chrono::milliseconds timeout);
+            std::chrono::milliseconds timeout);
+        std::optional<Observation> latest() const;
     private:
             // void pointCloudCallback(
             //     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
@@ -55,7 +56,7 @@ class RGBDAcquisition{
             rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
             std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> synchronizer_;
             std::optional<Observation> latest_observation_;
-            std::mutex observation_mutex_;
+            mutable std::mutex observation_mutex_;
             std::condition_variable observation_cv_;
             CameraInfo::ConstSharedPtr camera_info_;
 };

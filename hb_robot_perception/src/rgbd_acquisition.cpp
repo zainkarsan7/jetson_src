@@ -121,8 +121,16 @@ namespace hb_perception{
             RCLCPP_INFO(node_->get_logger(),"got a new obs at stamp : %.2f", latest_observation_->stamp.seconds());
             return latest_observation_;
 
-
-
         }
+        std::optional<Observation> RGBDAcquisition::latest() const{
+            std::lock_guard<std::mutex> lock(observation_mutex_);
+            if(!latest_observation_){
+                return std::nullopt;
+            }
+            return latest_observation_;
+        }
+
+
+
 
 }

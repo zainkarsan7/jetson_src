@@ -70,7 +70,9 @@ namespace hb_perception{
             
         }
 
-        bool WorkpieceExtractor::estimatePrincipalGeometry(const PointCloud::ConstPtr& cloud,WorkpieceModel& workpiece) const{
+        bool WorkpieceExtractor::estimatePrincipalGeometry(
+            const PointCloud::ConstPtr& cloud,
+            WorkpieceModel& workpiece) const{
 
 
             Eigen::Vector4f centroid4;
@@ -96,7 +98,8 @@ namespace hb_perception{
             return true;
         }
 
-        std::optional<WorkpieceModel> WorkpieceExtractor::extract(const PointCloud::ConstPtr &cloud) const{
+        std::optional<WorkpieceModel> WorkpieceExtractor::extract(
+            const PointCloud::ConstPtr &cloud) const{
             if(!cloud || cloud->empty()){
                 return std::nullopt;
             }

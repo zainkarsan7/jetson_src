@@ -12,7 +12,9 @@
 #include <rclcpp/rclcpp.hpp>
 
 using namespace std::chrono_literals;
-
+using PointT = pcl::PointXYZRGB;
+using PointCloud = pcl::PointCloud<PointT>;
+namespace hb_perception{
 class PerceptionDebugNode : public rclcpp::Node {
     public:
         PerceptionDebugNode():
@@ -21,14 +23,101 @@ class PerceptionDebugNode : public rclcpp::Node {
             rgb_topic_ = declare_parameter<std::string>("rgb_topic", "/k4a/rgb/image_raw");
             depth_topic_ = declare_parameter<std::string>("depth_topic", "/k4a/depth_to_rgb/image_raw");
             camera_info_topic_ = declare_parameter<std::string>("info_topic","k4a/depth_to_rgb/camera_info");
-
+            depth_range_ = declare_parameter<double>("depth_range", 1.5);
             
+            // make a buffer listener combo
+            tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+            tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+            //construct an rgbd acuiqision object
+            rgbd_acquisition_= std::make_unique<hb_perception::RGBDAcquisition>(
+                this,tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
+            
+            // make all the publishers  
+            ob_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/ob_cloud",1);
+            wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
+            mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
+            
+            timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this));
+            
+            //get an observation pass it to workpiece extractor
+            //publish marker array 
 
 
         }
     private:
 
-    void publishPCA();
+    
+
+    void process(){
+
+        rclcpp::Time capture_boundary = now();
+
+        auto observation = rgbd_acquisition_->latest();
+        
+        auto cloud = observationToCloud(*observation, depth_range_);
+
+        publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
+
+        auto result = extractor_.extract(cloud);
+        if (!result){
+            RCLCPP_ERROR(get_logger(),"couldnt get cluster");
+            return;
+        }
+
+        publishCloud(result->cloud,observation->camera_pose.header.frame_id,wk_pub_);
+        publishPCA(*result,observation->camera_pose.header.frame_id);
+
+        RCLCPP_INFO(get_logger(),"Workpiece model: %zu points, | eigs %0.5f,%0.5f,%0.5f | axis %0.3f,%0.3f,%0.3f",
+        result->cloud->size(),result->eigs.x(),
+        result->eigs.y(),result->eigs.z(),
+        result->l_axes.x(),result->l_axes.y(),result->l_axes.z());
+        
+    }
+
+    void publishPCA(const WorkpieceModel& model,std::string frame_id){
+
+        visualization_msgs::msg::MarkerArray array_;
+        geometry_msgs::msg::Point start;
+        start.x = model.centroid.x();
+        start.y = model.centroid.y();
+        start.z = model.centroid.z();
+        for (int i = 0; i<3; i++){
+            visualization_msgs::msg::Marker mark;
+            mark.header.frame_id = frame_id;
+            mark.header.stamp = this->now();
+            mark.ns = "workpiece_pca";
+            mark.id = i;
+            mark.type = visualization_msgs::msg::Marker::ARROW;
+            mark.action =visualization_msgs::msg::Marker::ADD;
+            const float length = std::sqrt(std::max(model.eigs(i),0.0f))*2.0f;
+            const Eigen::Vector3f end = model.centroid + length * model.p_axes.col(i);
+            geometry_msgs::msg::Point end_geo;
+            end_geo.x = end.x();
+            end_geo.y = end.y();
+            end_geo.z = end.z();
+            mark.points.push_back(start);
+            mark.points.push_back(end_geo);
+            mark.scale.x = 0.008;
+            mark.scale.y = 0.008;
+            mark.scale.z = 0.01;
+            mark.color.a = 1.0;
+            if (i==0){mark.color.r=1;}
+            else if (i==1){mark.color.g=1;}
+            else if (i==2){mark.color.b=1;}
+            array_.markers.push_back(mark);
+        }
+        mk_pub_->publish(array_);
+
+    }
+    void publishCloud(const PointCloud::Ptr& cloud, 
+        const std::string& frame_id, 
+        const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& cloud_pub_){
+            sensor_msgs::msg::PointCloud2 msg;
+            pcl::toROSMsg(*cloud, msg);
+            msg.header.frame_id  = frame_id;
+            msg.header.stamp = this->now();
+            cloud_pub_->publish(msg);
+    }
 
     std::string scene_frame_;
     std::string rgb_topic_;
@@ -42,11 +131,15 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr wk_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    double depth_range_;
 };
-
+}
 
 int main(int argc, char** argv)
 {
+    rclcpp::init(argc,argv);
+    auto node = std::make_shared<hb_perception::PerceptionDebugNode>();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
     return 0;
 }
-

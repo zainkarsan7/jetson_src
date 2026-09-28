@@ -534,7 +534,6 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
         msg.header.frame_id  = scene_frame_;
         msg.header.stamp = this->now();
         scene_cloud_pub_->publish(msg);
-
     };
 
     bool InspectSceneServer::waitForStability()

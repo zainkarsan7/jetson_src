@@ -126,5 +126,7 @@ inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_ra
             return cloud;
         }
 
+    
+
 
 }
