@@ -19,7 +19,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     public:
         PerceptionDebugNode():
         Node("perception_debug_node"){
-            scene_frame_ = declare_parameter<std::string>("scene_frame", "camera_visor");
+            scene_frame_ = declare_parameter<std::string>("scene_frame", "world");
             rgb_topic_ = declare_parameter<std::string>("rgb_topic", "/k4a/rgb/image_raw");
             depth_topic_ = declare_parameter<std::string>("depth_topic", "/k4a/depth_to_rgb/image_raw");
             camera_info_topic_ = declare_parameter<std::string>("info_topic","k4a/depth_to_rgb/camera_info");
@@ -71,7 +71,10 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
         RCLCPP_INFO(get_logger(),"got cloud with %zu",cloud->points.size());
         
-        PointCloud voxel_downsampled_;
+        const Eigen::Isometry3d T_scene_cam = tf2::transformToEigen(observation->camera_pose);
+        
+        pcl::transformPointCloud(*cloud,*cloud,T_scene_cam.matrix().cast<float>());
+        
         publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
 
         auto result = extractor_.extract(cloud);

@@ -62,9 +62,9 @@ namespace hb_perception{
             result->points.reserve(best_->indices.size());
             for (const int index: best_->indices){
                 auto colored_pt = input->points[index];
-                colored_pt.r = 1.0;
-                colored_pt.g = 0.0;
-                colored_pt.b = 0.0;
+                colored_pt.r = 255;
+                colored_pt.g = 0;
+                colored_pt.b = 0;
 
                 result->points.push_back(colored_pt);
             }
