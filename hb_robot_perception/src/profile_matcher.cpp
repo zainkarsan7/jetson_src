@@ -6,6 +6,12 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <limits>
+#include <unordered_set>
+#include <vector>
+#include <iostream>
+
+
 
 namespace hb_perception{
 namespace{
@@ -23,6 +29,141 @@ namespace{
     }
 }
 
+
+/*
+ * Cheap 2-D voxel/grid downsampling.
+ *
+ * We only need representative section points for profile matching.
+ * There is no reason to score thousands of Kinect points lying
+ * within a few millimetres of one another.
+ */
+std::vector<Eigen::Vector2f> downsample2D(
+    const std::vector<Eigen::Vector2f>& input,
+    float resolution)
+{
+    if (input.empty() || resolution <= 0.0f) {
+        return input;
+    }
+
+    struct CellHash
+    {
+        std::size_t operator()(
+            const std::pair<int, int>& p) const
+        {
+            const std::size_t h1 =
+                std::hash<int>{}(p.first);
+
+            const std::size_t h2 =
+                std::hash<int>{}(p.second);
+
+            return h1 ^
+                (h2 + 0x9e3779b9 +
+                 (h1 << 6) +
+                 (h1 >> 2));
+        }
+    };
+
+    std::unordered_set<
+        std::pair<int, int>,
+        CellHash> occupied;
+
+    std::vector<Eigen::Vector2f> output;
+    output.reserve(input.size());
+
+    const float inv =
+        1.0f / resolution;
+
+    for (const auto& p : input)
+    {
+        if (!p.allFinite()) {
+            continue;
+        }
+
+        const int ix =
+            static_cast<int>(
+                std::floor(p.x() * inv));
+
+        const int iy =
+            static_cast<int>(
+                std::floor(p.y() * inv));
+
+        const std::pair<int, int> key(ix, iy);
+
+        if (occupied.insert(key).second) {
+            output.push_back(p);
+        }
+    }
+
+    return output;
+}
+
+Eigen::Vector2f
+trimmedSectionCenter(
+    const SectionModel& section)
+{
+    std::vector<float> xs;
+    std::vector<float> ys;
+
+    xs.reserve(section.points_2d.size());
+    ys.reserve(section.points_2d.size());
+
+    for (const auto& p : section.points_2d)
+    {
+        if (!p.allFinite()) {
+            continue;
+        }
+
+        xs.push_back(p.x());
+        ys.push_back(p.y());
+    }
+
+    if (xs.empty()) {
+        return Eigen::Vector2f::Zero();
+    }
+
+    std::sort(xs.begin(), xs.end());
+    std::sort(ys.begin(), ys.end());
+
+    const std::size_t lo =
+        static_cast<std::size_t>(
+            0.05 * static_cast<double>(xs.size() - 1));
+
+    const std::size_t hi =
+        static_cast<std::size_t>(
+            0.95 * static_cast<double>(xs.size() - 1));
+
+    return Eigen::Vector2f(
+        0.5f * (xs[lo] + xs[hi]),
+        0.5f * (ys[lo] + ys[hi]));
+}
+
+/*
+ * Get an approximate profile bounding box.
+ *
+ * For the current IPN models this can simply use the known
+ * nominal width/height.
+ */
+bool insideExpandedProfileBounds(
+    const Eigen::Vector2f& p,
+    const ProfileModel& profile,
+    float margin)
+{
+    const float hx =
+        0.5f * profile.width + margin;
+
+    const float hy =
+        0.5f * profile.height + margin;
+
+    return
+        std::abs(p.x()) <= hx &&
+        std::abs(p.y()) <= hy;
+}
+
+
+
+
+
+
 ProfileMatcher::ProfileMatcher(): params_(){}
 
 
@@ -36,17 +177,31 @@ std::vector<ProfileMatch> ProfileMatcher::match(
                 if (section.points_2d.empty()){
                     return results;
                 }
+
+                SectionModel reduced_section = section;
+                reduced_section.points_2d = downsample2D(section.points_2d,0.003f);
+
+                 std::cout
+                    << "ProfileMatcher: "
+                    << section.points_2d.size()
+                    << " -> "
+                    << reduced_section.points_2d.size()
+                    << " section points"
+                    << std::endl;
+
                 results.reserve(candidates.size());
+
                 for (const auto& cand : candidates){
                     if(cand.boundary.empty()){
                         std::cout<<cand.name<<" has empty profile"<<std::endl;
                         continue;
                     }
-
-                    auto result = fitCand(section,cand);
-                    results.emplace_back(result);
-
-                }
+                    results.emplace_back(
+                                fitCand(
+                                    reduced_section,
+                                    cand));
+                        }
+                
                 std::sort(results.begin(),results.end(),
             [](const ProfileMatch& a , const ProfileMatch& b){
 
@@ -63,35 +218,430 @@ std::vector<ProfileMatch> ProfileMatcher::match(
 
             }
 
+
+/*
+ * Fast scalar cost evaluation.
+ *
+ * This is intentionally separate from evalTransform().
+ *
+ * During optimization we DON'T need:
+ *
+ *   - residual vector
+ *   - ProfileMatch
+ *   - profile copy
+ *   - inlier fraction
+ *
+ * We only need one scalar saying whether this transform
+ * is better than the previous transform.
+ */
+float ProfileMatcher::transformCost(
+    const SectionModel& section,
+    const ProfileModel& profile,
+    const Eigen::Isometry2f& transform) const
+{
+    if (section.points_2d.empty()) {
+        return std::numeric_limits<float>::infinity();
+    }
+     /*
+     * Instead of inverse() for every individual point,
+     * invert the transform ONCE.
+     */
+    const Eigen::Isometry2f section_to_profile =
+        transform.inverse();
+
+     const float truncation =
+        params_.truncation_distance;
+
+    const float sq_truncation =
+        truncation * truncation;
+
+    float sq_error = 0.0f;
+
+      /*
+     * Keep track of useful points separately.
+     *
+     * Gross scene/section outliers should not dominate
+     * the search.
+     */
+    std::size_t evaluated = 0;
+
+
+    for (const auto& section_point: section.points_2d){
+        const Eigen::Vector2f p = section_to_profile * section_point;
+        /*
+         * Extremely cheap rejection.
+         *
+         * A point far outside the candidate's nominal bounding
+         * box cannot produce a useful correspondence.
+         *
+         * Give it truncated cost without walking every
+         * profile primitive.
+         */
+        if (!insideExpandedProfileBounds(
+                p,
+                profile,
+                truncation))
+        {
+            sq_error += sq_truncation;
+            ++evaluated;
+            continue;
+        }
+
+         float min_dist =
+            std::numeric_limits<float>::infinity();
+
+         for (const auto& prim :
+             profile.boundary)
+        {
+            if(const auto* line = std::get_if<LineSegment2D>(&prim)){
+                const float dist = pointToLineSegmentDistance(p,*line);
+                min_dist =
+                    std::min(
+                        min_dist,
+                        dist);
+
+                /*
+                 * Can't improve meaningfully once we're
+                 * essentially on the profile.
+                 */
+                if (min_dist < 0.0005f) {
+                    break;
+                }
+            }
+        }
+        if (!std::isfinite(min_dist)) {
+            continue;
+        }
+        const float sq_dist =
+            min_dist * min_dist;
+
+        sq_error +=
+            std::min(
+                sq_dist,
+                sq_truncation);
+
+        ++evaluated;
+    }
+    if (evaluated == 0) {
+        return std::numeric_limits<float>::infinity();
+    }
+
+    return std::sqrt(
+        sq_error /
+        static_cast<float>(evaluated));
+}
+std::vector<Eigen::Isometry2f>
+ProfileMatcher::canonicalTransforms(
+    const SectionModel& section) const
+{
+    std::vector<Eigen::Isometry2f> transforms;
+
+    if (section.points_2d.empty()) {
+        return transforms;
+    }
+
+    /*
+     * -------------------------------------------------------
+     * Robust-ish initial translation.
+     * -------------------------------------------------------
+     *
+     * Do not assume SectionModel origin == profile center.
+     *
+     * Using the midpoint of the observed extents is deliberately
+     * simple. It is much less sensitive than assuming (0,0), and
+     * unlike the mean it isn't weighted by point density.
+     */
+    // Eigen::Vector2f min_pt =
+    //     section.points_2d.front();
+
+    // Eigen::Vector2f max_pt =
+    //     section.points_2d.front();
+
+    // for (const auto& p : section.points_2d)
+    // {
+    //     if (!p.allFinite()) {
+    //         continue;
+    //     }
+
+    //     min_pt =
+    //         min_pt.cwiseMin(p);
+
+    //     max_pt =
+    //         max_pt.cwiseMax(p);
+    // }
+
+    // const Eigen::Vector2f center =
+    //     0.5f * (min_pt + max_pt);
+
+    const Eigen::Vector2f center =
+    trimmedSectionCenter(section);
+
+    /*
+     * -------------------------------------------------------
+     * Canonical orientations.
+     * -------------------------------------------------------
+     *
+     * PCA may give:
+     *
+     *   X,Y
+     *  -X,Y
+     *   X,-Y
+     *  -X,-Y
+     *
+     * and may interchange the two in-plane axes.
+     *
+     * Quarter-turn seeds deal with the axis interchange/sign
+     * ambiguity for ordinary rotations.
+     */
+    constexpr float canonical_angles[] =
+    {
+        0.0f,
+        0.5f * pi,
+        pi,
+        1.5f * pi
+    };
+
+
+    for (const float angle : canonical_angles)
+    {
+        Eigen::Isometry2f transform =
+            Eigen::Isometry2f::Identity();
+
+        transform.linear() =
+            Eigen::Rotation2Df(angle)
+                .toRotationMatrix();
+
+        transform.translation() =
+            center;
+
+        transforms.push_back(transform);
+    }
+
+
+    /*
+     * -------------------------------------------------------
+     * Reflected canonical hypotheses.
+     * -------------------------------------------------------
+     *
+     * A SectionModel frame constructed from independently
+     * signed PCA vectors can effectively leave us with a
+     * reflected 2-D representation relative to the nominal
+     * profile convention.
+     *
+     * Test those explicitly rather than making the optimizer
+     * somehow discover a reflection.
+     */
+    Eigen::Matrix2f reflection =
+        Eigen::Matrix2f::Identity();
+
+    reflection(0, 0) = -1.0f;
+
+
+    for (const float angle : canonical_angles)
+    {
+        Eigen::Isometry2f transform =
+            Eigen::Isometry2f::Identity();
+
+        transform.linear() =
+            Eigen::Rotation2Df(angle)
+                .toRotationMatrix() *
+            reflection;
+
+        transform.translation() =
+            center;
+
+        transforms.push_back(transform);
+    }
+
+
+    return transforms;
+}
+
 ProfileMatch ProfileMatcher::fitCand(const SectionModel& section, 
             const ProfileModel& profile)const {
 
-                ProfileMatch best;
-                best.profile = profile;
+    ProfileMatch best;
 
-                const float tmax = params_.max_translation;
-                const float rot_max = params_.max_rotation;
-                const float tstep = params_.translation_step;
-                const float rstep = params_.rotation_step;
+    best.profile = profile;
 
 
-                for(float theta = -rot_max; theta<rot_max; theta+=rstep){
-                    const Eigen::Rotation2Df rotation(theta);
-                    for (float tx = - tmax; tx<tmax; tx += tstep){
-                        for (float ty = -tmax; ty<tmax; ty+=tstep){
-                            Eigen::Isometry2f transform = Eigen::Isometry2f::Identity();
-                            transform.linear() = rotation.toRotationMatrix();
-                            transform.translation() = Eigen::Vector2f(tx,ty);
-                            ProfileMatch current = evalTransform(section,profile,transform);
-                            if(current.rms_dist<best.rms_dist){
-                                best = std::move(current);
-                            }
-                        }
+    const auto seeds =
+        canonicalTransforms(section);
+
+    if (seeds.empty()) {
+        return best;
+    }            
+
+    float best_cost =
+        std::numeric_limits<float>::infinity();
+
+    Eigen::Isometry2f best_transform =
+        Eigen::Isometry2f::Identity();
+
+
+    /*
+     * =======================================================
+     * STAGE 1:
+     * Coarse search around every canonical hypothesis.
+     * =======================================================
+     */
+
+    const float coarse_tstep =
+        std::max(
+            params_.translation_step * 2.0f,
+            0.010f);
+
+    const float coarse_rstep =
+        std::max(
+            params_.rotation_step * 2.0f,
+            4.0f * pi / 180.0f);
+
+
+    for (const auto& seed : seeds)
+    {
+        for (float dtheta = -params_.max_rotation;
+             dtheta <= params_.max_rotation + 1e-6f;
+             dtheta += coarse_rstep)
+        {
+            const Eigen::Matrix2f local_rotation =
+                Eigen::Rotation2Df(dtheta)
+                    .toRotationMatrix();
+
+
+            for (float dx = -params_.max_translation;
+                 dx <= params_.max_translation + 1e-6f;
+                 dx += coarse_tstep)
+            {
+                for (float dy = -params_.max_translation;
+                     dy <= params_.max_translation + 1e-6f;
+                     dy += coarse_tstep)
+                {
+                    /*
+                     * Start from canonical hypothesis.
+                     */
+                    Eigen::Isometry2f candidate =
+                        seed;
+
+                    /*
+                     * Apply local rotational correction while
+                     * preserving a possible reflection in seed.
+                     */
+                    candidate.linear() =
+                        local_rotation *
+                        seed.linear();
+
+                    /*
+                     * Translation search is in section
+                     * coordinates.
+                     */
+                    candidate.translation() =
+                        seed.translation() +
+                        Eigen::Vector2f(dx, dy);
+
+
+                    const float cost =
+                        transformCost(
+                            section,
+                            profile,
+                            candidate);
+
+
+                    if (cost < best_cost)
+                    {
+                        best_cost =
+                            cost;
+
+                        best_transform =
+                            candidate;
                     }
                 }
-                return best;
-                
             }
+        }
+    }
+
+
+    /*
+     * =======================================================
+     * STAGE 2:
+     * Fine search around the globally best coarse solution.
+     * =======================================================
+     *
+     * Crucially, we don't refine every canonical hypothesis.
+     * Only the winner enters this stage.
+     */
+
+    const Eigen::Isometry2f coarse_best =
+        best_transform;
+
+
+    const float fine_tstep =
+        params_.translation_step;
+
+    const float fine_rstep =
+        params_.rotation_step;
+
+
+    for (float dtheta = -coarse_rstep;
+         dtheta <= coarse_rstep + 1e-6f;
+         dtheta += fine_rstep)
+    {
+        const Eigen::Matrix2f correction =
+            Eigen::Rotation2Df(dtheta)
+                .toRotationMatrix();
+
+
+        for (float dx = -coarse_tstep;
+             dx <= coarse_tstep + 1e-6f;
+             dx += fine_tstep)
+        {
+            for (float dy = -coarse_tstep;
+                 dy <= coarse_tstep + 1e-6f;
+                 dy += fine_tstep)
+            {
+                Eigen::Isometry2f candidate =
+                    coarse_best;
+
+
+                candidate.linear() =
+                    correction *
+                    coarse_best.linear();
+
+
+                candidate.translation() =
+                    coarse_best.translation() +
+                    Eigen::Vector2f(dx, dy);
+
+
+                const float cost =
+                    transformCost(
+                        section,
+                        profile,
+                        candidate);
+
+
+                if (cost < best_cost)
+                {
+                    best_cost =
+                        cost;
+
+                    best_transform =
+                        candidate;
+                }
+            }
+        }
+    }
+
+    /*
+     * Generate residuals / support only once for the final
+     * winning transform.
+     */
+    return evalTransform(
+        section,
+        profile,
+        best_transform);
+    }
+
+
 
 ProfileMatch ProfileMatcher::evalTransform(const SectionModel& section,
             const ProfileModel& profile,
@@ -101,30 +651,106 @@ ProfileMatch ProfileMatcher::evalTransform(const SectionModel& section,
             result.profile = profile;
             result.transform = transform;
             if (section.points_2d.empty()){ return result;}
-            const float count = static_cast<float>(section.points_2d.size());
+            
             result.residuals.reserve(section.points_2d.size());
+
+            const Eigen::Isometry2f section_to_profile =
+        transform.inverse();
+
             const float truncation = params_.truncation_distance;
             const float sq_truncation = truncation * truncation;
             float sq_error = 0.0f;
             std::size_t inlier_count = 0;
+            const float count = static_cast<float>(section.points_2d.size());
 
-            for (const auto sp: section.points_2d){
-                const float dist_err = pointToProfileDistance(sp,profile,transform);
-                result.residuals.push_back(dist_err);
-                const float sq_dist = dist_err * dist_err;
-                sq_error += std::min(sq_dist,sq_truncation);
-                if(dist_err <= params_.inlier_tolerance){
-                    ++inlier_count;
+
+            for (const auto& section_point :
+                section.points_2d)
+            {
+                const Eigen::Vector2f profile_point =
+            section_to_profile *
+            section_point;
+
+              float min_dist =
+            std::numeric_limits<float>::infinity();
+                if (!insideExpandedProfileBounds(
+                profile_point,
+                profile,
+                truncation))
+        {
+            min_dist = truncation;
+        }
+        else{
+            for (const auto& prim :
+                 profile.boundary)
+            {
+                if (const auto* line =
+                        std::get_if<LineSegment2D>(
+                            &prim))
+                {
+                    const float dist =
+                        pointToLineSegmentDistance(
+                            profile_point,
+                            *line);
+
+                    min_dist =
+                        std::min(
+                            min_dist,
+                            dist);
                 }
             }
 
-            result.rms_dist = std::sqrt(sq_error/count);
-            result.inlier_fraction = static_cast<float>(inlier_count)/count;
-            const float residual_score = std::max(0.0f,1.0f - (result.rms_dist/truncation));
-
-            result.score = residual_score * result.inlier_fraction;
-            return result;
         }
+
+         if (!std::isfinite(min_dist)) {
+            min_dist = truncation;
+        }
+
+
+        result.residuals.push_back(
+            min_dist);
+        
+            sq_error +=
+        std::min(
+            min_dist * min_dist,
+            sq_truncation);
+
+         if (min_dist <=
+            params_.inlier_tolerance)
+        {
+            ++inlier_count;
+        }    
+
+    }
+    
+
+    result.rms_dist =
+        std::sqrt(
+            sq_error / count);
+
+
+    result.inlier_fraction =
+        static_cast<float>(
+            inlier_count) /
+        count;
+
+
+    const float residual_score =
+        std::max(
+            0.0f,
+            1.0f -
+            result.rms_dist /
+            truncation);
+
+
+    result.score =
+        residual_score *
+        result.inlier_fraction;
+
+
+    return result;
+}
+
 
 float ProfileMatcher::pointToProfileDistance(
                 const Eigen::Vector2f& point,

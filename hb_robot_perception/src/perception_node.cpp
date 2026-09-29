@@ -110,7 +110,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
         for (const auto& match : matches){
             RCLCPP_INFO(get_logger(),"best profile %s | RMS %.2f mm | inliers %.1f | score %.3f",
-          match.profile.name, match.rms_dist,match.inlier_fraction,match.score);
+          match.profile.name.c_str(), match.rms_dist,match.inlier_fraction,match.score);
         }
         publishProfiles(
         *section_model,
@@ -129,7 +129,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         matcher_.getVisualization(
             section,
             matches,
-            scene_frame_,3);
+            scene_frame_,1);
 
     profile_marker_pub_->publish(msg);
 }

@@ -66,21 +66,21 @@ namespace hb_perception{
     std::vector<ProfileModel> ProfileLibrary::ipnProfiles(){
         std::vector<ProfileModel>profiles;
 
-        profiles.emplace_back(
-        makeIPN(
-            "IPN_120",
-            0.120f,
-            0.058f,
-            0.0051f,
-            0.0077f));
+        // profiles.emplace_back(
+        // makeIPN(
+        //     "IPN_120",
+        //     0.120f,
+        //     0.058f,
+        //     0.0051f,
+        //     0.0077f));
 
-        profiles.emplace_back(
-            makeIPN(
-                "IPN_140",
-                0.140f,
-                0.066f,
-                0.0057f,
-                0.0086f));
+        // profiles.emplace_back(
+        //     makeIPN(
+        //         "IPN_140",
+        //         0.140f,
+        //         0.066f,
+        //         0.0057f,
+        //         0.0086f));
 
         profiles.emplace_back(
             makeIPN(
@@ -90,21 +90,21 @@ namespace hb_perception{
                 0.0063f,
                 0.0095f));
 
-        profiles.emplace_back(
-            makeIPN(
-                "IPN_180",
-                0.180f,
-                0.082f,
-                0.0069f,
-                0.0104f));
+        // profiles.emplace_back(
+        //     makeIPN(
+        //         "IPN_180",
+        //         0.180f,
+        //         0.082f,
+        //         0.0069f,
+        //         0.0104f));
 
-        profiles.emplace_back(
-            makeIPN(
-                "IPN_200",
-                0.200f,
-                0.090f,
-                0.0075f,
-                0.0113f));
+        // profiles.emplace_back(
+        //     makeIPN(
+        //         "IPN_200",
+        //         0.200f,
+        //         0.090f,
+        //         0.0075f,
+        //         0.0113f));
         return profiles;
 
     };       

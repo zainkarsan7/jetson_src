@@ -37,6 +37,14 @@ namespace hb_perception{
 
         private:
 
+          std::vector<Eigen::Isometry2f> canonicalTransforms(
+        const SectionModel& section) const;
+
+        float transformCost(
+    const SectionModel& section,
+    const ProfileModel& profile,
+    const Eigen::Isometry2f& transform) const;
+
             ProfileMatch fitCand(const SectionModel& section, 
             const ProfileModel& profile) const;
 
