@@ -48,7 +48,7 @@ std::vector<ProfileMatch> ProfileMatcher::match(
 
                 }
                 std::sort(results.begin(),results.end(),
-            [](const ProfileMatch a , const ProfileMatch b){
+            [](const ProfileMatch& a , const ProfileMatch& b){
 
                 if(a.rms_dist != b.rms_dist){
                     return a.rms_dist<b.rms_dist;
@@ -64,7 +64,7 @@ std::vector<ProfileMatch> ProfileMatcher::match(
             }
 
 ProfileMatch ProfileMatcher::fitCand(const SectionModel& section, 
-            const ProfileModel& profile){
+            const ProfileModel& profile)const {
 
                 ProfileMatch best;
                 best.profile = profile;
@@ -111,7 +111,8 @@ ProfileMatch ProfileMatcher::evalTransform(const SectionModel& section,
             for (const auto sp: section.points_2d){
                 const float dist_err = pointToProfileDistance(sp,profile,transform);
                 result.residuals.push_back(dist_err);
-                sq_error += std::min(dist_err,sq_truncation);
+                const float sq_dist = dist_err * dist_err;
+                sq_error += std::min(sq_dist,sq_truncation);
                 if(dist_err <= params_.inlier_tolerance){
                     ++inlier_count;
                 }
@@ -119,9 +120,10 @@ ProfileMatch ProfileMatcher::evalTransform(const SectionModel& section,
 
             result.rms_dist = std::sqrt(sq_error/count);
             result.inlier_fraction = static_cast<float>(inlier_count)/count;
-            const float residual_score = std::max(0.0f,1.0f - (sq_error/truncation));
+            const float residual_score = std::max(0.0f,1.0f - (result.rms_dist/truncation));
 
             result.score = residual_score * result.inlier_fraction;
+            return result;
         }
 
 float ProfileMatcher::pointToProfileDistance(
@@ -159,8 +161,9 @@ float ProfileMatcher::pointToLineSegmentDistance(
                 }
 
                 float t = (point - segment.a).dot(ab) / sq_length;
-                const Eigen::Vector2f nearest = segment.a + t* ab;
                 t = std::clamp(t,0.0f,1.0f);
+
+                const Eigen::Vector2f nearest = segment.a + t* ab;
                 return (point- nearest).norm();
 
             }

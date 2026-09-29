@@ -29,7 +29,7 @@ namespace hb_perception{
                 const std::vector<ProfileModel>& candidates
             ) const;
 
-            visualization_msgs::msg::MarkerArray ProfileMatcher::getVisualization(
+            visualization_msgs::msg::MarkerArray getVisualization(
     const SectionModel& section,
     const std::vector<ProfileMatch>& matches,
     const std::string& frame_id,

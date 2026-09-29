@@ -129,7 +129,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         matcher_.getVisualization(
             section,
             matches,
-            scene_frame_);
+            scene_frame_,3);
 
     profile_marker_pub_->publish(msg);
 }
