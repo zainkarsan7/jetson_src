@@ -9,6 +9,9 @@
 #include <hb_robot_perception/perception_types.hpp>
 #include <hb_robot_perception/workpiece_extractor.hpp>
 #include <hb_robot_perception/rgbd_acquisition.hpp>
+#include <hb_robot_perception/profile_matcher.hpp>
+#include <hb_robot_perception/profile_library.hpp>
+#include <hb_robot_perception/profile_types.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 using namespace std::chrono_literals;
@@ -37,6 +40,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
+            profile_marker_pub_ =create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profiles",1);
 
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this));
             
@@ -97,9 +101,38 @@ class PerceptionDebugNode : public rclcpp::Node {
             RCLCPP_WARN(get_logger(),"SOMETHING WRONG IN SECTION EXTRACTION");
             return;
         }
+        auto profiles = ProfileLibrary::ipnProfiles();
+        RCLCPP_INFO(get_logger(),"made ipn profiles");
+        auto matches = matcher_.match(*section_model,profiles);
+        if(matches.empty()){
+            RCLCPP_INFO(get_logger(),"matching didnt work");
+            return;
+        }
+        for (const auto& match : matches){
+            RCLCPP_INFO(get_logger(),"best profile %s | RMS %.2f mm | inliers %.1f | score %.3f",
+          match.profile.name, match.rms_dist,match.inlier_fraction,match.score);
+        }
+        publishProfiles(
+        *section_model,
+        matches);
+        
+
         publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
  
     }
+
+    void publishProfiles(
+    const SectionModel& section,
+    const std::vector<ProfileMatch>& matches)
+{
+    auto msg =
+        matcher_.getVisualization(
+            section,
+            matches,
+            scene_frame_);
+
+    profile_marker_pub_->publish(msg);
+}
 
     void publishPCA(const WorkpieceModel& model,std::string frame_id){
 
@@ -158,8 +191,10 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr wk_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     double depth_range_;
+    hb_perception::ProfileMatcher matcher_;
 };
 }
 

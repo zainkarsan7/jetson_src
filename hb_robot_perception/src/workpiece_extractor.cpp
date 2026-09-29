@@ -45,13 +45,23 @@ namespace hb_perception{
             }
 
             float best_distance = std::numeric_limits<float>::max();
+            float best_cluster_score = std::numeric_limits<float>::max();
+
             const pcl::PointIndices* best_ = nullptr;
             for (const auto & ind : clust_ind){
                 Eigen::Vector4d centroid;
                 pcl::compute3DCentroid(*input, ind.indices,centroid);
                 const float dist = centroid.head<3>().norm();
-                if (dist<best_distance){
-                    best_distance = dist;
+                /// augment the distance metric here:
+                float size_metric = static_cast<float>(input->points.size())/static_cast<float>(ind.indices.size());
+                float cluster_score = dist + 0.1 * size_metric;
+                // if (dist<best_distance){
+                //     best_distance = dist;
+                //     best_ = &ind;
+                // }
+
+                 if (cluster_score<best_cluster_score){
+                    best_cluster_score = cluster_score;
                     best_ = &ind;
                 }
             }

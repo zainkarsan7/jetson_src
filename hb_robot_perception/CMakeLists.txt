@@ -32,6 +32,8 @@ add_library(hb_perception
   src/rgbd_acquisition.cpp
   src/scene_model.cpp
   src/workpiece_extractor.cpp
+  src/profile_matcher.cpp
+  src/profile_library.cpp
 )
 
 target_include_directories(hb_perception
@@ -51,6 +53,7 @@ ament_target_dependencies(hb_perception
   message_filters
   pcl_conversions
   cv_bridge
+  visualization_msgs
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
