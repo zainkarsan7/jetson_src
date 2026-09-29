@@ -3,6 +3,7 @@
 #include "geometry_msgs/msg/point.hpp"
 #include "std_msgs/msg/color_rgba.hpp"
 #include "visualization_msgs/msg/marker.hpp"
+#include "tf2_eigen/tf2_eigen.hpp"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -168,6 +169,35 @@ ProfileMatcher::ProfileMatcher(): params_(){}
 
 
 ProfileMatcher::ProfileMatcher(const Parameters& params):params_(params){}
+
+Eigen::Isometry3f ProfileMatcher::makeProfilePose(const SectionModel& section, const ProfileMatch& match){
+    // convert the match 2d frame into a 3d frame and get it relative to world:
+    Eigen::Isometry3f T_section_profile = Eigen::Isometry3f::Identity();
+
+    T_section_profile.linear().block<2,2>(0,0) = match.transform.linear();
+    T_section_profile.translation().x() = match.transform.translation().x();
+    T_section_profile.translation().y() = match.transform.translation().y();
+    T_section_profile.translation().z() = 0.0f;
+    return section.frame * T_section_profile;
+}
+
+hb_robot_interfaces::msg::ProfileEstimate ProfileMatcher::getProfileEstimateMsg(const std::string& planning_frame, const SectionModel& section, const ProfileMatch& match){
+    hb_robot_interfaces::msg::ProfileEstimate msg;
+    msg.header.frame_id = planning_frame;
+    msg.pose = tf2::toMsg(static_cast<Eigen::Isometry3d>(makeProfilePose(section,match)));
+    msg.profile_name = match.profile.name;
+    msg.inlier_fraction = match.inlier_fraction;
+    msg.rms_distance = match.rms_dist;
+    msg.score = match.score;
+    msg.section_thickness = section.thickness;
+    msg.observation_points_count = section.points_2d.size();
+    
+
+
+    
+
+    return msg;
+}
 
 std::vector<ProfileMatch> ProfileMatcher::match(
                 const SectionModel& section,

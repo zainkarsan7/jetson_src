@@ -17,6 +17,7 @@ find_package(moveit_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CutTraj.msg"
   "msg/TaskState.msg"
+  "msg/ProfileEstimate.msg"
   "srv/GenerateExplorePath.srv"
   "srv/GenerateCutPath.srv"
   "srv/ApproveMotion.srv"

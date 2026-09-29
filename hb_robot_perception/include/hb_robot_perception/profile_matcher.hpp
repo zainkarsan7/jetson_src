@@ -1,5 +1,5 @@
 #pragma once
-
+#include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include "hb_robot_perception/perception_types.hpp"
 #include "hb_robot_perception/profile_types.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
@@ -34,7 +34,7 @@ namespace hb_perception{
     const std::vector<ProfileMatch>& matches,
     const std::string& frame_id,
     std::size_t max_matches) const;
-
+                hb_robot_interfaces::msg::ProfileEstimate getProfileEstimateMsg(const std::string& planning_frame,const SectionModel& section, const ProfileMatch& match);
         private:
 
           std::vector<Eigen::Isometry2f> canonicalTransforms(
@@ -72,6 +72,10 @@ namespace hb_perception{
             sampleProfileBoundary(
                 const ProfileModel& profile,
                 float arc_resolution=0.002f);
+
+            Eigen::Isometry3f makeProfilePose(const SectionModel& section, const ProfileMatch& match);
+
+            
 
             Parameters params_;
     };

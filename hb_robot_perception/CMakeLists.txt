@@ -20,6 +20,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters segmentation search)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(hb_robot_interfaces REQUIRED)
 
 
 include_directories(include)
@@ -54,6 +55,7 @@ ament_target_dependencies(hb_perception
   pcl_conversions
   cv_bridge
   visualization_msgs
+  hb_robot_interfaces
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
@@ -74,6 +76,8 @@ ament_target_dependencies(perception_node
   visualization_msgs
   pcl_conversions
   tf2_ros
+  hb_robot_interfaces
+  tf2_eigen
   
 )
 target_link_libraries(perception_node

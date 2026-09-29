@@ -619,13 +619,15 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        workpiece_pca: true
+        profile_boundary: true
+        profile_labels: true
+        section_observed: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /perception/wk_axes
+        Value: /perception/profiles
       Value: true
   Enabled: true
   Global Options:
@@ -645,25 +647,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 4.920191764831543
+      Distance: 2.7125306129455566
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.4631710350513458
-        Y: 1.6139633655548096
-        Z: 0.44470977783203125
+        X: -1.0351064205169678
+        Y: 0.8914704322814941
+        Z: 0.09577018022537231
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4847966730594635
+      Pitch: 1.0347967147827148
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.493188858032227
+      Yaw: 3.1950016021728516
     Saved: ~
 Window Geometry:
   AzureKinect:

@@ -4,6 +4,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <hb_robot_interfaces/msg/profile_estimate.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <hb_robot_perception/perception_types.hpp>
@@ -40,8 +41,11 @@ class PerceptionDebugNode : public rclcpp::Node {
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
-            profile_marker_pub_ =create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profiles",1);
 
+            auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
+
+            profile_marker_pub_ =create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profiles",pe_qos);
+            profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",1);
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this));
             
             //get an observation pass it to workpiece extractor
@@ -132,6 +136,19 @@ class PerceptionDebugNode : public rclcpp::Node {
             scene_frame_,1);
 
     profile_marker_pub_->publish(msg);
+        
+    hb_robot_interfaces::msg::ProfileEstimate profile_estimate_msg;
+    try{
+        profile_estimate_msg = matcher_.getProfileEstimateMsg(scene_frame_,section,matches.front());
+    } catch(std::exception &e){
+        RCLCPP_INFO(get_logger(),"something wrong in get profile msg, %s",e.what());
+        return;
+    }
+    
+    profile_estimate_msg.header.stamp = now();
+    profile_estimate_pub_->publish(profile_estimate_msg);
+
+
 }
 
     void publishPCA(const WorkpieceModel& model,std::string frame_id){
@@ -192,6 +209,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
+    rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
     double depth_range_;
     hb_perception::ProfileMatcher matcher_;
