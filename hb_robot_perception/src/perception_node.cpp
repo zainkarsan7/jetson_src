@@ -7,6 +7,7 @@
 #include <hb_robot_interfaces/msg/profile_estimate.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <tf2/time.h>
 #include <hb_robot_perception/perception_types.hpp>
 #include <hb_robot_perception/workpiece_extractor.hpp>
 #include <hb_robot_perception/rgbd_acquisition.hpp>
@@ -28,9 +29,9 @@ class PerceptionDebugNode : public rclcpp::Node {
             depth_topic_ = declare_parameter<std::string>("depth_topic", "/k4a/depth_to_rgb/image_raw");
             camera_info_topic_ = declare_parameter<std::string>("info_topic","k4a/depth_to_rgb/camera_info");
             depth_range_ = declare_parameter<double>("depth_range", 1.5);
-            
+            processing_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
             // make a buffer listener combo
-            tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+            tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock(),tf2::durationFromSec(30.0));
             tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
             //construct an rgbd acuiqision object
             rgbd_acquisition_= std::make_unique<hb_perception::RGBDAcquisition>(
@@ -45,8 +46,11 @@ class PerceptionDebugNode : public rclcpp::Node {
             auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
 
             profile_marker_pub_ =create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profiles",pe_qos);
-            profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",1);
-            timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this));
+
+            profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",pe_qos);
+            
+            
+            timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this),processing_group_);
             
             //get an observation pass it to workpiece extractor
             //publish marker array 
@@ -59,7 +63,6 @@ class PerceptionDebugNode : public rclcpp::Node {
 
     void process(){
 
-        rclcpp::Time capture_boundary = now();
         std::optional<Observation> observation;
         try{
             observation = rgbd_acquisition_->latest();
@@ -72,6 +75,11 @@ class PerceptionDebugNode : public rclcpp::Node {
             RCLCPP_WARN(get_logger(),"couldnt get acquisition null");
             return;
         }
+        
+        RCLCPP_INFO(get_logger(),"latest observation %.6f is %.3f",observation->stamp.seconds(), (now() - observation->stamp).seconds());
+        
+        
+        last_processed_stamp_ = observation->stamp;
         RCLCPP_INFO(get_logger(),"latest observation at %ld",observation->stamp);
         
         auto cloud = observationToCloud(*observation, depth_range_);
@@ -93,7 +101,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
 
         publishCloud(wkpiece->cloud,observation->camera_pose.header.frame_id,wk_pub_);
-        publishPCA(*wkpiece,observation->camera_pose.header.frame_id);
+        publishPCA(*wkpiece,observation->camera_pose.header.frame_id,observation->stamp);
 
         RCLCPP_INFO(get_logger(),"Workpiece model: %zu points, | eigs %0.5f,%0.5f,%0.5f | axis %0.3f,%0.3f,%0.3f",
         wkpiece->cloud->size(),wkpiece->eigs.x(),
@@ -118,7 +126,8 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
         publishProfiles(
         *section_model,
-        matches);
+        matches, observation->stamp
+    );
         
 
         publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
@@ -127,7 +136,9 @@ class PerceptionDebugNode : public rclcpp::Node {
 
     void publishProfiles(
     const SectionModel& section,
-    const std::vector<ProfileMatch>& matches)
+    const std::vector<ProfileMatch>& matches,
+    const rclcpp::Time& observation_stamp
+)
 {
     auto msg =
         matcher_.getVisualization(
@@ -145,13 +156,13 @@ class PerceptionDebugNode : public rclcpp::Node {
         return;
     }
     
-    profile_estimate_msg.header.stamp = now();
+    profile_estimate_msg.header.stamp = observation_stamp;
     profile_estimate_pub_->publish(profile_estimate_msg);
 
 
 }
 
-    void publishPCA(const WorkpieceModel& model,std::string frame_id){
+    void publishPCA(const WorkpieceModel& model,std::string frame_id, const rclcpp::Time& observation_stamp){
 
         visualization_msgs::msg::MarkerArray array_;
         geometry_msgs::msg::Point start;
@@ -161,7 +172,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         for (int i = 0; i<3; i++){
             visualization_msgs::msg::Marker mark;
             mark.header.frame_id = frame_id;
-            mark.header.stamp = this->now();
+            mark.header.stamp = observation_stamp;
             mark.ns = "workpiece_pca";
             mark.id = i;
             mark.type = visualization_msgs::msg::Marker::ARROW;
@@ -213,14 +224,20 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::TimerBase::SharedPtr timer_;
     double depth_range_;
     hb_perception::ProfileMatcher matcher_;
+    rclcpp::CallbackGroup::SharedPtr processing_group_;
+    rclcpp::Time last_processed_stamp_{0,0,RCL_ROS_TIME};
 };
-}
+}   
 
 int main(int argc, char** argv)
 {
     rclcpp::init(argc,argv);
     auto node = std::make_shared<hb_perception::PerceptionDebugNode>();
-    rclcpp::spin(node);
+    rclcpp::executors::MultiThreadedExecutor executor(
+        rclcpp::ExecutorOptions(),4
+    );
+    executor.add_node(node);
+    executor.spin();
     rclcpp::shutdown();
     return 0;
 }

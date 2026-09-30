@@ -136,13 +136,13 @@ namespace hb_perception{
                 0.0063f,
                 0.0095f));
 
-        // profiles.emplace_back(
-        //     makeIPN(
-        //         "IPN_180",
-        //         0.180f,
-        //         0.082f,
-        //         0.0069f,
-        //         0.0104f));
+        profiles.emplace_back(
+            makeIPN(
+                "IPN_180",
+                0.180f,
+                0.082f,
+                0.0069f,
+                0.0104f));
 
         // profiles.emplace_back(
         //     makeIPN(

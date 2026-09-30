@@ -26,8 +26,22 @@ def generate_launch_description():
         {"skip_inspection_motion": False},
         ],
     )
+
+    cut_profile_server= Node(
+        package= "hb_robot_skills",
+        executable = "cut_profile_server",
+        name = "cut_profile_server",
+        output="screen",
+        # prefix = ["gdb -ex run --args"],
+        parameters = [moveit_config.robot_description,
+        moveit_config.robot_description_semantic,
+        moveit_config.robot_description_kinematics,
+        
+        ],
+    )
     return LaunchDescription([
         inspect_scene_server,
+        cut_profile_server
     ])
 
 
