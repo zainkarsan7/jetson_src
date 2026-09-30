@@ -27,6 +27,7 @@ include_directories(include)
 add_library(hb_motion
   src/motion/exploration_planner.cpp
   src/motion/trajectory_validator.cpp
+  src/motion/cut_planner.cpp
 )
 
 target_include_directories(hb_motion
@@ -41,7 +42,14 @@ ament_target_dependencies(hb_motion
   moveit_ros_planning_interface
   moveit_msgs
   hb_robot_interfaces
+  tf2_eigen
+
 )
+target_link_libraries(hb_motion
+
+hb_robot_perception::hb_perception
+)
+
 add_executable(approve_motion_server
 src/approve_motion_server.cpp)
 
@@ -71,10 +79,33 @@ hb_motion
 hb_robot_perception::hb_perception
 )
 
+add_executable(cut_profile_server
+src/cut_profile_server.cpp)
+
+ament_target_dependencies(cut_profile_server 
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  sensor_msgs
+  moveit_msgs
+  moveit_ros_planning_interface
+  visualization_msgs
+)
+
+target_link_libraries(cut_profile_server
+hb_motion
+hb_robot_perception::hb_perception
+)
+
+
 install(
   TARGETS
     inspect_scene_server
     approve_motion_server
+    cut_profile_server
     hb_motion
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

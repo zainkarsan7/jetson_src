@@ -1,6 +1,7 @@
 #pragma once
 #include "hb_robot_perception/profile_types.hpp"
 #include <vector>
+#include <optional>
 
 
 namespace hb_perception{
@@ -27,8 +28,10 @@ namespace hb_perception{
                 float tf,
                 float slope=0.14f
              );
+             static std::optional<ProfileModel> find(const std::string& name);
 
     };
+
 
 
 

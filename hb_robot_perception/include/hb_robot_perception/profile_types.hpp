@@ -18,6 +18,20 @@ namespace hb_perception{
         Rectangular
     };
 
+    enum class ProfileCutFeatureType{
+        Unknown, 
+        Flange,
+        Web
+    };
+
+    struct ProfileCutFeature{
+        std::string name;
+        ProfileCutFeatureType type  = ProfileCutFeatureType::Unknown;
+        Eigen::Vector2f start = Eigen::Vector2f::Zero();
+        Eigen::Vector2f end = Eigen::Vector2f::Zero();
+        Eigen::Vector2f outward_normal = Eigen::Vector2f::UnitY();
+    };
+
     struct LineSegment2D{
         Eigen::Vector2f a = Eigen::Vector2f::Zero();
         Eigen::Vector2f b = Eigen::Vector2f::Zero();
@@ -38,6 +52,7 @@ namespace hb_perception{
         std::string name;
         ProfileFamily family = ProfileFamily::Unknown;
         std::vector<ProfilePrimitive> boundary;
+        std::vector<ProfileCutFeature> cut_features;
         float height = 0.0;
         float width = 0.0;
     };
