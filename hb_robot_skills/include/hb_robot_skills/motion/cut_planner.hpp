@@ -75,6 +75,8 @@ struct CutRequest{
 class CutPlanner{
     public: 
 
+        
+
         CutPlanner(
             moveit::core::RobotModelConstPtr robot_model,
             std::string planning_group,

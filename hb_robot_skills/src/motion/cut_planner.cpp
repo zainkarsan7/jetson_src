@@ -219,6 +219,15 @@ std::optional<CutPlan> CutPlanner::plan(
         return std::nullopt;
 
     }
+
+    std::cout<<"incoming state is dirty: "<<start_state.dirty()<<std::endl;
+
+    moveit::core::RobotState current_state(start_state);
+    current_state.update();
+
+
+    std::cout<<"incoming state is dirty: "<<current_state.dirty()<<std::endl;
+
     Eigen::Isometry3d world_from_profile_d;
     tf2::fromMsg(estimate.pose,world_from_profile_d);
     const Eigen::Isometry3f world_from_profile =world_from_profile_d.cast<float>();
@@ -250,13 +259,13 @@ std::optional<CutPlan> CutPlanner::plan(
             }
         }
 
-        auto best_web_segment = selectWebCandidate(web_segments,start_state,p_scene);
+        auto best_web_segment = selectWebCandidate(web_segments,current_state,p_scene);
         if(!best_web_segment){
             return std::nullopt;
         }
 
         for (auto& flange: flange_segments){
-            if(!solveSegmentConstraints(flange,start_state,p_scene)){
+            if(!solveSegmentConstraints(flange,current_state,p_scene)){
                 std::cerr<<"failed flange planning "<<flange.name<<std::endl;
                 return std::nullopt;
             }

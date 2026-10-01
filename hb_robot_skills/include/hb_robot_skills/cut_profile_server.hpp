@@ -25,7 +25,7 @@ namespace hb_robot_skills{
             using GoalHandleCutProfile = rclcpp_action::ServerGoalHandle<CutProfile>;
 
             explicit CutProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-        
+            void initialize();
             
             rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID &uuid,
             std::shared_ptr<const CutProfile::Goal> goal);

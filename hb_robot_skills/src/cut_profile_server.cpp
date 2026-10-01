@@ -9,23 +9,9 @@ using namespace std::chrono_literals;
 namespace hb_robot_skills{
 
     CutProfileServer::CutProfileServer(const rclcpp::NodeOptions &options):Node("cut_profile_server",options){
-
-
         planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
         plasma_link_ = declare_parameter<std::string>("plasma_link","ur10e_torch_link");
         planning_time_ = declare_parameter<double>("planning_time",5.0);
-      
-
-        auto estimate_qos = rclcpp::QoS(1).reliable().transient_local();
-
-
-
-        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("perception/profile_estimate",
-        1, std::bind(&CutProfileServer::profileEstimateCallback,this,
-        std::placeholders::_1));
-
-        auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
-        visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
 
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_motion",
@@ -33,40 +19,66 @@ namespace hb_robot_skills{
                 std::placeholders::_1,std::placeholders::_2)
         );  
 
+        action_server_ = rclcpp_action::create_server<CutProfile>(this,"cut_profile",
+            std::bind(
+            &CutProfileServer::handleGoal,
+            this,
+            std::placeholders::_1,std::placeholders::_2
+            ),
+        std::bind(
+                &CutProfileServer::handleCancel,
+                this,
+                std::placeholders::_1
+            ),
+        std::bind(
+                &CutProfileServer::handleAccepted,
+                this,
+                std::placeholders::_1
+            ));
+
+        auto estimate_qos = rclcpp::QoS(1).reliable().transient_local();
+
+
+
+        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("perception/profile_estimate",
+        estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
+        std::placeholders::_1));
+
+        auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
+        visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
+
+    }
+
+    void CutProfileServer::initialize(){
+
         move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
         move_group_->setPlanningTime(planning_time_);
+        
 
+        
+        const auto robot_model =
+                move_group_->getRobotModel();
+        
         cut_planner_ = std::make_unique<motion::CutPlanner>(            
         move_group_->getRobotModel(),
         planning_group_,
         plasma_link_);
-
-
-        action_server_ = rclcpp_action::create_server<CutProfile>(this,"cut_profile",
-        std::bind(
-        &CutProfileServer::handleGoal,
-        this,
-        std::placeholders::_1,std::placeholders::_2
-    ),
-    std::bind(
-        &CutProfileServer::handleCancel,
-        this,
-        std::placeholders::_1
-    ),
-    std::bind(
-        &CutProfileServer::handleAccepted,
-        this,
-        std::placeholders::_1
-    ));
-
         
+        RCLCPP_INFO(
+                get_logger(),
+                "Plasma link parameter: '%s'",
+                plasma_link_.c_str());
+        RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
+        RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
+        RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
+        RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
         
-        RCLCPP_INFO(get_logger(),"CutProfileServer Initialized");  
-        // RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
-        // RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
-        // RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
-        // RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+        RCLCPP_INFO(get_logger(),"CutProfileServer Initialized"); 
+
+
     }
+
+
 
 
     rclcpp_action::GoalResponse CutProfileServer::handleGoal(const rclcpp_action::GoalUUID & , 
@@ -162,7 +174,19 @@ namespace hb_robot_skills{
         motion::CutRequest request;
         request.standoff = goal->standoff;
         auto current_state = move_group_->getCurrentState(2.0);
+
+        if(!current_state){
+            RCLCPP_ERROR(get_logger(),"couldnt get current state");
+            result->success = false;
+            result->message= "couldnt get current state";
+            goal_handle->abort(result);
+            return;
+        }
+        current_state->update();
+
+        RCLCPP_ERROR(get_logger(),"current state dirty after update: %s",current_state->dirty()?"true":"false");
         
+
         auto p_scene = std::make_shared<planning_scene::PlanningScene>(move_group_->getRobotModel());
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
         if(!plan_opt){
@@ -541,17 +565,17 @@ CutProfileServer::publishVisualization(
 int main (int argc, char** argv){
     rclcpp::init(argc,argv);
     auto options = rclcpp::NodeOptions();//.automatically_declare_parameters_from_overrides(true);
-    auto node = std::make_shared<hb_robot_skills::CutProfileServer>();
+    auto node = std::make_shared<hb_robot_skills::CutProfileServer>(options);
 
-    // try{
-    // node->initialize();
-    // RCLCPP_INFO(node->get_logger(),"initalized server");
-    // }
-    // catch(std::exception &e){
-    //     RCLCPP_FATAL(node->get_logger(),"%s",e.what());
-    //     rclcpp::shutdown();
-    //     return 1;
-    // }
+    try{
+    node->initialize();
+    RCLCPP_INFO(node->get_logger(),"initalized cut profile server");
+    }
+    catch(std::exception &e){
+        RCLCPP_FATAL(node->get_logger(),"%s",e.what());
+        rclcpp::shutdown();
+        return 1;
+    }
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);
     executor.spin();
