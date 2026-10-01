@@ -162,8 +162,9 @@ namespace hb_robot_skills{
         motion::CutRequest request;
         request.standoff = goal->standoff;
         auto current_state = move_group_->getCurrentState(2.0);
-
-        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state);
+        
+        auto p_scene = std::make_shared<planning_scene::PlanningScene>(move_group_->getRobotModel());
+        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
         if(!plan_opt){
             result->success = false;
             result->message= "planner failed";

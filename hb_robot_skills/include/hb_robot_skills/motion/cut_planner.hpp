@@ -9,7 +9,8 @@
 #include <moveit_msgs/msg/position_constraint.hpp>
 #include <moveit_msgs/msg/orientation_constraint.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
-
+#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/constraint_samplers/constraint_sampler_manager.h>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Geometry>
 #include <optional>
@@ -86,13 +87,16 @@ class CutPlanner{
             const hb_robot_interfaces::msg::ProfileEstimate& estimate,
             const hb_perception::ProfileModel& profile,
             const CutRequest& request,
-            const moveit::core::RobotState& start_state
+            const moveit::core::RobotState& start_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
 
         ) const;
 
         std::optional<CutSegment> selectWebCandidate(
             std::vector<CutSegment>& candidates,
-            const moveit::core::RobotState& start_state) const;
+            const moveit::core::RobotState& start_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+        ) const;
     private:
 
         CutSegment makeSegment(
@@ -115,6 +119,16 @@ class CutPlanner{
             const Eigen::Vector3f& tangent,
             const Eigen::Vector3f& surface_normal)const;
         
+
+        bool sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+            moveit::core::RobotState& state,
+            const moveit::core::RobotState& reference_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+            )const;
+
+        bool solveSegmentConstraints(CutSegment& segment, 
+            const moveit::core::RobotState& seed_state, 
+            const planning_scene::PlanningSceneConstPtr& p_scene) const;
 
 
         bool solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state) const;

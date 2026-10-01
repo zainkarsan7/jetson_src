@@ -35,7 +35,9 @@ CutPlanner::CutPlanner(
 
 std::optional<CutSegment> CutPlanner::selectWebCandidate(
             std::vector<CutSegment>& candidates,
-            const moveit::core::RobotState& start_state) const{
+            const moveit::core::RobotState& start_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+        ) const{
     if(candidates.empty()){
         std::cerr<<"no candidates"<<std::endl;
         return std::nullopt;
@@ -49,7 +51,7 @@ std::optional<CutSegment> CutPlanner::selectWebCandidate(
             continue;
         }
 
-        if(!solveSegmentIK(candidate,start_state)){
+        if(!solveSegmentConstraints(candidate,start_state,p_scene)){
             std::cout<<"failed best web planning "<<candidate.name<<std::endl;
             continue;
         }
@@ -103,13 +105,107 @@ bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotSt
 }
 
 
+bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+            moveit::core::RobotState& state,
+            const moveit::core::RobotState& reference_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+            )const{
+
+                if(!p_scene){
+                    std::cerr<<"no planning scene"<<std::endl;
+                    return false;
+                }
+                auto sampler = constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(
+                    p_scene,
+                    planning_group_,
+                    constraints
+                );
+                if(!sampler){
+                    std::cerr<<"samplers fucked"<<std::endl;
+                    return false;
+                }
+                if(!sampler->isValid()){
+                    std::cerr<<"samplers invalid and fucked"<<std::endl;
+                    return false;
+                }
+                constexpr unsigned int max_attempts=  20;
+                if(!sampler->sample(state,reference_state,max_attempts)){
+                    return false;
+                }
+                state.update();
+                return true;
+
+            }
+
+
+
+
+bool CutPlanner::solveSegmentConstraints(CutSegment& segment, 
+            const moveit::core::RobotState& seed_state, 
+            const planning_scene::PlanningSceneConstPtr& p_scene) const{
+
+                moveit::core::RobotState state(seed_state);
+
+                if(!sampleConstraint(segment.approach_constraints,
+                    state,
+                    seed_state,
+                    p_scene)){
+                    std::cout<<"failed approach planning "<<segment.name.c_str()<<std::endl;
+                    return false;}
+                state.update();
+                segment.approach_state = std::make_shared<moveit::core::RobotState>(state);
+                
+
+                const moveit::core::RobotState approach_reference(state);
+                if(!sampleConstraint(segment.start_constraints,
+                state, approach_reference, p_scene)){
+                    std::cout<<"failed start planning "<<segment.name.c_str()<<std::endl;
+                    return false;}
+                state.update();
+                segment.start_state = std::make_shared<moveit::core::RobotState>(state);
+
+                // segment constraint debug::
+                const Eigen::Isometry3d& actual = state.getGlobalLinkTransform(plasma_link_);
+                Eigen::Vector3d actual_z = actual.linear().col(2);
+                Eigen::Vector3d nominal_z = segment.start_pose.linear().col(2);
+                std::cout<<"TCP pointing error "<<
+                std::acos(std::clamp(
+                    actual_z.dot(nominal_z),-1.0,1.0))*180.0/M_PI<<" deg"<<std::endl;
+                
+                const moveit::core::RobotState start_reference(state);
+                if(!sampleConstraint(segment.end_constraints,
+                    state,
+                start_reference, 
+                p_scene)){
+                    std::cout<<"failed end planning "<<segment.name.c_str()<<std::endl;
+                    return false;}
+                state.update();
+                segment.end_state = std::make_shared<moveit::core::RobotState>(state);
+                
+
+                const moveit::core::RobotState end_reference(state);
+                if(!sampleConstraint(segment.retract_constraints,
+                state,end_reference,p_scene)){
+                    std::cout<<"failed retract planning "<<segment.name.c_str()<<std::endl;
+                    return false;}
+                state.update();
+                segment.retract_state = std::make_shared<moveit::core::RobotState>(state);
+                
+                return true;
+
+
+            }
+
+
 
 std::optional<CutPlan> CutPlanner::plan(
     const hb_robot_interfaces::msg::ProfileEstimate& estimate,
     const hb_perception::ProfileModel& profile,
     const CutRequest& request,
-    const moveit::core::RobotState& start_state
+    const moveit::core::RobotState& start_state,
+    const planning_scene::PlanningSceneConstPtr& p_scene
 ) const{
+
 
     if(estimate.profile_name!=profile.name){
         std::cerr<<"profile mismatch, estimate is "
@@ -154,13 +250,13 @@ std::optional<CutPlan> CutPlanner::plan(
             }
         }
 
-        auto best_web_segment = selectWebCandidate(web_segments,start_state);
+        auto best_web_segment = selectWebCandidate(web_segments,start_state,p_scene);
         if(!best_web_segment){
             return std::nullopt;
         }
 
         for (auto& flange: flange_segments){
-            if(!solveSegmentIK(flange,start_state)){
+            if(!solveSegmentConstraints(flange,start_state,p_scene)){
                 std::cerr<<"failed flange planning "<<flange.name<<std::endl;
                 return std::nullopt;
             }
