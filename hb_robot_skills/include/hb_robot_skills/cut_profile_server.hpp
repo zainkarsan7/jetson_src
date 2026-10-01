@@ -1,4 +1,8 @@
 #pragma once
+#include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit_msgs/msg/move_it_error_codes.hpp>
+#include <moveit_msgs/msg/display_trajectory.hpp>
+#include <moveit/robot_state/robot_state.h>
 
 #include "hb_robot_perception/profile_types.hpp"
 #include "hb_robot_skills/motion/cut_planner.hpp"
@@ -20,7 +24,7 @@ namespace hb_robot_skills{
             using CutProfile = hb_robot_interfaces::action::CutProfile;
             using GoalHandleCutProfile = rclcpp_action::ServerGoalHandle<CutProfile>;
 
-            CutProfileServer();
+            explicit CutProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
         
             
             rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID &uuid,
@@ -59,13 +63,17 @@ namespace hb_robot_skills{
 
             
         private:
-
+        
+        std::string planning_group_;
+        std::string plasma_link_;
+        double planning_time_;
+        std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
         rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
         mutable std::mutex approval_mutex_;
         std::condition_variable approval_cv_;
         bool motion_approved_{false};
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
-        motion::CutPlanner cut_planner_;
+        std::unique_ptr<motion::CutPlanner> cut_planner_;
         rclcpp_action::Server<CutProfile>::SharedPtr action_server_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr visualization_pub_;
         mutable std::mutex estimate_mutex_;

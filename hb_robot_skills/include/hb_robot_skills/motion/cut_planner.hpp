@@ -117,7 +117,7 @@ class CutPlanner{
         
 
 
-        bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state);
+        bool solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state) const;
 
         moveit::core::RobotModelConstPtr robot_model_;
         const moveit::core::JointModelGroup* joint_model_group_;

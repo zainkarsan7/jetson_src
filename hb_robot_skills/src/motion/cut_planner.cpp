@@ -67,7 +67,7 @@ std::optional<CutSegment> CutPlanner::selectWebCandidate(
 
     }
     
-bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state){
+bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state) const{
     moveit::core::RobotState state(seed_state);
 
     if(!state.setFromIK(joint_model_group_,
@@ -322,8 +322,8 @@ CutSegment CutPlanner::makeSegment(
 
     CutPathPoint end;
     end.pos = end_world;
-    start.tangent = tan_world;
-    start.srf_norm = norm_world;
+    end.tangent = tan_world;
+    end.srf_norm = norm_world;
 
     segment.points.push_back(start);
     segment.points.push_back(end);

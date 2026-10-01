@@ -8,8 +8,17 @@
 using namespace std::chrono_literals;
 namespace hb_robot_skills{
 
-    CutProfileServer::CutProfileServer():Node("cut_profile_server"){
+    CutProfileServer::CutProfileServer(const rclcpp::NodeOptions &options):Node("cut_profile_server",options){
+
+
+        planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
+        plasma_link_ = declare_parameter<std::string>("plasma_link","ur10e_torch_link");
+        planning_time_ = declare_parameter<double>("planning_time",5.0);
+      
+
         auto estimate_qos = rclcpp::QoS(1).reliable().transient_local();
+
+
 
         profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("perception/profile_estimate",
         1, std::bind(&CutProfileServer::profileEstimateCallback,this,
@@ -23,6 +32,15 @@ namespace hb_robot_skills{
             std::bind(&CutProfileServer::handleApproval,this,
                 std::placeholders::_1,std::placeholders::_2)
         );  
+
+        move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
+        move_group_->setPlanningTime(planning_time_);
+
+        cut_planner_ = std::make_unique<motion::CutPlanner>(            
+        move_group_->getRobotModel(),
+        planning_group_,
+        plasma_link_);
+
 
         action_server_ = rclcpp_action::create_server<CutProfile>(this,"cut_profile",
         std::bind(
@@ -143,8 +161,9 @@ namespace hb_robot_skills{
 
         motion::CutRequest request;
         request.standoff = goal->standoff;
+        auto current_state = move_group_->getCurrentState(2.0);
 
-        const auto plan_opt = cut_planner_.plan(estimate,*profile_opt,request);
+        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state);
         if(!plan_opt){
             result->success = false;
             result->message= "planner failed";
