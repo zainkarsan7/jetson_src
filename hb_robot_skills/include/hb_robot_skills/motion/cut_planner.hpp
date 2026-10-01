@@ -5,6 +5,10 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/robot_model/robot_model.h>
 #include <moveit/robot_state/robot_state.h>
+#include <moveit_msgs/msg/constraints.hpp>
+#include <moveit_msgs/msg/position_constraint.hpp>
+#include <moveit_msgs/msg/orientation_constraint.hpp>
+#include <shape_msgs/msg/solid_primitive.hpp>
 
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Geometry>
@@ -23,14 +27,31 @@ struct CutPathPoint{
 };
 
 struct CutSegment{
+    // this struct is lke the glue to get from 2D profiles to 3D poses to robot states
     std::string name;
     hb_perception::ProfileCutFeatureType type = hb_perception::ProfileCutFeatureType::Unknown;
+    
     std::vector<CutPathPoint> points;
 
+    // poses
     Eigen::Isometry3d approach_pose = Eigen::Isometry3d::Identity();
     Eigen::Isometry3d start_pose = Eigen::Isometry3d::Identity();
     Eigen::Isometry3d end_pose = Eigen::Isometry3d::Identity();
     Eigen::Isometry3d retract_pose = Eigen::Isometry3d::Identity();
+
+    moveit_msgs::msg::Constraints approach_constraints;
+    moveit_msgs::msg::Constraints start_constraints;
+    moveit_msgs::msg::Constraints end_constraints;
+    moveit_msgs::msg::Constraints retract_constraints;
+
+
+    //IK Solns
+
+    moveit::core::RobotStatePtr approach_state;
+    moveit::core::RobotStatePtr start_state;
+    moveit::core::RobotStatePtr end_state;
+    moveit::core::RobotStatePtr retract_state;
+
 };
 
  
@@ -45,6 +66,9 @@ struct CutRequest{
     float standoff = 0.0f;
     float approach_dist = 0.05f;
     float retract_dist = 0.05f;
+
+    double pos_tol = 0.003;
+    double ang_tol = 0.03;
 };
 
 class CutPlanner{
@@ -61,13 +85,13 @@ class CutPlanner{
         std::optional<CutPlan> plan(
             const hb_robot_interfaces::msg::ProfileEstimate& estimate,
             const hb_perception::ProfileModel& profile,
-            const CutRequest& request = CutRequest{},
+            const CutRequest& request,
             const moveit::core::RobotState& start_state
 
         ) const;
 
         std::optional<CutSegment> selectWebCandidate(
-            const std::vector<CutSegment> candidates,
+            std::vector<CutSegment>& candidates,
             const moveit::core::RobotState& start_state) const;
     private:
 
@@ -79,12 +103,21 @@ class CutPlanner{
 
         float approachScore(const CutSegment& segment, const Eigen::Vector3f& tcp_pos)const;
 
-        
+        moveit_msgs::msg::Constraints makePoseConstraints(
+            const Eigen::Isometry3d nominal_pose,
+            const double pos_tol, 
+            const double ang_tol
+        )const;
+
+
         Eigen::Isometry3d makeToolPose(
             const Eigen::Vector3f& position,
             const Eigen::Vector3f& tangent,
             const Eigen::Vector3f& surface_normal)const;
         
+
+
+        bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state);
 
         moveit::core::RobotModelConstPtr robot_model_;
         const moveit::core::JointModelGroup* joint_model_group_;

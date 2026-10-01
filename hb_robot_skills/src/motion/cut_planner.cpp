@@ -34,33 +34,73 @@ CutPlanner::CutPlanner(
         }
 
 std::optional<CutSegment> CutPlanner::selectWebCandidate(
-            const std::vector<CutSegment> candidates,
+            std::vector<CutSegment>& candidates,
             const moveit::core::RobotState& start_state) const{
     if(candidates.empty()){
         std::cerr<<"no candidates"<<std::endl;
         return std::nullopt;
     }
-    const Eigen::Vector3f current_tcp_pose =start_state.getGlobalLinkTransform(plasma_link_).translation();
+    const Eigen::Vector3f current_tcp_pose =start_state.getGlobalLinkTransform(plasma_link_).translation().cast<float>();
 
     float best_score = -std::numeric_limits<float>::infinity();
     std::optional<CutSegment> best_web;
-    for (const auto& candidate: candidates){
+    for (auto& candidate: candidates){
         if (candidate.type != hb_perception::ProfileCutFeatureType::Web){
             continue;
         }
+
+        if(!solveSegmentIK(candidate,start_state)){
+            std::cout<<"failed best web planning "<<candidate.name<<std::endl;
+            continue;
+        }
+
+
         float score = approachScore(candidate,current_tcp_pose);
 
         std::cout<<"web cand "<<candidate.name<<" approach score "<<score<<std::endl;
         if (!best_web || score > best_score){
-            best_web = std::move(candidate);
+            best_web = candidate;
             best_score = score;
         }
     }
-    return *best_web;
+    return best_web;
 
     }
     
+bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotState& seed_state){
+    moveit::core::RobotState state(seed_state);
 
+    if(!state.setFromIK(joint_model_group_,
+    segment.approach_pose,plasma_link_,0.1)){
+        std::cout<<"failed approach planning "<<segment.name.c_str()<<std::endl;
+        return false;}
+    state.update();
+    segment.approach_state = std::make_shared<moveit::core::RobotState>(state);
+
+    if(!state.setFromIK(joint_model_group_,
+    segment.start_pose,plasma_link_,0.1)){
+        std::cout<<"failed start planning "<<segment.name.c_str()<<std::endl;
+        return false;}
+    state.update();
+    segment.start_state = std::make_shared<moveit::core::RobotState>(state);
+
+    if(!state.setFromIK(joint_model_group_,
+    segment.end_pose,plasma_link_,0.1)){
+        std::cout<<"failed end planning "<<segment.name.c_str()<<std::endl;
+        return false;}
+    state.update();
+    segment.end_state = std::make_shared<moveit::core::RobotState>(state);
+    
+    if(!state.setFromIK(joint_model_group_,
+    segment.retract_pose,plasma_link_,0.1)){
+        std::cout<<"failed retract planning "<<segment.name.c_str()<<std::endl;
+        return false;}
+    state.update();
+    segment.retract_state = std::make_shared<moveit::core::RobotState>(state);
+    
+    return true;
+    
+}
 
 
 
@@ -118,7 +158,15 @@ std::optional<CutPlan> CutPlanner::plan(
         if(!best_web_segment){
             return std::nullopt;
         }
-        plan.segments = flange_segments;
+
+        for (auto& flange: flange_segments){
+            if(!solveSegmentIK(flange,start_state)){
+                std::cerr<<"failed flange planning "<<flange.name<<std::endl;
+                return std::nullopt;
+            }
+            plan.segments.push_back(flange);
+        }
+
         plan.segments.push_back(*best_web_segment);
        
   
@@ -130,7 +178,59 @@ std::optional<CutPlan> CutPlanner::plan(
 
     }
 
+moveit_msgs::msg::Constraints CutPlanner::makePoseConstraints(
+            const Eigen::Isometry3d nominal_pose,
+            const double pos_tol, 
+            const double ang_tol
+        )const{
 
+            moveit_msgs::msg::Constraints constraints;
+            const std::string& ref_frame = robot_model_->getModelFrame();
+
+            //position stuff
+            moveit_msgs::msg::PositionConstraint pos_constraint;
+            pos_constraint.header.frame_id = ref_frame;
+            pos_constraint.link_name = plasma_link_;
+            pos_constraint.weight = 1.0;
+            pos_constraint.target_point_offset.x=0.0;
+            pos_constraint.target_point_offset.y=0.0;
+            pos_constraint.target_point_offset.z=0.0;
+
+            shape_msgs::msg::SolidPrimitive sphere;
+            sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+            sphere.dimensions.resize(1);
+            sphere.dimensions[shape_msgs::msg::SolidPrimitive::SPHERE_RADIUS] = pos_tol;
+            geometry_msgs::msg::Pose sphere_pose;
+            sphere_pose.position.x = nominal_pose.translation().x();
+            sphere_pose.position.y = nominal_pose.translation().y();
+            sphere_pose.position.z = nominal_pose.translation().z();
+            sphere_pose.orientation.w = 1.0;
+
+            pos_constraint.constraint_region.primitives.push_back(sphere);
+            pos_constraint.constraint_region.primitive_poses.push_back(sphere_pose);
+
+            constraints.position_constraints.push_back(pos_constraint);
+   
+            //orientation stuff
+            moveit_msgs::msg::OrientationConstraint orn_constraint;
+            orn_constraint.header.frame_id = ref_frame;
+            orn_constraint.link_name = plasma_link_;
+
+            const Eigen::Quaterniond q(nominal_pose.linear());
+            orn_constraint.orientation.x = q.x();
+            orn_constraint.orientation.y = q.y();
+            orn_constraint.orientation.z = q.z();
+            orn_constraint.orientation.w = q.w();
+
+            orn_constraint.absolute_x_axis_tolerance = ang_tol;
+            orn_constraint.absolute_y_axis_tolerance = ang_tol;
+            orn_constraint.absolute_z_axis_tolerance = M_PI;
+
+            orn_constraint.parameterization = moveit_msgs::msg::OrientationConstraint::ROTATION_VECTOR;
+            orn_constraint.weight = 1.0;
+            constraints.orientation_constraints.push_back(orn_constraint);
+            return constraints;
+        }
 
 Eigen::Isometry3d CutPlanner::makeToolPose(
             const Eigen::Vector3f& position,
@@ -198,18 +298,22 @@ CutSegment CutPlanner::makeSegment(
     Eigen::Vector3f start_world = world_from_profile* Eigen::Vector3f(feature.start.x(),feature.start.y(),0.0f);
     start_world += request.standoff * norm_world;
     segment.start_pose = makeToolPose(start_world,tan_world,norm_world);
-    
+    segment.start_constraints = makePoseConstraints(segment.start_pose,request.pos_tol,request.ang_tol);
+
     Eigen::Vector3f approach_world = start_world;
     approach_world += request.approach_dist * norm_world;
-    segment.approach_pose = makeToolPose(start_world,tan_world,norm_world);
-
+    segment.approach_pose = makeToolPose(approach_world,tan_world,norm_world);
+    segment.approach_constraints = makePoseConstraints(segment.approach_pose,request.pos_tol,request.ang_tol);
 
     Eigen::Vector3f end_world = world_from_profile* Eigen::Vector3f(feature.end.x(),feature.end.y(),0.0f);
     end_world += request.standoff * norm_world;
     segment.end_pose = makeToolPose(end_world,tan_world,norm_world);
+    segment.end_constraints = makePoseConstraints(segment.end_pose,request.pos_tol,request.ang_tol);
+    
     Eigen::Vector3f retract_world = end_world;
     retract_world += request.retract_dist  * norm_world;
     segment.retract_pose = makeToolPose(retract_world,tan_world,norm_world);
+    segment.retract_constraints = makePoseConstraints(segment.retract_pose,request.pos_tol,request.ang_tol);
 
     CutPathPoint start;
     start.pos = start_world;
