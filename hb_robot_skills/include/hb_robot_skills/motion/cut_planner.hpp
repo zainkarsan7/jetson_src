@@ -26,7 +26,14 @@ struct CutSegment{
     std::string name;
     hb_perception::ProfileCutFeatureType type = hb_perception::ProfileCutFeatureType::Unknown;
     std::vector<CutPathPoint> points;
+
+    Eigen::Isometry3d approach_pose = Eigen::Isometry3d::Identity();
+    Eigen::Isometry3d start_pose = Eigen::Isometry3d::Identity();
+    Eigen::Isometry3d end_pose = Eigen::Isometry3d::Identity();
+    Eigen::Isometry3d retract_pose = Eigen::Isometry3d::Identity();
 };
+
+ 
 
 struct CutPlan{
     std::string profile_name;
@@ -67,12 +74,16 @@ class CutPlanner{
         CutSegment makeSegment(
             const hb_perception::ProfileCutFeature& feature,
             const Eigen::Isometry3f& world_from_profile,
-            float standoff
+            const CutRequest request
         )const;
 
         float approachScore(const CutSegment& segment, const Eigen::Vector3f& tcp_pos)const;
 
         
+        Eigen::Isometry3d makeToolPose(
+            const Eigen::Vector3f& position,
+            const Eigen::Vector3f& tangent,
+            const Eigen::Vector3f& surface_normal)const;
         
 
         moveit::core::RobotModelConstPtr robot_model_;

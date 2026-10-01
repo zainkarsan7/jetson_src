@@ -90,33 +90,70 @@ std::optional<CutPlan> CutPlanner::plan(
     plan.profile_name=  profile.name;
     plan.segments.reserve(profile.cut_features.size());
 
+    std::vector<CutSegment> flange_segments;
+    std::vector<CutSegment> web_segments;
+
     for (const auto& feature : profile.cut_features){
         const float length = (feature.end - feature.start).norm();
         if(length < 1e-5f){
             continue;
         }
-        // choose web.
-        CutSegment candidate_cut = makeSegment(feature, world_from_profile,request.standoff);
 
+        //make profile segments into cut segments
+        CutSegment candidate_cut = makeSegment(feature, world_from_profile,request);
+
+        switch(feature.type){
+            case hb_perception::ProfileCutFeatureType::Flange:
+                flange_segments.push_back(std::move(candidate_cut));
+                break;
+            case hb_perception::ProfileCutFeatureType::Web:
+                web_segments.push_back(std::move(candidate_cut));
+                break;
+            default:
+                break;
+            }
+        }
+
+        auto best_web_segment = selectWebCandidate(web_segments,start_state);
+        if(!best_web_segment){
+            return std::nullopt;
+        }
+        plan.segments = flange_segments;
+        plan.segments.push_back(*best_web_segment);
        
-        else{
-            plan.segments.emplace_back(std::move(candidate_cut));
-        }
-        if(best_web){
-            plan.segments.emplace_back(std::move(*best_web));
-        }
-    }
   
-    if (plan.segments.empty()){
-        std::cerr<<"empty plan"<<std::endl; 
-        return std::nullopt;
-    }
-        return plan;
+        if (plan.segments.empty()){
+            std::cerr<<"empty plan"<<std::endl; 
+            return std::nullopt;
+        }
+            return plan;
 
     }
 
 
 
+Eigen::Isometry3d CutPlanner::makeToolPose(
+            const Eigen::Vector3f& position,
+            const Eigen::Vector3f& tangent,
+            const Eigen::Vector3f& surface_normal)const{
+            
+        Eigen::Vector3d z_ax = surface_normal.cast<double>();
+        z_ax.normalize();
+
+        Eigen::Vector3d x_ax = tangent.cast<double>();
+        x_ax -= x_ax.dot(z_ax)*z_ax;
+        x_ax.normalize();
+        Eigen::Vector3d y_ax = z_ax.cross(x_ax).normalized();
+        x_ax = y_ax.cross(z_ax).normalized();
+
+        Eigen::Isometry3d tool_pose  = Eigen::Isometry3d::Identity();
+        tool_pose.linear().col(0) = x_ax;
+        tool_pose.linear().col(1) = y_ax;
+        tool_pose.linear().col(2) = z_ax;
+        tool_pose.translation() = position.cast<double>();
+            
+        return tool_pose;
+        }
 float CutPlanner::approachScore(const CutSegment& segment, const Eigen::Vector3f& tcp_pos)const{
     if(segment.points.size()<2){
         std::cerr<<"segment doesnt have enough points"<<std::endl;
@@ -140,7 +177,7 @@ float CutPlanner::approachScore(const CutSegment& segment, const Eigen::Vector3f
 CutSegment CutPlanner::makeSegment(
     const hb_perception::ProfileCutFeature& feature,
     const Eigen::Isometry3f& world_from_profile,
-    float standoff
+    const CutRequest request
 )const{
 
     CutSegment segment;
@@ -159,10 +196,20 @@ CutSegment CutPlanner::makeSegment(
     Eigen::Vector3f tan_world = world_from_profile.linear() * tangent_profile;
         
     Eigen::Vector3f start_world = world_from_profile* Eigen::Vector3f(feature.start.x(),feature.start.y(),0.0f);
-    start_world += standoff * norm_world;
+    start_world += request.standoff * norm_world;
+    segment.start_pose = makeToolPose(start_world,tan_world,norm_world);
+    
+    Eigen::Vector3f approach_world = start_world;
+    approach_world += request.approach_dist * norm_world;
+    segment.approach_pose = makeToolPose(start_world,tan_world,norm_world);
+
 
     Eigen::Vector3f end_world = world_from_profile* Eigen::Vector3f(feature.end.x(),feature.end.y(),0.0f);
-    end_world += standoff * norm_world;
+    end_world += request.standoff * norm_world;
+    segment.end_pose = makeToolPose(end_world,tan_world,norm_world);
+    Eigen::Vector3f retract_world = end_world;
+    retract_world += request.retract_dist  * norm_world;
+    segment.retract_pose = makeToolPose(retract_world,tan_world,norm_world);
 
     CutPathPoint start;
     start.pos = start_world;
@@ -176,6 +223,7 @@ CutSegment CutPlanner::makeSegment(
 
     segment.points.push_back(start);
     segment.points.push_back(end);
+
     return segment;
 }
     
