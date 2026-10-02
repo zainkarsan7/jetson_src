@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace hb_robot_skills::motion{
 
@@ -99,7 +100,15 @@ class CutPlanner{
             const moveit::core::RobotState& start_state,
             const planning_scene::PlanningSceneConstPtr& p_scene
         ) const;
+
+        using DebugVisCallback = std::function<void(const std::vector<CutSegment>&,const std::string&)>;
+        void setDebugVisCallback(DebugVisCallback callback){
+            debug_vis_callback_ = std::move(callback);
+        }
+
     private:
+
+        DebugVisCallback debug_vis_callback_;
 
         CutSegment makeSegment(
             const hb_perception::ProfileCutFeature& feature,

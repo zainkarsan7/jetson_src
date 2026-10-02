@@ -4,6 +4,9 @@
 #include <sstream>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
+#include <moveit/robot_state/conversions.h>
+#include <moveit/robot_trajectory/robot_trajectory.h>
+
 
 using namespace std::chrono_literals;
 namespace hb_robot_skills{
@@ -64,6 +67,17 @@ namespace hb_robot_skills{
         planning_group_,
         plasma_link_);
         
+
+        cut_planner_->setDebugVisCallback([this](const std::vector<motion::CutSegment> segments, const std::string& stage){
+            publishCandidateVisualization(segments,stage);
+        }
+        );
+
+        display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
+        10
+        //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
+    );
+
         RCLCPP_INFO(
                 get_logger(),
                 "Plasma link parameter: '%s'",
@@ -128,6 +142,23 @@ namespace hb_robot_skills{
             }
 
 
+
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
+            const moveit::core::RobotState& start_state,
+            const moveit::core::RobotState& target_state
+    ){
+        move_group_->clearPoseTargets();
+        move_group_->clearPathConstraints();
+        move_group_->setStartState(start_state);
+        move_group_->setJointValueTarget(target_state);
+        moveit::planning_interface::MoveGroupInterface::Plan plan;
+        if(!static_cast<bool>(move_group_->plan(plan))){
+            RCLCPP_ERROR(get_logger(), "failed to plan joint motion");
+            return std::nullopt;
+        }
+        return plan;
+    }
+
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
 
         //approval machienry 
@@ -156,7 +187,8 @@ namespace hb_robot_skills{
         const auto estimate = *estimate_opt;
         RCLCPP_INFO(get_logger(),"Using profile estimate %s | rms %.2f | inlier %.2f | score %.2f", 
         estimate.profile_name.c_str(), estimate.rms_distance,estimate.inlier_fraction,estimate.score);
-        
+        RCLCPP_INFO(get_logger(),
+        "profile frame %s | Moveit planning frame %s",estimate.header.frame_id.c_str(),move_group_->getPlanningFrame().c_str());
         publishFeedback(goal_handle,"loading profile geom");
 
         const auto profile_opt = hb_perception::ProfileLibrary::find(estimate.profile_name);
@@ -198,6 +230,43 @@ namespace hb_robot_skills{
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
+        for (const auto& segment : plan.segments){
+            
+        // TEST MOTION TO APPROACH TO WEB
+            if(segment.type != hb_perception::ProfileCutFeatureType::Web){
+                continue;
+            }
+            current_state->update();
+            moveit_msgs::msg::DisplayTrajectory display_msg;
+            
+            auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
+            
+            if(!test_traj){
+                result->success = false;
+                result->message= "planner to state failed";
+                goal_handle->abort(result);
+                return;
+            }
+            
+            display_msg.trajectory_start = test_traj->start_state_;
+            std::cout<<"made the display msg"<<std::endl;
+            moveit_msgs::msg::RobotTrajectory trajectory_msg;
+            robot_trajectory::RobotTrajectory trajectory_object(move_group_->getRobotModel());
+            std::cout<<"made the traj object"<<std::endl;
+            moveit::core::RobotState test_start_state(move_group_->getRobotModel());
+            moveit::core::robotStateMsgToRobotState(test_traj->start_state_,test_start_state);
+            
+            trajectory_object.setRobotTrajectoryMsg(test_start_state,test_traj->trajectory_);
+            trajectory_object.getRobotTrajectoryMsg(trajectory_msg);
+            std::cout<<"converted the traj object to msg"<<std::endl;
+
+            display_msg.trajectory.push_back(trajectory_msg);
+            display_traj_pub_->publish(display_msg);
+            std::cout<<"published trajectory"<<std::endl;
+        }
+
+
+        
 
         publishVisualization(plan,estimate.header.frame_id);
         publishFeedback(goal_handle,"visualizing, cut plan ready");
@@ -240,22 +309,27 @@ namespace hb_robot_skills{
 
     }
     
+    
+    void CutProfileServer::publishCandidateVisualization(const std::vector<motion::CutSegment> segments, const std::string stage){
+        motion::CutPlan debug_plan;
+        debug_plan.profile_name = "debug_"+stage;
+        debug_plan.segments = segments;
+        
+        visualization_pub_->publish(makeVisualization(debug_plan,move_group_->getPlanningFrame()));
+    }
+    
     namespace
 {
 
 geometry_msgs::msg::Point
-toPoint(
-    const Eigen::Vector3f& p)
+toPoint(const Eigen::Vector3d& p)
 {
     geometry_msgs::msg::Point msg;
-
     msg.x = p.x();
     msg.y = p.y();
     msg.z = p.z();
-
     return msg;
 }
-
 
 visualization_msgs::msg::Marker
 makeArrow(
@@ -263,17 +337,14 @@ makeArrow(
     const rclcpp::Time& stamp,
     const std::string& ns,
     int id,
-    const Eigen::Vector3f& origin,
-    const Eigen::Vector3f& direction,
-    float length)
+    const Eigen::Vector3d& origin,
+    const Eigen::Vector3d& direction,
+    double length)
 {
     visualization_msgs::msg::Marker marker;
 
-    marker.header.frame_id =
-        frame_id;
-
-    marker.header.stamp =
-        stamp;
+    marker.header.frame_id = frame_id;
+    marker.header.stamp = stamp;
 
     marker.ns = ns;
     marker.id = id;
@@ -284,7 +355,6 @@ makeArrow(
     marker.action =
         visualization_msgs::msg::Marker::ADD;
 
-
     marker.points.push_back(
         toPoint(origin));
 
@@ -293,14 +363,6 @@ makeArrow(
             origin +
             direction.normalized() * length));
 
-
-    /*
-     * ARROW using points:
-     *
-     * scale.x = shaft diameter
-     * scale.y = head diameter
-     * scale.z = head length
-     */
     marker.scale.x = 0.003;
     marker.scale.y = 0.007;
     marker.scale.z = 0.010;
@@ -310,8 +372,121 @@ makeArrow(
     return marker;
 }
 
-} // namespace
 
+/*
+ * Draw the process-relevant part of the tool frame.
+ *
+ * makeToolPose() convention:
+ *
+ *   X = cut tangent
+ *   Z = surface normal / torch axis
+ *
+ * Green = tangent
+ * Red   = surface normal
+ */
+void drawFrame(
+    visualization_msgs::msg::MarkerArray& array,
+    const Eigen::Isometry3d& pose,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id,
+    double length = 0.04)
+{
+    const Eigen::Vector3d origin =
+        pose.translation();
+
+    const Eigen::Vector3d tangent =
+        pose.linear().col(0);
+
+    const Eigen::Vector3d normal =
+        pose.linear().col(2);
+
+
+    auto tangent_arrow =
+        makeArrow(
+            frame_id,
+            stamp,
+            ns + "_tangent",
+            id++,
+            origin,
+            tangent,
+            length);
+
+    tangent_arrow.color.r = 0.0;
+    tangent_arrow.color.g = 1.0;
+    tangent_arrow.color.b = 0.0;
+
+    array.markers.push_back(
+        std::move(tangent_arrow));
+
+
+    auto normal_arrow =
+        makeArrow(
+            frame_id,
+            stamp,
+            ns + "_normal",
+            id++,
+            origin,
+            normal,
+            length);
+
+    normal_arrow.color.r = 1.0;
+    normal_arrow.color.g = 0.0;
+    normal_arrow.color.b = 0.0;
+
+    array.markers.push_back(
+        std::move(normal_arrow));
+}
+
+
+void makeLabel(
+    visualization_msgs::msg::MarkerArray& array,
+    const Eigen::Vector3d& position,
+    const std::string& text,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id)
+{
+    visualization_msgs::msg::Marker label;
+
+    label.header.frame_id = frame_id;
+    label.header.stamp = stamp;
+
+    label.ns = ns;
+    label.id = id++;
+
+    label.type =
+        visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+
+    label.action =
+        visualization_msgs::msg::Marker::ADD;
+
+    label.pose.position =
+        toPoint(
+            position +
+            Eigen::Vector3d(
+                0.0,
+                0.0,
+                0.025));
+
+    label.pose.orientation.w = 1.0;
+
+    label.scale.z = 0.018;
+
+    label.color.r = 1.0;
+    label.color.g = 1.0;
+    label.color.b = 1.0;
+    label.color.a = 1.0;
+
+    label.text = text;
+
+    array.markers.push_back(
+        std::move(label));
+}
+
+} // namespace
 visualization_msgs::msg::MarkerArray
 CutProfileServer::makeVisualization(
     const motion::CutPlan& plan,
@@ -319,12 +494,10 @@ CutProfileServer::makeVisualization(
 {
     visualization_msgs::msg::MarkerArray array;
 
-    const auto stamp =
-        now();
-
+    const auto stamp = now();
 
     /*
-     * Clear previous plan first.
+     * Clear previous visualization.
      */
     visualization_msgs::msg::Marker clear;
 
@@ -337,191 +510,212 @@ CutProfileServer::makeVisualization(
     int id = 0;
 
 
-    for (const auto& segment :
-         plan.segments)
+    for (const auto& segment : plan.segments)
     {
-        if (segment.points.size() < 2) {
-            continue;
-        }
-
-
-        const auto& start =
-            segment.points.front();
-
-        const auto& end =
-            segment.points.back();
-
-
-        const Eigen::Vector3f midpoint =
-            0.5f *
-            (start.pos +
-             end.pos);
-
-
         /*
-         * ---------------------------------------------------
-         * Cut segment
-         * ---------------------------------------------------
+         * --------------------------------------------------
+         * Actual requested cut line
+         * --------------------------------------------------
+         *
+         * Use the process poses rather than CutPathPoint here.
+         * These already include standoff.
          */
+        visualization_msgs::msg::Marker cut_line;
 
-        visualization_msgs::msg::Marker line;
+        cut_line.header.frame_id = frame_id;
+        cut_line.header.stamp = stamp;
 
-        line.header.frame_id =
-            frame_id;
+        cut_line.ns = "cut_segments";
+        cut_line.id = id++;
 
-        line.header.stamp =
-            stamp;
-
-        line.ns =
-            "cut_segments";
-
-        line.id =
-            id++;
-
-        line.type =
+        cut_line.type =
             visualization_msgs::msg::Marker::LINE_LIST;
 
-        line.action =
+        cut_line.action =
             visualization_msgs::msg::Marker::ADD;
 
-        line.scale.x =
-            0.005;
+        cut_line.scale.x = 0.005;
 
-
-        line.points.push_back(
-            toPoint(start.pos));
-
-        line.points.push_back(
-            toPoint(end.pos));
-
-
-        /*
-         * Cyan-ish cut line.
-         */
-        line.color.r = 0.0;
-        line.color.g = 1.0;
-        line.color.b = 1.0;
-        line.color.a = 1.0;
-
-
-        array.markers.push_back(
-            line);
-
-
-        /*
-         * ---------------------------------------------------
-         * Tangent
-         * ---------------------------------------------------
-         */
-
-        auto tangent =
-            makeArrow(
-                frame_id,
-                stamp,
-                "cut_tangents",
-                id++,
-                midpoint,
-                start.tangent,
-                0.05f);
-
-
-        /*
-         * Green tangent.
-         */
-        tangent.color.r = 0.0;
-        tangent.color.g = 1.0;
-        tangent.color.b = 0.0;
-
-
-        array.markers.push_back(
-            tangent);
-
-
-        /*
-         * ---------------------------------------------------
-         * Surface normal
-         * ---------------------------------------------------
-         */
-
-        auto normal =
-            makeArrow(
-                frame_id,
-                stamp,
-                "cut_normals",
-                id++,
-                midpoint,
-                start.srf_norm,
-                0.05f);
-
-
-        /*
-         * Red normal.
-         */
-        normal.color.r = 1.0;
-        normal.color.g = 0.0;
-        normal.color.b = 0.0;
-
-
-        array.markers.push_back(
-            normal);
-
-
-        /*
-         * ---------------------------------------------------
-         * Label
-         * ---------------------------------------------------
-         */
-
-        visualization_msgs::msg::Marker label;
-
-        label.header.frame_id =
-            frame_id;
-
-        label.header.stamp =
-            stamp;
-
-        label.ns =
-            "cut_labels";
-
-        label.id =
-            id++;
-
-        label.type =
-            visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-
-        label.action =
-            visualization_msgs::msg::Marker::ADD;
-
-
-        label.pose.position =
+        cut_line.points.push_back(
             toPoint(
-                midpoint +
-                Eigen::Vector3f(
-                    0.0f,
-                    0.0f,
-                    0.025f));
+                segment.start_pose.translation()));
 
+        cut_line.points.push_back(
+            toPoint(
+                segment.end_pose.translation()));
 
-        label.pose.orientation.w =
-            1.0;
-
-
-        label.scale.z =
-            0.025;
-
-
-        label.color.r = 1.0;
-        label.color.g = 1.0;
-        label.color.b = 1.0;
-        label.color.a = 1.0;
-
-
-        label.text =
-            segment.name;
-
+        // Cyan
+        cut_line.color.r = 0.0;
+        cut_line.color.g = 1.0;
+        cut_line.color.b = 1.0;
+        cut_line.color.a = 1.0;
 
         array.markers.push_back(
-            label);
+            std::move(cut_line));
+
+
+        /*
+         * --------------------------------------------------
+         * Approach -> start
+         * --------------------------------------------------
+         *
+         * Thin line so we can see the intended approach
+         * direction as well.
+         */
+        visualization_msgs::msg::Marker approach_line;
+
+        approach_line.header.frame_id = frame_id;
+        approach_line.header.stamp = stamp;
+
+        approach_line.ns = "approach_paths";
+        approach_line.id = id++;
+
+        approach_line.type =
+            visualization_msgs::msg::Marker::LINE_LIST;
+
+        approach_line.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        approach_line.scale.x = 0.002;
+
+        approach_line.points.push_back(
+            toPoint(
+                segment.approach_pose.translation()));
+
+        approach_line.points.push_back(
+            toPoint(
+                segment.start_pose.translation()));
+
+        approach_line.color.r = 1.0;
+        approach_line.color.g = 1.0;
+        approach_line.color.b = 1.0;
+        approach_line.color.a = 0.6;
+
+        array.markers.push_back(
+            std::move(approach_line));
+
+
+        /*
+         * --------------------------------------------------
+         * End -> retract
+         * --------------------------------------------------
+         */
+        visualization_msgs::msg::Marker retract_line;
+
+        retract_line.header.frame_id = frame_id;
+        retract_line.header.stamp = stamp;
+
+        retract_line.ns = "retract_paths";
+        retract_line.id = id++;
+
+        retract_line.type =
+            visualization_msgs::msg::Marker::LINE_LIST;
+
+        retract_line.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        retract_line.scale.x = 0.002;
+
+        retract_line.points.push_back(
+            toPoint(
+                segment.end_pose.translation()));
+
+        retract_line.points.push_back(
+            toPoint(
+                segment.retract_pose.translation()));
+
+        retract_line.color.r = 1.0;
+        retract_line.color.g = 1.0;
+        retract_line.color.b = 1.0;
+        retract_line.color.a = 0.6;
+
+        array.markers.push_back(
+            std::move(retract_line));
+
+
+        /*
+         * --------------------------------------------------
+         * Nominal tool frames
+         * --------------------------------------------------
+         */
+
+        const std::string base_ns =
+            "cut_pose_" + segment.name;
+
+        drawFrame(
+            array,
+            segment.approach_pose,
+            frame_id,
+            stamp,
+            base_ns + "_approach",
+            id);
+
+        drawFrame(
+            array,
+            segment.start_pose,
+            frame_id,
+            stamp,
+            base_ns + "_start",
+            id);
+
+        drawFrame(
+            array,
+            segment.end_pose,
+            frame_id,
+            stamp,
+            base_ns + "_end",
+            id);
+
+        drawFrame(
+            array,
+            segment.retract_pose,
+            frame_id,
+            stamp,
+            base_ns + "_retract",
+            id);
+
+
+        /*
+         * --------------------------------------------------
+         * Labels
+         * --------------------------------------------------
+         */
+
+        makeLabel(
+            array,
+            segment.approach_pose.translation(),
+            segment.name + " approach",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.start_pose.translation(),
+            segment.name + " start",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.end_pose.translation(),
+            segment.name + " end",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.retract_pose.translation(),
+            segment.name + " retract",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
     }
 
 

@@ -39,7 +39,7 @@ std::optional<CutSegment> CutPlanner::selectWebCandidate(
             const planning_scene::PlanningSceneConstPtr& p_scene
         ) const{
     if(candidates.empty()){
-        std::cerr<<"no candidates"<<std::endl;
+        std::cerr<<"Looking for Best Web: no candidates"<<std::endl;
         return std::nullopt;
     }
     const Eigen::Vector3f current_tcp_pose =start_state.getGlobalLinkTransform(plasma_link_).translation().cast<float>();
@@ -52,14 +52,14 @@ std::optional<CutSegment> CutPlanner::selectWebCandidate(
         }
 
         if(!solveSegmentConstraints(candidate,start_state,p_scene)){
-            std::cout<<"failed best web planning "<<candidate.name<<std::endl;
+            std::cout<<"Looking for Best Web: failed planning "<<candidate.name<<std::endl;
             continue;
         }
 
 
         float score = approachScore(candidate,current_tcp_pose);
 
-        std::cout<<"web cand "<<candidate.name<<" approach score "<<score<<std::endl;
+        std::cout<<"Looking for Best Web: "<<candidate.name<<" approach score "<<score<<std::endl;
         if (!best_web || score > best_score){
             best_web = candidate;
             best_score = score;
@@ -150,7 +150,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                     state,
                     seed_state,
                     p_scene)){
-                    std::cout<<"failed approach planning "<<segment.name.c_str()<<std::endl;
+                    std::cout<<"Solving Constraints: failed approach planning for "<<segment.name.c_str()<<std::endl;
                     return false;}
                 state.update();
                 segment.approach_state = std::make_shared<moveit::core::RobotState>(state);
@@ -159,7 +159,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 const moveit::core::RobotState approach_reference(state);
                 if(!sampleConstraint(segment.start_constraints,
                 state, approach_reference, p_scene)){
-                    std::cout<<"failed start planning "<<segment.name.c_str()<<std::endl;
+                    std::cout<<"Solving Constraints: failed start planning for "<<segment.name.c_str()<<std::endl;
                     return false;}
                 state.update();
                 segment.start_state = std::make_shared<moveit::core::RobotState>(state);
@@ -168,7 +168,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 const Eigen::Isometry3d& actual = state.getGlobalLinkTransform(plasma_link_);
                 Eigen::Vector3d actual_z = actual.linear().col(2);
                 Eigen::Vector3d nominal_z = segment.start_pose.linear().col(2);
-                std::cout<<"TCP pointing error "<<
+                std::cout<<"Solving Constraints: TCP pointing error "<<
                 std::acos(std::clamp(
                     actual_z.dot(nominal_z),-1.0,1.0))*180.0/M_PI<<" deg"<<std::endl;
                 
@@ -177,7 +177,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                     state,
                 start_reference, 
                 p_scene)){
-                    std::cout<<"failed end planning "<<segment.name.c_str()<<std::endl;
+                    std::cout<<"Solving Constraints: failed end planning for "<<segment.name.c_str()<<std::endl;
                     return false;}
                 state.update();
                 segment.end_state = std::make_shared<moveit::core::RobotState>(state);
@@ -186,11 +186,11 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 const moveit::core::RobotState end_reference(state);
                 if(!sampleConstraint(segment.retract_constraints,
                 state,end_reference,p_scene)){
-                    std::cout<<"failed retract planning "<<segment.name.c_str()<<std::endl;
+                    std::cout<<"Solving Constraints: failed retract planning for "<<segment.name.c_str()<<std::endl;
                     return false;}
                 state.update();
                 segment.retract_state = std::make_shared<moveit::core::RobotState>(state);
-                
+                std::cout<<"Solved Constraints for "<<segment.name.c_str()<<std::endl;
                 return true;
 
 
@@ -258,6 +258,16 @@ std::optional<CutPlan> CutPlanner::plan(
                 break;
             }
         }
+
+        std::vector<CutSegment> debug_segments;
+        debug_segments.reserve(flange_segments.size() + web_segments.size());
+        debug_segments.insert(debug_segments.end(),flange_segments.begin(),flange_segments.end());
+        debug_segments.insert(debug_segments.end(),web_segments.begin(),web_segments.end());
+
+        if(debug_vis_callback_){
+            debug_vis_callback_(debug_segments,"candidates");
+        }
+
 
         auto best_web_segment = selectWebCandidate(web_segments,current_state,p_scene);
         if(!best_web_segment){

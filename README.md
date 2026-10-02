@@ -140,6 +140,9 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
 ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
 
 
+ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{standoff: 0.0, execute: false}" --feedback
+
+
 ### CAMERA CALIBRATION
 
 <joint name="calibrated_camera_mount" type="fixed">

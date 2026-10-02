@@ -54,15 +54,21 @@ namespace hb_robot_skills{
             void publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
             const std::string& stage);
 
-         
+            
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
 
-
+            void publishCandidateVisualization(const std::vector<motion::CutSegment> segments, const std::string stage);
 
             
         private:
+
+
+        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToState(
+            const moveit::core::RobotState& start_state,
+            const moveit::core::RobotState& target_state
+        );
         
         std::string planning_group_;
         std::string plasma_link_;
@@ -78,7 +84,7 @@ namespace hb_robot_skills{
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr visualization_pub_;
         mutable std::mutex estimate_mutex_;
         rclcpp::Subscription<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_sub_;
-        
+        rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_ ;
 
 
 
