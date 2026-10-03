@@ -120,6 +120,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     planning_group_,
                     constraints
                 );
+                sampler->setVerbose(true);
                 if(!sampler){
                     std::cerr<<"samplers fucked"<<std::endl;
                     return false;
@@ -128,7 +129,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     std::cerr<<"samplers invalid and fucked"<<std::endl;
                     return false;
                 }
-                constexpr unsigned int max_attempts=  20;
+                constexpr unsigned int max_attempts=  100;
                 if(!sampler->sample(state,reference_state,max_attempts)){
                     return false;
                 }
@@ -151,18 +152,23 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                     seed_state,
                     p_scene)){
                     std::cout<<"Solving Constraints: failed approach planning for "<<segment.name.c_str()<<std::endl;
+                    if(debug_vis_callback_)debug_vis_callback_(segment);
+                    
+                    
                     return false;}
                 state.update();
                 segment.approach_state = std::make_shared<moveit::core::RobotState>(state);
-                
+                if(debug_vis_callback_)debug_vis_callback_(segment);
 
                 const moveit::core::RobotState approach_reference(state);
                 if(!sampleConstraint(segment.start_constraints,
                 state, approach_reference, p_scene)){
                     std::cout<<"Solving Constraints: failed start planning for "<<segment.name.c_str()<<std::endl;
+                    if(debug_vis_callback_)debug_vis_callback_(segment);
                     return false;}
                 state.update();
                 segment.start_state = std::make_shared<moveit::core::RobotState>(state);
+                if(debug_vis_callback_)debug_vis_callback_(segment);
 
                 // segment constraint debug::
                 const Eigen::Isometry3d& actual = state.getGlobalLinkTransform(plasma_link_);
@@ -178,18 +184,28 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 start_reference, 
                 p_scene)){
                     std::cout<<"Solving Constraints: failed end planning for "<<segment.name.c_str()<<std::endl;
-                    return false;}
+                    
+                   if(debug_vis_callback_)debug_vis_callback_(segment);
+                    return false;
+                    
+                
+                }
                 state.update();
                 segment.end_state = std::make_shared<moveit::core::RobotState>(state);
-                
+                if(debug_vis_callback_)debug_vis_callback_(segment);
 
                 const moveit::core::RobotState end_reference(state);
                 if(!sampleConstraint(segment.retract_constraints,
                 state,end_reference,p_scene)){
                     std::cout<<"Solving Constraints: failed retract planning for "<<segment.name.c_str()<<std::endl;
+                    
+                    if(debug_vis_callback_)debug_vis_callback_(segment);
+                    
                     return false;}
                 state.update();
                 segment.retract_state = std::make_shared<moveit::core::RobotState>(state);
+                if(debug_vis_callback_)debug_vis_callback_(segment);
+                
                 std::cout<<"Solved Constraints for "<<segment.name.c_str()<<std::endl;
                 return true;
 
@@ -263,11 +279,6 @@ std::optional<CutPlan> CutPlanner::plan(
         debug_segments.reserve(flange_segments.size() + web_segments.size());
         debug_segments.insert(debug_segments.end(),flange_segments.begin(),flange_segments.end());
         debug_segments.insert(debug_segments.end(),web_segments.begin(),web_segments.end());
-
-        if(debug_vis_callback_){
-            debug_vis_callback_(debug_segments,"candidates");
-        }
-
 
         auto best_web_segment = selectWebCandidate(web_segments,current_state,p_scene);
         if(!best_web_segment){

@@ -59,7 +59,7 @@ namespace hb_robot_skills{
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
 
-            void publishCandidateVisualization(const std::vector<motion::CutSegment> segments, const std::string stage);
+            void publishCandidateVisualization(const motion::CutSegment segment);
 
             
         private:

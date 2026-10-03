@@ -101,7 +101,7 @@ class CutPlanner{
             const planning_scene::PlanningSceneConstPtr& p_scene
         ) const;
 
-        using DebugVisCallback = std::function<void(const std::vector<CutSegment>&,const std::string&)>;
+        using DebugVisCallback = std::function<void(const CutSegment&)>;
         void setDebugVisCallback(DebugVisCallback callback){
             debug_vis_callback_ = std::move(callback);
         }

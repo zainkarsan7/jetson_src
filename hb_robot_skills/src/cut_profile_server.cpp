@@ -69,7 +69,7 @@ namespace hb_robot_skills{
         
 
         cut_planner_->setDebugVisCallback([this](const std::vector<motion::CutSegment> segments, const std::string& stage){
-            publishCandidateVisualization(segments,stage);
+            publishCandidateVisualization(segment);
         }
         );
 
@@ -310,10 +310,10 @@ namespace hb_robot_skills{
     }
     
     
-    void CutProfileServer::publishCandidateVisualization(const std::vector<motion::CutSegment> segments, const std::string stage){
+    void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){
         motion::CutPlan debug_plan;
-        debug_plan.profile_name = "debug_"+stage;
-        debug_plan.segments = segments;
+        debug_plan.profile_name = "debug_";
+        debug_plan.segments.push_back(segment);
         
         visualization_pub_->publish(makeVisualization(debug_plan,move_group_->getPlanningFrame()));
     }
@@ -384,6 +384,24 @@ makeArrow(
  * Green = tangent
  * Red   = surface normal
  */
+
+void drawRobotStateFrame(
+visualization_msgs::msg::MarkerArray& array,
+const moveit::core::RobotState& state,
+const std::string link_name,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id,
+    double length,
+    double alpha
+
+){
+    const Eigen::Isometry3d act_pose = state.getGlobalLinkTransform(link_name);
+    drawFrame(array,act_pose,frame_id,stamp,ns,id, length);
+
+}
+
 void drawFrame(
     visualization_msgs::msg::MarkerArray& array,
     const Eigen::Isometry3d& pose,
@@ -391,7 +409,9 @@ void drawFrame(
     const rclcpp::Time& stamp,
     const std::string& ns,
     int& id,
-    double length = 0.04)
+    double length = 0.04,
+    double alpha = 1.0    
+)
 {
     const Eigen::Vector3d origin =
         pose.translation();
@@ -416,6 +436,7 @@ void drawFrame(
     tangent_arrow.color.r = 0.0;
     tangent_arrow.color.g = 1.0;
     tangent_arrow.color.b = 0.0;
+    tangent_arrow.color.a = alpha;
 
     array.markers.push_back(
         std::move(tangent_arrow));
@@ -434,6 +455,7 @@ void drawFrame(
     normal_arrow.color.r = 1.0;
     normal_arrow.color.g = 0.0;
     normal_arrow.color.b = 0.0;
+    normal_arrow.color.a = alpha;
 
     array.markers.push_back(
         std::move(normal_arrow));
@@ -648,7 +670,7 @@ CutProfileServer::makeVisualization(
             frame_id,
             stamp,
             base_ns + "_approach",
-            id);
+            id,0.04,0.35);
 
         drawFrame(
             array,
@@ -656,7 +678,7 @@ CutProfileServer::makeVisualization(
             frame_id,
             stamp,
             base_ns + "_start",
-            id);
+            id,0.04,0.35);
 
         drawFrame(
             array,
@@ -664,7 +686,7 @@ CutProfileServer::makeVisualization(
             frame_id,
             stamp,
             base_ns + "_end",
-            id);
+            id,0.04,0.35);
 
         drawFrame(
             array,
@@ -672,9 +694,11 @@ CutProfileServer::makeVisualization(
             frame_id,
             stamp,
             base_ns + "_retract",
-            id);
+            id,0.04,0.35);
 
-
+        if (segment.start_state){
+            drawRobotStateFrame(array, *segment.start_state,plasma_link_,frame_id,stamp,base_ns+"_start",0.02,1.0)
+        }
         /*
          * --------------------------------------------------
          * Labels
