@@ -63,13 +63,22 @@ namespace hb_robot_skills{
             
         private:
 
+
+
             std::unordered_map<std::string, motion::CutSegment> debug_segs_;
             std::mutex debug_segments_mutex;
 
             void publishCandidateVisualization(const motion::CutSegment segment);
-            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(moveit::core::RobotState& start_state,
-            moveit::core::RobotState& goal_state);
+            
+            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> makeLinPlan(
+                const moveit::core::RobotState& start_state,
+                const moveit::core::RobotState& goal_state);
 
+            std::shared_ptr<robot_trajectory::RobotTrajectory> collateSegmentTrajectory(
+                const motion::SegmentMotionPlan& smp
+            );
+
+            moveit::core::RobotState getFinalState(const moveit::planning_interface::MoveGroupInterface::Plan& plan);
             std::optional<motion::SegmentMotionPlan> planSegmentPilzLinear(
             const motion::CutSegment& segment
         );

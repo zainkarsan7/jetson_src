@@ -141,8 +141,9 @@ namespace hb_robot_skills{
                 goal_handle->publish_feedback(feedback);
             }
 
-    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(moveit::core::RobotState& start_state,
-            moveit::core::RobotState& goal_state){
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(
+        const moveit::core::RobotState& start_state,
+        const   moveit::core::RobotState& goal_state){
                 move_group_->setStartState(start_state);
                 const Eigen::Isometry3d goal_tf = goal_state.getGlobalLinkTransform(plasma_link_);
                 geometry_msgs::msg::Pose goal_pose = tf2::toMsg(goal_tf);
@@ -172,39 +173,20 @@ namespace hb_robot_skills{
                 RCLCPP_ERROR(get_logger(),"failed on approach linear");
                 return std::nullopt;
             }
-            auto start_ = makeLinPlan(*segment.start_state,*segment.end_state);
+            segment_motion_plan.approach = approach_.value();
+            auto start_ = makeLinPlan(getFinalState(segment_motion_plan.approach),*segment.end_state);
             if(!start_){
                 RCLCPP_ERROR(get_logger(),"failed on start linear");
                 return std::nullopt;
-            }
-            auto retract_ = makeLinPlan(*segment.end_state,*segment.retract_state);
+            }            
+            segment_motion_plan.cut = start_.value();
+            auto retract_ = makeLinPlan(getFinalState(segment_motion_plan.cut),*segment.retract_state);
             if(!retract_){
                 RCLCPP_ERROR(get_logger(),"failed on retract linear");
                 return std::nullopt;
             }
-            segment_motion_plan.approach = approach_;
-            segment_motion_plan.cut = start_;
-            segment_motion_plan.retract = retract_;
-
-
-            
-            
-            
-            // segment_motion_plan.approach = a_plan;
-
-
-
-
-
-
-
-
-
-
-            // move_group_->setStartState(start_state);
-            // move_group_->setJointValueTarget(goal_state);
-            
-
+            segment_motion_plan.retract = retract_.value();           
+            return segment_motion_plan;
         }
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
@@ -221,6 +203,42 @@ namespace hb_robot_skills{
             return std::nullopt;
         }
         return plan;
+    }
+
+    moveit::core::RobotState CutProfileServer::getFinalState(const moveit::planning_interface::MoveGroupInterface::Plan& plan){
+        moveit::core::RobotState ref_state (move_group_->getRobotModel());
+        moveit::core::robotStateMsgToRobotState(plan.start_state_,ref_state);
+        robot_trajectory::RobotTrajectory trajectory(move_group_->getRobotModel(),planning_group_);
+        trajectory.setRobotTrajectoryMsg(ref_state,plan.trajectory_);
+        return trajectory.getLastWayPoint();
+
+    }
+
+    std::shared_ptr<robot_trajectory::RobotTrajectory> CutProfileServer::collateSegmentTrajectory(
+        const motion::SegmentMotionPlan& smp
+    ){
+        const auto robot_model = move_group_->getRobotModel();
+        auto combined_ = std::make_shared<robot_trajectory::RobotTrajectory>(
+            robot_model, planning_group_);
+        moveit::core::RobotState approach_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.approach.start_state_,approach_start);
+        robot_trajectory::RobotTrajectory ap_traj(robot_model,planning_group_);
+        ap_traj.setRobotTrajectoryMsg(approach_start,smp.approach.trajectory_);
+        combined_->append(ap_traj,0.0);
+        /// cut
+        moveit::core::RobotState cut_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.cut.start_state_,cut_start);
+        robot_trajectory::RobotTrajectory cut_traj(robot_model,planning_group_);
+        cut_traj.setRobotTrajectoryMsg(cut_start,smp.cut.trajectory_);
+        combined_->append(cut_traj,0.0);
+        /// retract
+        moveit::core::RobotState retract_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.retract.start_state_,retract_start);
+        robot_trajectory::RobotTrajectory ret_traj(robot_model,planning_group_);
+        ret_traj.setRobotTrajectoryMsg(retract_start,smp.retract.trajectory_);
+        combined_->append(ret_traj,0.0);
+        
+        return combined_;
     }
 
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
@@ -306,7 +324,6 @@ namespace hb_robot_skills{
                 continue;
             }
             current_state->update();
-            moveit_msgs::msg::DisplayTrajectory display_msg;
             
             // auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
             auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
@@ -317,20 +334,15 @@ namespace hb_robot_skills{
                 goal_handle->abort(result);
                 return;
             }
-            
-            display_msg.trajectory_start = test_traj->start_state_;
-            std::cout<<"made the display msg"<<std::endl;
-            moveit_msgs::msg::RobotTrajectory trajectory_msg;
-            robot_trajectory::RobotTrajectory trajectory_object(move_group_->getRobotModel());
-            std::cout<<"made the traj object"<<std::endl;
-            moveit::core::RobotState test_start_state(move_group_->getRobotModel());
-            moveit::core::robotStateMsgToRobotState(test_traj->start_state_,test_start_state);
-            
-            trajectory_object.setRobotTrajectoryMsg(test_start_state,test_traj->trajectory_);
-            trajectory_object.getRobotTrajectoryMsg(trajectory_msg);
-            std::cout<<"converted the traj object to msg"<<std::endl;
 
-            display_msg.trajectory.push_back(trajectory_msg);
+            auto combined_trajectory = collateSegmentTrajectory(*test_traj);
+            moveit_msgs::msg::RobotTrajectory combined_msg;
+            combined_trajectory->getRobotTrajectoryMsg(combined_msg);
+            moveit_msgs::msg::DisplayTrajectory display_msg;
+            display_msg.model_id = move_group_->getRobotModel()->getName();
+            moveit::core::robotStateToRobotStateMsg(combined_trajectory->getFirstWayPoint(),
+            display_msg.trajectory_start);
+            display_msg.trajectory.push_back(combined_msg);
             display_traj_pub_->publish(display_msg);
             std::cout<<"published trajectory"<<std::endl;
         }
