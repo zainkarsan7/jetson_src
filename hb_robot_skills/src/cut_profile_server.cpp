@@ -141,7 +141,43 @@ namespace hb_robot_skills{
                 goal_handle->publish_feedback(feedback);
             }
 
+    
+        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planSegmentPilzLinear(
+            const motion::CutSegment& segment
+        ){
 
+            move_group_->clearPoseTargets();
+            move_group_->clearPathConstraints();
+
+            move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+            move_group_->setPlannerId("LIN");
+            // try the approach linear
+            move_group_->setStartState(*segment.start_state);
+            const Eigen::Isometry3d start_tf = segment.start_state->getGlobalLinkTransform(plasma_link_);
+            geometry_msgs::msg::Pose start_pose = tf2::toMsg(start_tf);
+            move_group_->setPoseTarget(start_pose,plasma_link_);
+            move_group_->setMaxVelocityScalingFactor(0.1);
+            move_group_->setMaxAccelerationScalingFactor(0.1);
+            moveit::planning_interface::MoveGroupInterface::Plan plan;
+            const auto result= move_group_->plan(plan);
+            if(result!=moveit::core::MoveItErrorCode::SUCCESS){
+                RCLCPP_ERROR(get_logger(), "pilz failed on approach planning");
+                return std::nullopt;
+            }
+            return plan;
+
+
+
+
+
+
+
+
+            // move_group_->setStartState(start_state);
+            // move_group_->setJointValueTarget(goal_state);
+            
+
+        }
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
             const moveit::core::RobotState& start_state,
@@ -244,7 +280,8 @@ namespace hb_robot_skills{
             current_state->update();
             moveit_msgs::msg::DisplayTrajectory display_msg;
             
-            auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
+            // auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
+            auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
             
             if(!test_traj){
                 result->success = false;

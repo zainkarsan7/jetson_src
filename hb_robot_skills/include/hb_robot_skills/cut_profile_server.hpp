@@ -69,6 +69,15 @@ namespace hb_robot_skills{
             void publishCandidateVisualization(const motion::CutSegment segment);
 
 
+            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planSegmentPilzLinear(
+            const motion::CutSegment& segment
+        );
+
+        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planLinear(
+            const moveit::core::RobotState& start_state,
+            const moveit::core::RobotState& goal_state
+        );
+
 
         std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToState(
             const moveit::core::RobotState& start_state,
