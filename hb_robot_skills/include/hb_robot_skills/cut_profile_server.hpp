@@ -67,9 +67,10 @@ namespace hb_robot_skills{
             std::mutex debug_segments_mutex;
 
             void publishCandidateVisualization(const motion::CutSegment segment);
+            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(moveit::core::RobotState& start_state,
+            moveit::core::RobotState& goal_state);
 
-
-            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planSegmentPilzLinear(
+            std::optional<motion::SegmentMotionPlan> planSegmentPilzLinear(
             const motion::CutSegment& segment
         );
 

@@ -56,7 +56,11 @@ struct CutSegment{
 
 };
 
- 
+struct SegmentMotionPlan{
+    moveit::planning_interface::MoveGroupInterface::Plan approach;
+    moveit::planning_interface::MoveGroupInterface::Plan cut;
+    moveit::planning_interface::MoveGroupInterface::Plan retract;
+};
 
 struct CutPlan{
     std::string profile_name;

@@ -141,30 +141,58 @@ namespace hb_robot_skills{
                 goal_handle->publish_feedback(feedback);
             }
 
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(moveit::core::RobotState& start_state,
+            moveit::core::RobotState& goal_state){
+                move_group_->setStartState(start_state);
+                const Eigen::Isometry3d goal_tf = goal_state.getGlobalLinkTransform(plasma_link_);
+                geometry_msgs::msg::Pose goal_pose = tf2::toMsg(goal_tf);
+                move_group_->setPoseTarget(goal_pose, plasma_link_);
+                moveit::planning_interface::MoveGroupInterface::Plan plan;
+                const auto result = move_group_->plan(plan);
+                if(result!= moveit::core::MoveItErrorCode::SUCCESS){
+                    return std::nullopt;
+                }  
+                return plan;
+            };
+
     
-        std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planSegmentPilzLinear(
+        std::optional<motion::SegmentMotionPlan> CutProfileServer::planSegmentPilzLinear(
             const motion::CutSegment& segment
         ){
-
+            motion::SegmentMotionPlan segment_motion_plan;
             move_group_->clearPoseTargets();
             move_group_->clearPathConstraints();
-
+            move_group_->setMaxVelocityScalingFactor(0.1);
+            move_group_->setMaxAccelerationScalingFactor(0.1);
             move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
             move_group_->setPlannerId("LIN");
             // try the approach linear
-            move_group_->setStartState(*segment.start_state);
-            const Eigen::Isometry3d start_tf = segment.start_state->getGlobalLinkTransform(plasma_link_);
-            geometry_msgs::msg::Pose start_pose = tf2::toMsg(start_tf);
-            move_group_->setPoseTarget(start_pose,plasma_link_);
-            move_group_->setMaxVelocityScalingFactor(0.1);
-            move_group_->setMaxAccelerationScalingFactor(0.1);
-            moveit::planning_interface::MoveGroupInterface::Plan plan;
-            const auto result= move_group_->plan(plan);
-            if(result!=moveit::core::MoveItErrorCode::SUCCESS){
-                RCLCPP_ERROR(get_logger(), "pilz failed on approach planning");
+            auto approach_ = makeLinPlan(*segment.approach_state,*segment.start_state);
+            if(!approach_){
+                RCLCPP_ERROR(get_logger(),"failed on approach linear");
                 return std::nullopt;
             }
-            return plan;
+            auto start_ = makeLinPlan(*segment.start_state,*segment.end_state);
+            if(!start_){
+                RCLCPP_ERROR(get_logger(),"failed on start linear");
+                return std::nullopt;
+            }
+            auto retract_ = makeLinPlan(*segment.end_state,*segment.retract_state);
+            if(!retract_){
+                RCLCPP_ERROR(get_logger(),"failed on retract linear");
+                return std::nullopt;
+            }
+            segment_motion_plan.approach = approach_;
+            segment_motion_plan.cut = start_;
+            segment_motion_plan.retract = retract_;
+
+
+            
+            
+            
+            // segment_motion_plan.approach = a_plan;
+
+
 
 
 
