@@ -110,6 +110,9 @@ class CutPlanner{
 
         DebugVisCallback debug_vis_callback_;
 
+        
+
+
         CutSegment makeSegment(
             const hb_perception::ProfileCutFeature& feature,
             const Eigen::Isometry3f& world_from_profile,

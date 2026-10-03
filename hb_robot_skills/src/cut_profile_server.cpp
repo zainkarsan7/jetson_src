@@ -68,7 +68,7 @@ namespace hb_robot_skills{
         plasma_link_);
         
 
-        cut_planner_->setDebugVisCallback([this](const std::vector<motion::CutSegment> segments, const std::string& stage){
+        cut_planner_->setDebugVisCallback([this](const motion::CutSegment segment){
             publishCandidateVisualization(segment);
         }
         );
@@ -205,6 +205,8 @@ namespace hb_robot_skills{
 
         motion::CutRequest request;
         request.standoff = goal->standoff;
+        request.ang_tol = goal->ang_tol;
+        request.pos_tol = goal->pos_tol;
         auto current_state = move_group_->getCurrentState(2.0);
 
         if(!current_state){
@@ -218,7 +220,10 @@ namespace hb_robot_skills{
 
         RCLCPP_ERROR(get_logger(),"current state dirty after update: %s",current_state->dirty()?"true":"false");
         
-
+        {
+            std::lock_guard<std::mutex>lock(debug_segments_mutex);
+            debug_segs_.clear();
+        }
         auto p_scene = std::make_shared<planning_scene::PlanningScene>(move_group_->getRobotModel());
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
         if(!plan_opt){
@@ -313,8 +318,17 @@ namespace hb_robot_skills{
     void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){
         motion::CutPlan debug_plan;
         debug_plan.profile_name = "debug_";
-        debug_plan.segments.push_back(segment);
-        
+        {
+        std::lock_guard<std::mutex>lock(debug_segments_mutex);
+            debug_segs_[segment.name] = segment;
+
+            debug_plan.segments.reserve(debug_segs_.size());
+
+            for( const auto& [name,cached_seg]: debug_segs_){
+                debug_plan.segments.push_back(cached_seg);
+            }
+            
+        }
         visualization_pub_->publish(makeVisualization(debug_plan,move_group_->getPlanningFrame()));
     }
     
@@ -385,22 +399,6 @@ makeArrow(
  * Red   = surface normal
  */
 
-void drawRobotStateFrame(
-visualization_msgs::msg::MarkerArray& array,
-const moveit::core::RobotState& state,
-const std::string link_name,
-    const std::string& frame_id,
-    const rclcpp::Time& stamp,
-    const std::string& ns,
-    int& id,
-    double length,
-    double alpha
-
-){
-    const Eigen::Isometry3d act_pose = state.getGlobalLinkTransform(link_name);
-    drawFrame(array,act_pose,frame_id,stamp,ns,id, length);
-
-}
 
 void drawFrame(
     visualization_msgs::msg::MarkerArray& array,
@@ -462,6 +460,22 @@ void drawFrame(
 }
 
 
+void drawRobotStateFrame(
+visualization_msgs::msg::MarkerArray& array,
+const moveit::core::RobotState& state,
+const std::string link_name,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id,
+    double length,
+    double alpha
+
+){
+    const Eigen::Isometry3d act_pose = state.getGlobalLinkTransform(link_name);
+    drawFrame(array,act_pose,frame_id,stamp,ns,id, length,alpha);
+
+}
 void makeLabel(
     visualization_msgs::msg::MarkerArray& array,
     const Eigen::Vector3d& position,
@@ -697,7 +711,16 @@ CutProfileServer::makeVisualization(
             id,0.04,0.35);
 
         if (segment.start_state){
-            drawRobotStateFrame(array, *segment.start_state,plasma_link_,frame_id,stamp,base_ns+"_start",0.02,1.0)
+            drawRobotStateFrame(array, *segment.start_state,plasma_link_,frame_id,stamp,base_ns+"_start",id,0.02,1.0);
+        }
+        if (segment.approach_state){
+            drawRobotStateFrame(array, *segment.approach_state,plasma_link_,frame_id,stamp,base_ns+"_appr",id,0.02,1.0);
+        }
+        if (segment.end_state){
+            drawRobotStateFrame(array, *segment.end_state,plasma_link_,frame_id,stamp,base_ns+"_end",id,0.02,1.0);
+        }
+        if (segment.retract_state){
+            drawRobotStateFrame(array, *segment.retract_state,plasma_link_,frame_id,stamp,base_ns+"_retr",id,0.02,1.0);
         }
         /*
          * --------------------------------------------------

@@ -1,5 +1,7 @@
 #Goal
 float32 standoff
+float32 ang_tol
+float32 pos_tol
 bool execute
 ---
 #Result

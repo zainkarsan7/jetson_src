@@ -59,10 +59,15 @@ namespace hb_robot_skills{
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
 
-            void publishCandidateVisualization(const motion::CutSegment segment);
-
+            
             
         private:
+
+            std::unordered_map<std::string, motion::CutSegment> debug_segs_;
+            std::mutex debug_segments_mutex;
+
+            void publishCandidateVisualization(const motion::CutSegment segment);
+
 
 
         std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planToState(

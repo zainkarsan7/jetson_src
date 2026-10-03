@@ -120,11 +120,13 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     planning_group_,
                     constraints
                 );
-                sampler->setVerbose(true);
+
                 if(!sampler){
                     std::cerr<<"samplers fucked"<<std::endl;
                     return false;
                 }
+                sampler->setVerbose(true);
+                
                 if(!sampler->isValid()){
                     std::cerr<<"samplers invalid and fucked"<<std::endl;
                     return false;
