@@ -175,7 +175,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     cand_pose.linear() = cand_orn.toRotationMatrix();
                     moveit::core::RobotState candidate(reference_state);
                     std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
-                    0.5);
+                    2.0);
                     if(!candidate.setFromIK(joint_model_group_,cand_pose,plasma_link_,consistency_limits,0.05)){
                         std::cerr<<"ik failed" <<std::endl;
                         continue;
@@ -184,8 +184,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
 
 
 
-                    if(!sampler->sample(candidate, reference_state,1)) continue;
-                    candidate.update();
+                    // if(!sampler->sample(candidate, reference_state,1)) continue;
                     double cost = CutPlanner::dq_cost(reference_state, candidate);
                     if (cost<best_cost){
                         best_cost = cost;
