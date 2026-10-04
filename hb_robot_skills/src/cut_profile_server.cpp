@@ -6,6 +6,8 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/robot_state/conversions.h>
 #include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/kinematic_constraints/kinematic_constraint.h>
+#include <moveit/kinematic_constraints/utils.h>
 
 
 using namespace std::chrono_literals;
@@ -189,6 +191,99 @@ namespace hb_robot_skills{
             return segment_motion_plan;
         }
 
+
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planConstrainedCut(
+                const motion::CutSegment& segment,
+                double pos_tol,
+                double ang_tol
+            ){
+
+                
+                const auto path_constraints = cut_planner_->makeBoxConstraints(segment,pos_tol,ang_tol);
+                move_group_->clearPoseTargets();
+                move_group_->clearPathConstraints();
+                move_group_->setPlanningPipelineId("ompl");
+                move_group_->setStartState(*segment.start_state);
+                move_group_->setPathConstraints(path_constraints);
+                Eigen::Isometry3d end_pose = segment.start_pose;
+                end_pose.translate(Eigen::Vector3d(0.005,0.0,0.0));
+
+
+                move_group_->setPoseTarget(tf2::toMsg(end_pose),plasma_link_);
+                move_group_->setPlanningTime(planning_time_);
+                moveit::planning_interface::MoveGroupInterface::Plan plan;
+
+
+                kinematic_constraints::KinematicConstraintSet constraint_set(move_group_->getRobotModel());
+                constraint_set.add(path_constraints, move_group_->getRobotModel()->getModelFrame());
+                auto check_state = [&](const std::string& name, const moveit::core::RobotState& state){
+                    const auto result = constraint_set.decide(state,true);
+
+
+                    const Eigen::Isometry3d tcp = state.getGlobalLinkTransform(plasma_link_);
+                     const Eigen::Vector3d local =
+                            segment.start_pose.linear().transpose() *
+                            (tcp.translation() -
+                            0.5 * (segment.start_pose.translation() +
+                                    segment.end_pose.translation()));
+                      RCLCPP_INFO(
+                                get_logger(),
+                                "%s: constraint=%s | "
+                                "box local [mm] = %.3f %.3f %.3f",
+                                name.c_str(),
+                                result.satisfied ? "YES" : "NO",
+                                1000.0 * local.x(),
+                                1000.0 * local.y(),
+                                1000.0 * local.z());
+                };
+                check_state("START", *segment.start_state);
+                check_state("END",   *segment.end_state);
+
+                
+
+                moveit::core::RobotState test_goal =
+                    *segment.start_state;
+
+                const auto* jmg =
+                    test_goal.getJointModelGroup(planning_group_);
+
+                const bool ik_ok =
+                    test_goal.setFromIK(
+                        jmg,
+                        end_pose,
+                        plasma_link_,
+                        1.0);
+
+                test_goal.update();
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "5 mm goal exact IK: %s",
+                    ik_ok ? "YES" : "NO");
+
+                if (ik_ok)
+                {
+                    check_state("5MM IK GOAL", test_goal);
+                }
+
+
+                const auto result = move_group_->plan(plan);
+                move_group_->clearPoseTargets();
+                move_group_->clearPathConstraints();
+                if(result != moveit::core::MoveItErrorCode::SUCCESS){
+                    RCLCPP_ERROR(get_logger(),"constrained planner failed");
+                    return std::nullopt;
+
+                }
+
+                RCLCPP_ERROR(get_logger(),"constrained planner worked");
+
+                return plan;
+
+                
+
+            }
+
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
             const moveit::core::RobotState& start_state,
             const moveit::core::RobotState& target_state
@@ -342,8 +437,8 @@ namespace hb_robot_skills{
             current_state->update();
             
             // auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
-            // auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
-            auto test_traj = CutProfileServer::planConstrainedCut(segment,goal->pos_tol,goal->ang_tol);
+            auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
+            // auto test_traj = CutProfileServer::planConstrainedCut(segment,goal->pos_tol,goal->ang_tol);
             if(!test_traj){
                 result->success = false;
                 result->message= "planner failed";
@@ -351,8 +446,8 @@ namespace hb_robot_skills{
                 return;
             }
 
-            // auto combined_trajectory = collateSegmentTrajectory(*test_traj);
-            auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
+            auto combined_trajectory = collateSegmentTrajectory(*test_traj);
+            // auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
             moveit_msgs::msg::RobotTrajectory combined_msg;
             combined_trajectory->getRobotTrajectoryMsg(combined_msg);
             moveit_msgs::msg::DisplayTrajectory display_msg;
@@ -408,42 +503,6 @@ namespace hb_robot_skills{
 
     }
 
-    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planConstrainedCut(
-                const motion::CutSegment& segment,
-                double pos_tol,
-                double ang_tol
-            ){
-
-                
-                const auto path_constraints = cut_planner_->makeBoxConstraints(segment,pos_tol,ang_tol);
-                move_group_->clearPoseTargets();
-                move_group_->clearPathConstraints();
-                move_group_->setPlanningPipelineId("ompl");
-                move_group_->setStartState(*segment.start_state);
-                move_group_->setPathConstraints(path_constraints);
-                Eigen::Isometry3d end_pose = segment.start_pose;
-                end_pose.translate(Eigen::Vector3d(0.005,0.0,0.0));
-
-
-                move_group_->setPoseTarget(tf2::toMsg(end_pose),plasma_link_);
-                move_group_->setPlanningTime(planning_time_);
-                moveit::planning_interface::MoveGroupInterface::Plan plan;
-                const auto result = move_group_->plan(plan);
-                move_group_->clearPoseTargets();
-                move_group_->clearPathConstraints();
-                if(result != moveit::core::MoveItErrorCode::SUCCESS){
-                    RCLCPP_ERROR(get_logger(),"constrained planner failed");
-                    return std::nullopt;
-
-                }
-
-                RCLCPP_ERROR(get_logger(),"constrained planner worked");
-
-                return plan;
-
-                
-
-            }
     
     
     void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){

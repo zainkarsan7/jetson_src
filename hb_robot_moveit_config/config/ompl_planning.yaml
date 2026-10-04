@@ -135,7 +135,7 @@ planner_configs:
 manipulator:
 
   enforce_constrained_state_space: true
-  projection_evaluator: joints(ur10e_shoulder_pan_joint, ur10e_shoulder_lift_joint)
+  projection_evaluator: joints(ur10e_shoulder_pan_joint,ur10e_shoulder_lift_joint)
   planner_configs:
     - SBLkConfigDefault
     - ESTkConfigDefault

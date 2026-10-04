@@ -118,7 +118,10 @@ class CutPlanner{
 
         DebugVisCallback debug_vis_callback_;
 
+        bool isCloseEnough(const moveit::core::RobotState& seed_state, const moveit::core::RobotState& candidate_state)const;
+
         
+        double dq_cost(const moveit::core::RobotState& a, const moveit::core::RobotState& b)const;
 
 
         CutSegment makeSegment(

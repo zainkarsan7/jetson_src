@@ -104,6 +104,23 @@ bool CutPlanner::solveSegmentIK(CutSegment &segment, const moveit::core::RobotSt
     
 }
 
+double CutPlanner::dq_cost(const moveit::core::RobotState& a, const moveit::core::RobotState& b)const{
+    const auto& joints = joint_model_group_->getActiveJointModels();
+    double cost = 0.0;
+    for (const auto * joint: joints){
+        const double d = joint->distance(a.getJointPositions(joint),b.getJointPositions(joint));
+        cost+= d*d; 
+    }
+    return cost;
+}
+
+// bool CutPlanner::isCloseEnough(const moveit::core::RobotState& seed_state, const moveit::core::RobotState& candidate_state)const{
+//     const auto& joints = joint_model_group_->getActiveJointModels();
+//     for const(auto * joint: joints){
+        
+//     }
+// }
+
 
 bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
             moveit::core::RobotState& state,
@@ -121,22 +138,47 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     constraints
                 );
 
+
                 if(!sampler){
                     std::cerr<<"samplers fucked"<<std::endl;
                     return false;
                 }
-                sampler->setVerbose(true);
                 
                 if(!sampler->isValid()){
                     std::cerr<<"samplers invalid and fucked"<<std::endl;
                     return false;
                 }
-                constexpr unsigned int max_attempts=  100;
-                if(!sampler->sample(state,reference_state,max_attempts)){
+
+                moveit::core::RobotState best(reference_state);
+                double best_cost  =std::numeric_limits<double>::infinity();
+                bool found = false;
+
+                for (unsigned int i=0; i<100; i++){
+                    moveit::core::RobotState candidate(reference_state);
+                    if(!sampler->sample(candidate, reference_state,1)) continue;
+                    candidate.update();
+                    double cost = CutPlanner::dq_cost(reference_state, candidate);
+                    std::cout<<"sampling candidates "<<i<<" cost: "<<cost<<std::endl;
+                    if (cost<best_cost){
+                        best_cost = cost;
+                        best = candidate;
+                        found = true;
+                    }
+                }
+                if(!found){
                     return false;
                 }
-                state.update();
+                state = best;
                 return true;
+
+
+
+                // constexpr unsigned int max_attempts=  100;
+                // if(!sampler->sample(state,reference_state,max_attempts)){
+                //     return false;
+                // }
+                // state.update();
+                // return true;
 
             }
 
