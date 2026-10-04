@@ -64,12 +64,20 @@ namespace hb_robot_skills{
         private:
 
 
-
+            std::shared_ptr<robot_trajectory::RobotTrajectory> planToTrajectory(
+            const moveit::planning_interface::MoveGroupInterface::Plan& plan
+            );
             std::unordered_map<std::string, motion::CutSegment> debug_segs_;
             std::mutex debug_segments_mutex;
 
             void publishCandidateVisualization(const motion::CutSegment segment);
             
+            std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planConstrainedCut(
+                const motion::CutSegment& segment,
+                double pos_tol,
+                double ang_tol
+            );
+
             std::optional<moveit::planning_interface::MoveGroupInterface::Plan> makeLinPlan(
                 const moveit::core::RobotState& start_state,
                 const moveit::core::RobotState& goal_state);

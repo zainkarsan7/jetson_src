@@ -306,6 +306,39 @@ std::optional<CutPlan> CutPlanner::plan(
 
     }
 
+moveit_msgs::msg::Constraints CutPlanner::makeBoxConstraints(
+            const CutSegment& segment,
+            const double pos_tol, 
+            const double ang_tol
+        )const{
+
+            moveit_msgs::msg::Constraints constraints;
+            constraints.name = "use_equality_constraints";
+            const std::string& ref_frame = robot_model_->getModelFrame();
+            moveit_msgs::msg::PositionConstraint box_constraint_;
+            box_constraint_.header.frame_id = ref_frame;
+            box_constraint_.link_name = plasma_link_;
+            box_constraint_.weight= 1.0;
+            shape_msgs::msg::SolidPrimitive box;
+            box.type = shape_msgs::msg::SolidPrimitive::BOX;
+            Eigen::Vector3d sp = segment.start_pose.translation();
+            Eigen::Vector3d ep = segment.end_pose.translation();
+            
+            const double length = (sp-ep).norm();
+            Eigen::Isometry3d box_center = segment.start_pose;
+            box_center.translation() = 0.5*(sp+ep);
+            constexpr double eq_width = 0.0005;
+            box.dimensions = {length + 0.01, eq_width,eq_width};
+            box_constraint_.constraint_region.primitives.push_back(box);
+            box_constraint_.constraint_region.primitive_poses.push_back(
+                tf2::toMsg(box_center)
+            );
+
+            constraints.position_constraints.push_back(std::move(box_constraint_));
+            return constraints;
+        }
+
+
 moveit_msgs::msg::Constraints CutPlanner::makePoseConstraints(
             const Eigen::Isometry3d nominal_pose,
             const double pos_tol, 

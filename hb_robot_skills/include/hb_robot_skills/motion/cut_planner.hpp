@@ -109,7 +109,11 @@ class CutPlanner{
         void setDebugVisCallback(DebugVisCallback callback){
             debug_vis_callback_ = std::move(callback);
         }
-
+        moveit_msgs::msg::Constraints makeBoxConstraints(
+            const CutSegment& segment,
+            const double pos_tol, 
+            const double ang_tol
+        )const;
     private:
 
         DebugVisCallback debug_vis_callback_;
@@ -124,6 +128,8 @@ class CutPlanner{
         )const;
 
         float approachScore(const CutSegment& segment, const Eigen::Vector3f& tcp_pos)const;
+
+        
 
         moveit_msgs::msg::Constraints makePoseConstraints(
             const Eigen::Isometry3d nominal_pose,

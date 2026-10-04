@@ -214,6 +214,22 @@ namespace hb_robot_skills{
 
     }
 
+    std::shared_ptr<robot_trajectory::RobotTrajectory> CutProfileServer::planToTrajectory(
+        const moveit::planning_interface::MoveGroupInterface::Plan& plan
+    ){
+        
+        const auto robot_model = move_group_->getRobotModel();
+        auto combined_ = std::make_shared<robot_trajectory::RobotTrajectory>(
+            robot_model, planning_group_);
+        moveit::core::RobotState start_state(robot_model);
+        moveit::core::robotStateMsgToRobotState(plan.start_state_,start_state);
+        robot_trajectory::RobotTrajectory traj(robot_model,planning_group_);
+        traj.setRobotTrajectoryMsg(start_state,plan.trajectory_);
+        combined_->append(traj,0.0);
+        return combined_;
+    }
+
+
     std::shared_ptr<robot_trajectory::RobotTrajectory> CutProfileServer::collateSegmentTrajectory(
         const motion::SegmentMotionPlan& smp
     ){
@@ -326,16 +342,17 @@ namespace hb_robot_skills{
             current_state->update();
             
             // auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
-            auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
-            
+            // auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
+            auto test_traj = CutProfileServer::planConstrainedCut(segment,goal->pos_tol,goal->ang_tol);
             if(!test_traj){
                 result->success = false;
-                result->message= "planner to state failed";
+                result->message= "planner failed";
                 goal_handle->abort(result);
                 return;
             }
 
-            auto combined_trajectory = collateSegmentTrajectory(*test_traj);
+            // auto combined_trajectory = collateSegmentTrajectory(*test_traj);
+            auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
             moveit_msgs::msg::RobotTrajectory combined_msg;
             combined_trajectory->getRobotTrajectoryMsg(combined_msg);
             moveit_msgs::msg::DisplayTrajectory display_msg;
@@ -390,6 +407,43 @@ namespace hb_robot_skills{
 
 
     }
+
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planConstrainedCut(
+                const motion::CutSegment& segment,
+                double pos_tol,
+                double ang_tol
+            ){
+
+                
+                const auto path_constraints = cut_planner_->makeBoxConstraints(segment,pos_tol,ang_tol);
+                move_group_->clearPoseTargets();
+                move_group_->clearPathConstraints();
+                move_group_->setPlanningPipelineId("ompl");
+                move_group_->setStartState(*segment.start_state);
+                move_group_->setPathConstraints(path_constraints);
+                Eigen::Isometry3d end_pose = segment.start_pose;
+                end_pose.translate(Eigen::Vector3d(0.005,0.0,0.0));
+
+
+                move_group_->setPoseTarget(tf2::toMsg(end_pose),plasma_link_);
+                move_group_->setPlanningTime(planning_time_);
+                moveit::planning_interface::MoveGroupInterface::Plan plan;
+                const auto result = move_group_->plan(plan);
+                move_group_->clearPoseTargets();
+                move_group_->clearPathConstraints();
+                if(result != moveit::core::MoveItErrorCode::SUCCESS){
+                    RCLCPP_ERROR(get_logger(),"constrained planner failed");
+                    return std::nullopt;
+
+                }
+
+                RCLCPP_ERROR(get_logger(),"constrained planner worked");
+
+                return plan;
+
+                
+
+            }
     
     
     void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){
