@@ -138,6 +138,11 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     constraints
                 );
 
+                auto ik_sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(sampler);
+                if(!ik_sampler){
+                    std::cerr<<"ik sampler fucked"<<std::endl;
+                    return false;
+                }
 
                 if(!sampler){
                     std::cerr<<"samplers fucked"<<std::endl;
@@ -151,23 +156,50 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
 
                 moveit::core::RobotState best(reference_state);
                 double best_cost  =std::numeric_limits<double>::infinity();
+                double highest_cost = 0.0;
                 bool found = false;
 
                 for (unsigned int i=0; i<100; i++){
+                   
+
+                    Eigen::Vector3d cand_position;
+                    Eigen::Quaterniond cand_orn;
+
+                    if(!ik_sampler->samplePose(cand_position, cand_orn, reference_state,1)){
+                        
+                        std::cerr<<"sampler couldnt find pose"<<std::endl;
+                        continue;
+                    } 
+                    Eigen::Isometry3d cand_pose = Eigen::Isometry3d::Identity();
+                    cand_pose.translation() = cand_position;
+                    cand_pose.linear() = cand_orn.toRotationMatrix();
                     moveit::core::RobotState candidate(reference_state);
+                    std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
+                    0.5);
+                    if(!candidate.setFromIK(joint_model_group_,cand_pose,plasma_link_,consistency_limits,0.05)){
+                        std::cerr<<"ik failed" <<std::endl;
+                        continue;
+                    }
+                    candidate.update();
+
+
+
                     if(!sampler->sample(candidate, reference_state,1)) continue;
                     candidate.update();
                     double cost = CutPlanner::dq_cost(reference_state, candidate);
-                    std::cout<<"sampling candidates "<<i<<" cost: "<<cost<<std::endl;
                     if (cost<best_cost){
                         best_cost = cost;
                         best = candidate;
                         found = true;
                     }
+                    if (cost>highest_cost) highest_cost = cost;
+
                 }
                 if(!found){
                     return false;
                 }
+                std::cout<<"sampling candidates max cost:  "<<highest_cost<<"best cost: "<<best_cost<<std::endl;
+
                 state = best;
                 return true;
 

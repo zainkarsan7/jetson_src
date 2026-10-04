@@ -15,7 +15,7 @@ Panels:
         - /MarkerArray3
         - /MarkerArray3/Topic1
       Splitter Ratio: 0.5
-    Tree Height: 361
+    Tree Height: 319
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_visual_tools/RvizVisualToolsGui
@@ -635,7 +635,57 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        approach_paths: true
+        cut_pose_bottom_flange_appr_normal: true
+        cut_pose_bottom_flange_appr_tangent: true
+        cut_pose_bottom_flange_approach_normal: true
+        cut_pose_bottom_flange_approach_tangent: true
+        cut_pose_bottom_flange_end_normal: true
+        cut_pose_bottom_flange_end_tangent: true
+        cut_pose_bottom_flange_labels: true
+        cut_pose_bottom_flange_retr_normal: true
+        cut_pose_bottom_flange_retr_tangent: true
+        cut_pose_bottom_flange_retract_normal: true
+        cut_pose_bottom_flange_retract_tangent: true
+        cut_pose_bottom_flange_start_normal: true
+        cut_pose_bottom_flange_start_tangent: true
+        cut_pose_left_web_approach_normal: true
+        cut_pose_left_web_approach_tangent: true
+        cut_pose_left_web_end_normal: true
+        cut_pose_left_web_end_tangent: true
+        cut_pose_left_web_labels: true
+        cut_pose_left_web_retract_normal: true
+        cut_pose_left_web_retract_tangent: true
+        cut_pose_left_web_start_normal: true
+        cut_pose_left_web_start_tangent: true
+        cut_pose_right_web_appr_normal: true
+        cut_pose_right_web_appr_tangent: true
+        cut_pose_right_web_approach_normal: true
+        cut_pose_right_web_approach_tangent: true
+        cut_pose_right_web_end_normal: true
+        cut_pose_right_web_end_tangent: true
+        cut_pose_right_web_labels: true
+        cut_pose_right_web_retr_normal: true
+        cut_pose_right_web_retr_tangent: true
+        cut_pose_right_web_retract_normal: true
+        cut_pose_right_web_retract_tangent: true
+        cut_pose_right_web_start_normal: true
+        cut_pose_right_web_start_tangent: true
+        cut_pose_top_flange_appr_normal: true
+        cut_pose_top_flange_appr_tangent: true
+        cut_pose_top_flange_approach_normal: true
+        cut_pose_top_flange_approach_tangent: true
+        cut_pose_top_flange_end_normal: true
+        cut_pose_top_flange_end_tangent: true
+        cut_pose_top_flange_labels: true
+        cut_pose_top_flange_retr_normal: true
+        cut_pose_top_flange_retr_tangent: true
+        cut_pose_top_flange_retract_normal: true
+        cut_pose_top_flange_retract_tangent: true
+        cut_pose_top_flange_start_normal: true
+        cut_pose_top_flange_start_tangent: true
+        cut_segments: true
+        retract_paths: true
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -661,25 +711,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.7125306129455566
+      Distance: 4.364591121673584
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -1.0351064205169678
-        Y: 0.8914704322814941
-        Z: 0.09577018022537231
+        X: -0.3668258488178253
+        Y: 1.5270589590072632
+        Z: -0.06144769862294197
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.41979676485061646
+      Pitch: 1.1197962760925293
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 1.1400017738342285
+      Yaw: 5.58819055557251
     Saved: ~
 Window Geometry:
   AzureKinect:
@@ -695,7 +745,7 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000002d300000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072000000003d0000005b0000004100fffffffb000000100044006900730070006c006100790073010000003d000001ec000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000022f000002240000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff000000010000014000000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000004610000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000002d300000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000530000004100fffffffb000000100044006900730070006c0061007900730100000096000001c2000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000025e000001f50000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff000000010000014000000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000004610000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RvizVisualToolsGui:
     collapsed: false
   Trajectory - Trajectory Slider:

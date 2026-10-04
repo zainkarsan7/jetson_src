@@ -11,6 +11,7 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <moveit/planning_scene/planning_scene.h>
 #include <moveit/constraint_samplers/constraint_sampler_manager.h>
+#include <moveit/constraint_samplers/default_constraint_samplers.h>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <Eigen/Geometry>
 #include <optional>
