@@ -50,8 +50,11 @@ class PerceptionDebugNode : public rclcpp::Node {
 
             profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",pe_qos);
             
-            
+            collision_timer_ = create_wall_timer(std::chrono::milliseconds(30),
+            std::bind(&PerceptionDebugNode::publishCollisionCloud,this));
+
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this),processing_group_);
+
             
             //get an observation pass it to workpiece extractor
             //publish marker array 
@@ -95,16 +98,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         
         publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
 
-        // COLLISION
-        
-        
-        PointCloud::Ptr col_cloud(new PointCloud);
-        pcl::VoxelGrid<PointT> vox;
-        vox.setInputCloud(cloud);
-        vox.setLeafSize(0.01f,0.01f,0.01f);
-        vox.filter(*col_cloud);
-        publishCloud(col_cloud,observation->camera_pose.header.frame_id,col_pub_);
-        
+       
 
         
             
@@ -177,6 +171,18 @@ class PerceptionDebugNode : public rclcpp::Node {
 
 }
 
+    void depthCallback(const sensor_msgs::msg::Image::ConstSharedPtr depth){
+            {std::lock_guard<std::mutex>lock(collision_mutex_);
+            latest_depth_ = depth;}
+ 
+    }
+    void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr msg){
+        {
+            std::lock_guard<std::mutex>lock(collision_mutex_);
+            latest_cam_info_ = msg;
+        }
+    }
+
     void publishPCA(const WorkpieceModel& model,std::string frame_id, const rclcpp::Time& observation_stamp){
 
         visualization_msgs::msg::MarkerArray array_;
@@ -212,6 +218,34 @@ class PerceptionDebugNode : public rclcpp::Node {
         mk_pub_->publish(array_);
 
     }
+
+    void publishCollisionCloud(){
+         // COLLISION
+        sensor_msgs::msg::Image::ConstSharedPtr depth;
+        sensor_msgs::msg::CameraInfo::ConstSharedPtr cam_info;
+        {
+            std::lock_guard<std::mutex>lock(collision_mutex_);
+            depth = latest_depth_;
+            cam_info = latest_cam_info_;
+        }
+        if(!depth||!cam_info){
+            return;
+        }
+        
+        auto latest_collision_stamp = depth->header.stamp;
+        auto cloud = depthToCloud(latest_depth_,latest_cam_info_,depth_range_);
+        PointCloud::Ptr col_cloud(new PointCloud);
+        pcl::VoxelGrid<PointT> vox;
+        vox.setInputCloud(cloud);
+        vox.setLeafSize(0.01f,0.01f,0.01f);
+        vox.filter(*col_cloud);
+        sensor_msgs::msg::PointCloud2 msg;
+        pcl::toROSMsg(*col_cloud, msg);
+        msg.header.frame_id  = depth->header.frame_id;
+        msg.header.stamp = depth->header.stamp;
+        col_pub_->publish(msg);
+    }
+
     void publishCloud(const PointCloud::Ptr& cloud, 
         const std::string& frame_id, 
         const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& cloud_pub_){
@@ -238,10 +272,17 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr collision_timer_;
+
     double depth_range_;
     hb_perception::ProfileMatcher matcher_;
     rclcpp::CallbackGroup::SharedPtr processing_group_;
     rclcpp::Time last_processed_stamp_{0,0,RCL_ROS_TIME};
+
+    sensor_msgs::msg::Image::ConstSharedPtr latest_depth_;
+    sensor_msgs::msg::CameraInfo::ConstSharedPtr latest_cam_info_;
+    std::mutex collision_mutex_;
+
 };
 }   
 

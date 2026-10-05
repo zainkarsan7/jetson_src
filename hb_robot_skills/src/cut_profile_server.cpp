@@ -14,9 +14,19 @@ using namespace std::chrono_literals;
 namespace hb_robot_skills{
 
     CutProfileServer::CutProfileServer(const rclcpp::NodeOptions &options):Node("cut_profile_server",options){
-        planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
-        plasma_link_ = declare_parameter<std::string>("plasma_link","ur10e_torch_link");
-        planning_time_ = declare_parameter<double>("planning_time",5.0);
+        if(!has_parameter("planning_group")){
+            planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
+        }
+        get_parameter("planning_group",planning_group_);
+        
+        if(!has_parameter("plasma_link")){
+            plasma_link_ = declare_parameter<std::string>("plasma_link","ur10e_torch_link");
+        }
+        get_parameter("plasma_link",plasma_link_);
+        if(!has_parameter("planning_time")){
+            planning_time_ = declare_parameter<double>("planning_time",5.0);
+        }
+        get_parameter("planning_time",planning_time_);
 
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_motion",
@@ -66,7 +76,6 @@ namespace hb_robot_skills{
         }
         planning_scene_monitor_->startStateMonitor();
         planning_scene_monitor_->startSceneMonitor("/move_group/monitored_planning_scene");
-        planning_scene_monitor_->startWorldGeometryMonitor();
 
         const auto robot_model =
                 move_group_->getRobotModel();
@@ -1049,7 +1058,7 @@ CutProfileServer::publishVisualization(
 
 int main (int argc, char** argv){
     rclcpp::init(argc,argv);
-    auto options = rclcpp::NodeOptions();//.automatically_declare_parameters_from_overrides(true);
+    auto options = rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true);
     auto node = std::make_shared<hb_robot_skills::CutProfileServer>(options);
 
     try{

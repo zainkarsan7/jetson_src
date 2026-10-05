@@ -52,6 +52,84 @@ struct WorkpieceModel{
     Eigen::Vector3f eigs = Eigen::Vector3f::Zero();
 };
 
+inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPtr& depth, 
+    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& info, double depth_range){
+        
+    constexpr float MIN_DEPTH = 0.02f;
+
+    auto cloud = std::make_shared<PointCloud>();
+
+        const double fx = info->k[0];
+        const double fy = info->k[4];
+        const double cx = info->k[2];
+        const double cy = info->k[5];
+        
+
+        auto depth_cv = cv_bridge::toCvShare(depth, sensor_msgs::image_encodings::TYPE_32FC1);
+        const cv::Mat& depth_mat = depth_cv->image;
+        cloud->points.reserve(
+            static_cast<std::size_t>(depth_mat.rows) *
+            static_cast<std::size_t>(depth_mat.cols));
+        double min_val;
+        double max_val;
+
+        cv::minMaxLoc(depth_mat, &min_val, &max_val);
+
+        std::cout << "depth min/max = "
+                << min_val << " / "
+                << max_val << std::endl;
+        if (depth_mat.type() != CV_32FC1) {
+        std::cerr << "Unexpected depth type: "
+                << depth_mat.type()
+                << " encoding: "
+                << depth->encoding
+                << std::endl;
+        return cloud;
+        }
+
+
+        std::size_t valid = 0;
+        
+        // for (std::uint32_t v = 0; v<depth.height; ++v){
+        //     for(std::uint32_t u=0; u<depth.width; ++u){
+
+        for (std::uint32_t v = 0; v<depth_mat.rows; ++v){
+            const float* depth_row = depth_mat.ptr<float>(v);
+           
+            for (std::uint32_t u=0; u<depth_mat.cols; ++u){
+                // const auto* depth_row = reinterpret_cast<const float*>(depth.data.data()+v*depth.step);
+                const float raw_depth = depth_row[u];
+                if (!std::isfinite(raw_depth) || raw_depth < MIN_DEPTH || raw_depth > depth_range){
+                    continue;
+                }
+                valid++;
+                
+                const float z = static_cast<float>(raw_depth);
+
+                PointT pt;
+                pt.x = static_cast<float>((u-cx)* z / fx);
+                pt.y = static_cast<float>((v-cy)*z/fy);
+                pt.z = z;
+
+                cloud->points.push_back(pt);
+            }
+        }
+        cloud->width = static_cast<std::uint32_t>(cloud->points.size());
+        cloud->height = 1;
+        cloud->is_dense = true;
+
+
+        std::cout << "valid depth pixels: "
+              << valid << std::endl;
+
+        std::cout << "generated cloud points: "
+                << cloud->size() << std::endl;
+
+            return cloud;
+        }
+
+
+
 inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_range){
         
     constexpr float MIN_DEPTH = 0.02f;
