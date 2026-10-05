@@ -401,7 +401,6 @@ namespace hb_robot_skills{
         request.ang_tol = goal->ang_tol;
         request.pos_tol = goal->pos_tol;
         auto current_state = move_group_->getCurrentState(2.0);
-
         if(!current_state){
             RCLCPP_ERROR(get_logger(),"couldnt get current state");
             result->success = false;
@@ -417,6 +416,8 @@ namespace hb_robot_skills{
             std::lock_guard<std::mutex>lock(debug_segments_mutex);
             debug_segs_.clear();
         }
+        const moveit::core::RobotState arbitrary_start_state = *current_state;
+
         auto p_scene = std::make_shared<planning_scene::PlanningScene>(move_group_->getRobotModel());
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
         if(!plan_opt){
@@ -428,6 +429,7 @@ namespace hb_robot_skills{
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
+
         for (const auto& segment : plan.segments){
             
         // TEST MOTION TO APPROACH TO WEB
@@ -435,18 +437,26 @@ namespace hb_robot_skills{
                 continue;
             }
             current_state->update();
-            
-            // auto test_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
-            auto test_traj = CutProfileServer::planSegmentPilzLinear(segment);
+            // free motion to approach
+            auto approach_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
+            // lin motion leadin cut retract       
+            auto cut_traj = CutProfileServer::planSegmentPilzLinear(segment);
+            // return back to arbitrary start
+            auto return_traj = CutProfileServer::planToState(*segment.approach_state, arbitrary_start_state);
+
             // auto test_traj = CutProfileServer::planConstrainedCut(segment,goal->pos_tol,goal->ang_tol);
-            if(!test_traj){
+            if(!cut_traj || !approach_traj || !return_traj){
                 result->success = false;
                 result->message= "planner failed";
                 goal_handle->abort(result);
                 return;
             }
 
-            auto combined_trajectory = collateSegmentTrajectory(*test_traj);
+
+            auto combined_trajectory = collateSegmentTrajectory(*cut_traj);
+            auto approach_trajectory_obj = CutProfileServer::planToTrajectory(*approach_traj);
+            auto retract_trajectory_obj = CutProfileServer::planToTrajectory(*return_traj);
+
             // auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
             moveit_msgs::msg::RobotTrajectory combined_msg;
             combined_trajectory->getRobotTrajectoryMsg(combined_msg);

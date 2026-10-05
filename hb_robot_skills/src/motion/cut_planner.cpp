@@ -177,7 +177,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
                     2.0);
                     if(!candidate.setFromIK(joint_model_group_,cand_pose,plasma_link_,consistency_limits,0.05)){
-                        std::cerr<<"ik failed" <<std::endl;
+                        // std::cerr<<"ik failed" <<std::endl;
                         continue;
                     }
                     candidate.update();
