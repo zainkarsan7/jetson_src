@@ -49,7 +49,8 @@ class PerceptionDebugNode : public rclcpp::Node {
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
-            col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",rclcpp::SensorDataQoS());
+            auto col_pub_qos =rclcpp::SensorDataQoS().keep_last(1);
+            col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",col_pub_qos);
 
             auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
 
@@ -57,7 +58,7 @@ class PerceptionDebugNode : public rclcpp::Node {
 
             profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",pe_qos);
             
-            collision_timer_ = create_wall_timer(std::chrono::milliseconds(50),
+            collision_timer_ = create_wall_timer(std::chrono::milliseconds(500),
             std::bind(&PerceptionDebugNode::publishCollisionCloud,this));
 
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this),processing_group_);
@@ -239,16 +240,28 @@ class PerceptionDebugNode : public rclcpp::Node {
             return;
         }
         
-        auto cloud = depthToCloud(depth,cam_info,depth_range_);
-        PointCloud::Ptr col_cloud(new PointCloud);
-        pcl::VoxelGrid<PointT> vox;
-        vox.setInputCloud(cloud);
-        vox.setLeafSize(0.01f,0.01f,0.01f);
-        vox.filter(*col_cloud);
+        auto cloud = depthToCloud(depth,cam_info,depth_range_,10);
+        // PointCloud::Ptr col_cloud(new PointCloud);
+        // pcl::VoxelGrid<PointT> vox;
+        // vox.setInputCloud(cloud);
+        // vox.setLeafSize(0.01f,0.01f,0.01f);
+        // vox.filter(*col_cloud);
         sensor_msgs::msg::PointCloud2 msg;
-        pcl::toROSMsg(*col_cloud, msg);
+        pcl::toROSMsg(*cloud, msg);
         msg.header.frame_id  = depth->header.frame_id;
         msg.header.stamp = depth->header.stamp;
+        const rclcpp::Time stamp(depth->header.stamp);
+
+        const double age = (now()-stamp).seconds();
+        RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),1000,
+        "collision cloud stamp %.3f, now %.3f s, age %.3f, frame= %s",
+        stamp.seconds(),now().seconds(),age,depth->header.frame_id.c_str());
+
+        if(!tf_buffer_->canTransform(scene_frame_,depth->header.frame_id,stamp,tf2::durationFromSec(0.05))){
+            RCLCPP_WARN(get_logger(),"no TF %s <- %s at cloud stamp %.6f aged %.3f",
+            scene_frame_.c_str(),depth->header.frame_id.c_str(), stamp.seconds(),(now()-stamp).seconds());
+            return;
+        }
         col_pub_->publish(msg);
     }
 

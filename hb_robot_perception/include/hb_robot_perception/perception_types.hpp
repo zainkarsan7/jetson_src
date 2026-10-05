@@ -53,7 +53,7 @@ struct WorkpieceModel{
 };
 
 inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPtr& depth, 
-    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& info, double depth_range){
+    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& info, double depth_range, int stride){
         
     constexpr float MIN_DEPTH = 0.02f;
 
@@ -68,8 +68,8 @@ inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPt
         auto depth_cv = cv_bridge::toCvShare(depth, sensor_msgs::image_encodings::TYPE_32FC1);
         const cv::Mat& depth_mat = depth_cv->image;
         cloud->points.reserve(
-            static_cast<std::size_t>(depth_mat.rows) *
-            static_cast<std::size_t>(depth_mat.cols));
+            static_cast<std::size_t>(depth_mat.rows/stride) *
+            static_cast<std::size_t>(depth_mat.cols/stride));
         double min_val;
         double max_val;
 
@@ -87,10 +87,10 @@ inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPt
         // for (std::uint32_t v = 0; v<depth.height; ++v){
         //     for(std::uint32_t u=0; u<depth.width; ++u){
 
-        for (std::uint32_t v = 0; v<depth_mat.rows; ++v){
+        for (std::uint32_t v = 0; v<depth_mat.rows; v+=stride){
             const float* depth_row = depth_mat.ptr<float>(v);
            
-            for (std::uint32_t u=0; u<depth_mat.cols; ++u){
+            for (std::uint32_t u=0; u<depth_mat.cols; u+=stride){
                 // const auto* depth_row = reinterpret_cast<const float*>(depth.data.data()+v*depth.step);
                 const float raw_depth = depth_row[u];
                 if (!std::isfinite(raw_depth) || raw_depth < MIN_DEPTH || raw_depth > depth_range){
