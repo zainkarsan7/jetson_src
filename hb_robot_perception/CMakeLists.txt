@@ -85,6 +85,20 @@ target_link_libraries(perception_node
 hb_perception
 )
 
+add_executable(collision_publisher_node
+src/collision_publisher_node.cpp
+)
+
+
+ament_target_dependencies(collision_publisher_node
+  rclcpp
+  sensor_msgs
+  cv_bridge
+)
+target_link_libraries(collision_publisher_node
+hb_perception
+)
+
 
 
 install(
@@ -99,6 +113,7 @@ install(
 install(
   TARGETS 
   perception_node
+  collision_publisher_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 

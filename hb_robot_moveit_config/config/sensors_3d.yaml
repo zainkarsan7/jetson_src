@@ -1,14 +1,17 @@
 octomap_resolution: 0.005
-
 sensors:
-  - collision_pointcloud
+  - collision_depth
 
-collision_pointcloud:
-    sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
-    point_cloud_topic: /perception/collision_cloud
-    max_range: 3.0
-    point_subsample: 1
-    padding_offset: 0.003
-    padding_scale: 1.0
-    max_update_rate: 5.0
-    filtered_cloud_topic: /moveit/filtered_collision_cloud
+collision_depth:
+  sensor_plugin: occupancy_map_monitor/DepthImageOctomapUpdater
+  image_topic: /collision/depth/image_raw
+  queue_size: 1
+  near_clipping_plane_distance: 0.3
+  far_clipping_plane_distance: 1.0
+  shadow_threshold: 0.2
+  padding_scale: 1.0
+  padding_offset: 0.01
+  max_update_rate: 0.5
+  skip_vertical_pixels: 40
+  skip_horizontal_pixels: 40
+  filtered_cloud_topic: /moveit/filtered_collision_cloud
