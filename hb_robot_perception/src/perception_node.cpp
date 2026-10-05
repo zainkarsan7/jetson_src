@@ -37,12 +37,19 @@ class PerceptionDebugNode : public rclcpp::Node {
             rgbd_acquisition_= std::make_unique<hb_perception::RGBDAcquisition>(
                 this,tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
             
+            depth_sub_ = create_subscription<sensor_msgs::msg::Image>(depth_topic_, rclcpp::SensorDataQoS(),
+                std::bind(&PerceptionDebugNode::depthCallback,this,std::placeholders::_1));
+            cam_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(camera_info_topic_, rclcpp::SensorDataQoS(),
+                std::bind(&PerceptionDebugNode::cameraInfoCallback,this,std::placeholders::_1));
+
+
+
             // make all the publishers  
             ob_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/ob_cloud",1);
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
-            col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",1);
+            col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",rclcpp::SensorDataQoS());
 
             auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
 
@@ -50,7 +57,7 @@ class PerceptionDebugNode : public rclcpp::Node {
 
             profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>("/perception/profile_estimate",pe_qos);
             
-            collision_timer_ = create_wall_timer(std::chrono::milliseconds(30),
+            collision_timer_ = create_wall_timer(std::chrono::milliseconds(50),
             std::bind(&PerceptionDebugNode::publishCollisionCloud,this));
 
             timer_ = create_wall_timer(2s, std::bind(&PerceptionDebugNode::process, this),processing_group_);
@@ -232,8 +239,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             return;
         }
         
-        auto latest_collision_stamp = depth->header.stamp;
-        auto cloud = depthToCloud(latest_depth_,latest_cam_info_,depth_range_);
+        auto cloud = depthToCloud(depth,cam_info,depth_range_);
         PointCloud::Ptr col_cloud(new PointCloud);
         pcl::VoxelGrid<PointT> vox;
         vox.setInputCloud(cloud);
@@ -271,6 +277,10 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
+
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;
+
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr collision_timer_;
 

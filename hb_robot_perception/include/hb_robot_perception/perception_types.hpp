@@ -75,15 +75,9 @@ inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPt
 
         cv::minMaxLoc(depth_mat, &min_val, &max_val);
 
-        std::cout << "depth min/max = "
-                << min_val << " / "
-                << max_val << std::endl;
+      
         if (depth_mat.type() != CV_32FC1) {
-        std::cerr << "Unexpected depth type: "
-                << depth_mat.type()
-                << " encoding: "
-                << depth->encoding
-                << std::endl;
+        
         return cloud;
         }
 
@@ -119,11 +113,6 @@ inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPt
         cloud->is_dense = true;
 
 
-        std::cout << "valid depth pixels: "
-              << valid << std::endl;
-
-        std::cout << "generated cloud points: "
-                << cloud->size() << std::endl;
 
             return cloud;
         }
