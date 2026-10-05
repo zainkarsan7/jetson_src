@@ -12,7 +12,9 @@ def generate_launch_description():
     .robot_description_kinematics(file_path="config/kinematics.yaml")
     .planning_pipelines(pipelines=[
         "ompl","chomp","pilz_industrial_motion_planner",
-    ]).to_moveit_configs()
+    ])
+    .sensors_3d(file_path="config/sensors_3d.yaml")
+    .to_moveit_configs()
     )
     inspect_scene_server= Node(
         package= "hb_robot_skills",

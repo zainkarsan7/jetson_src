@@ -1,11 +1,12 @@
-octomap_resolution: 0.015
-
 sensors:
-  - sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
-    point_cloud_topic: /perception/collision_cloud
-    max_range: 3.0
-    point_subsample: 1
-    padding_offset: 0.01
-    padding_scale: 1.0
-    max_update_rate: 5.0
-    filtered_cloud_topic: /moveit/filtered_collision_cloud
+  - collision_pointcloud
+
+collision_pointcloud:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  point_cloud_topic: /perception/collision_cloud
+  max_range: 3.0
+  point_subsample: 1
+  padding_offset: 0.01
+  padding_scale: 1.0
+  max_update_rate: 5.0
+  filtered_cloud_topic: /moveit/filtered_collision_cloud
