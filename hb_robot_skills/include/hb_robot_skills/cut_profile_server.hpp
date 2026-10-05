@@ -88,7 +88,7 @@ namespace hb_robot_skills{
 
             moveit::core::RobotState getFinalState(const moveit::planning_interface::MoveGroupInterface::Plan& plan);
             std::optional<motion::SegmentMotionPlan> planSegmentPilzLinear(
-            const motion::CutSegment& segment
+            const motion::CutSegment& segment, const moveit::core::RobotState& actual_approach
         );
 
         std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planLinear(

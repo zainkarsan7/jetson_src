@@ -160,7 +160,7 @@ namespace hb_robot_skills{
 
     
         std::optional<motion::SegmentMotionPlan> CutProfileServer::planSegmentPilzLinear(
-            const motion::CutSegment& segment
+            const motion::CutSegment& segment, const moveit::core::RobotState& actual_approach
         ){
             motion::SegmentMotionPlan segment_motion_plan;
             move_group_->clearPoseTargets();
@@ -170,7 +170,7 @@ namespace hb_robot_skills{
             move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
             move_group_->setPlannerId("LIN");
             // try the approach linear
-            auto approach_ = makeLinPlan(*segment.approach_state,*segment.start_state);
+            auto approach_ = makeLinPlan(actual_approach,*segment.start_state);
             if(!approach_){
                 RCLCPP_ERROR(get_logger(),"failed on approach linear");
                 return std::nullopt;
@@ -355,8 +355,9 @@ namespace hb_robot_skills{
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
 
         //approval machienry 
-        std::lock_guard<std::mutex> lock(approval_mutex_);
         {
+        std::lock_guard<std::mutex> lock(approval_mutex_);
+       
             motion_approved_ = false;
         }
 
@@ -429,45 +430,78 @@ namespace hb_robot_skills{
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
+        std::vector<motion::ExecutableCut> executable_cuts_;
+
 
         for (const auto& segment : plan.segments){
             
-        // TEST MOTION TO APPROACH TO WEB
+            RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
+
             if(segment.type != hb_perception::ProfileCutFeatureType::Web){
                 continue;
             }
-            current_state->update();
-            // free motion to approach
-            auto approach_traj = CutProfileServer::planToState(*current_state,*segment.approach_state);
-            // lin motion leadin cut retract       
-            auto cut_traj = CutProfileServer::planSegmentPilzLinear(segment);
-            // return back to arbitrary start
-            auto return_traj = CutProfileServer::planToState(*segment.approach_state, arbitrary_start_state);
 
-            // auto test_traj = CutProfileServer::planConstrainedCut(segment,goal->pos_tol,goal->ang_tol);
-            if(!cut_traj || !approach_traj || !return_traj){
+            auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
+            if(!transit_in_traj){
+                RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
+                continue;
+            }
+            auto actual_appr = getFinalState(*transit_in_traj);
+            // lin motion leadin cut retract       
+            auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
+            // return back to arbitrary start
+            if(!cut_smp){
+                RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
+                continue;
+            }
+            auto actual_retr = getFinalState(cut_smp->retract);
+
+            auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
+
+            if(!transit_out_traj){
+                RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
+                continue;
+            }
+
+            motion::ExecutableCut ex_cut_;
+            ex_cut_.name = segment.name;
+            ex_cut_.transit_in = *transit_in_traj;
+            ex_cut_.transit_out = *transit_out_traj;
+            ex_cut_.process = *cut_smp;
+            executable_cuts_.push_back(ex_cut_);
+
+            }
+
+            if(executable_cuts_.empty()){
                 result->success = false;
                 result->message= "planner failed";
                 goal_handle->abort(result);
                 return;
             }
-
-
-            auto combined_trajectory = collateSegmentTrajectory(*cut_traj);
-            auto approach_trajectory_obj = CutProfileServer::planToTrajectory(*approach_traj);
-            auto retract_trajectory_obj = CutProfileServer::planToTrajectory(*return_traj);
+            const auto robot_model = move_group_->getRobotModel();
+            auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
+            RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_cuts_.size());
+            
+            for (const auto& e_cut: executable_cuts_){
+                auto in_ = CutProfileServer::planToTrajectory(e_cut.transit_in);
+                auto cut_ = collateSegmentTrajectory(e_cut.process);
+                auto out_ = CutProfileServer::planToTrajectory(e_cut.transit_out);
+                full_trajectory->append(*in_,0.0);
+                full_trajectory->append(*cut_,0.0);
+                full_trajectory->append(*out_,0.0);
+            }
 
             // auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
             moveit_msgs::msg::RobotTrajectory combined_msg;
-            combined_trajectory->getRobotTrajectoryMsg(combined_msg);
+            full_trajectory->getRobotTrajectoryMsg(combined_msg);
             moveit_msgs::msg::DisplayTrajectory display_msg;
             display_msg.model_id = move_group_->getRobotModel()->getName();
-            moveit::core::robotStateToRobotStateMsg(combined_trajectory->getFirstWayPoint(),
+            moveit::core::robotStateToRobotStateMsg(full_trajectory->getFirstWayPoint(),
             display_msg.trajectory_start);
             display_msg.trajectory.push_back(combined_msg);
             display_traj_pub_->publish(display_msg);
             std::cout<<"published trajectory"<<std::endl;
-        }
+       
 
 
         

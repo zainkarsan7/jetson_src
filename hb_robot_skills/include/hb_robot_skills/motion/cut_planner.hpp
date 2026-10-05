@@ -55,13 +55,26 @@ struct CutSegment{
     moveit::core::RobotStatePtr end_state;
     moveit::core::RobotStatePtr retract_state;
 
+
+
 };
 
+
 struct SegmentMotionPlan{
+
     moveit::planning_interface::MoveGroupInterface::Plan approach;
     moveit::planning_interface::MoveGroupInterface::Plan cut;
     moveit::planning_interface::MoveGroupInterface::Plan retract;
 };
+
+struct ExecutableCut{
+    std::string name;
+    moveit::planning_interface::MoveGroupInterface::Plan transit_in;
+    SegmentMotionPlan process;
+    moveit::planning_interface::MoveGroupInterface::Plan transit_out;
+};
+
+
 
 struct CutPlan{
     std::string profile_name;
