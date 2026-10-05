@@ -27,7 +27,7 @@
     exec = "collision_publisher_node"
     name="collision_depth_adapter"
     output="screen">
-    <param name="decimation" value="1"/>
+    <param name="decimation" value="10"/>
     </node>
 
 

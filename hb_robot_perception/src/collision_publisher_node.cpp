@@ -238,19 +238,19 @@ private:
     out_info.roi.width = 0;
     out_info.roi.height = 0;
     out_info.roi.do_rectify = false;
-    RCLCPP_INFO(
-    get_logger(),
-    "depth %ux%u -> %ux%u | "
-    "fx %.2f -> %.2f, fy %.2f -> %.2f, "
-    "cx %.2f -> %.2f, cy %.2f -> %.2f",
-    depth_msg->width,
-    depth_msg->height,
-    out_info.width,
-    out_info.height,
-    source_info->k[0], out_info.k[0],
-    source_info->k[4], out_info.k[4],
-    source_info->k[2], out_info.k[2],
-    source_info->k[5], out_info.k[5]);
+    // RCLCPP_INFO(
+    // get_logger(),
+    // "depth %ux%u -> %ux%u | "
+    // "fx %.2f -> %.2f, fy %.2f -> %.2f, "
+    // "cx %.2f -> %.2f, cy %.2f -> %.2f",
+    // depth_msg->width,
+    // depth_msg->height,
+    // out_info.width,
+    // out_info.height,
+    // source_info->k[0], out_info.k[0],
+    // source_info->k[4], out_info.k[4],
+    // source_info->k[2], out_info.k[2],
+    // source_info->k[5], out_info.k[5]);
     //
     // Publish CameraInfo first. Both messages carry the exact same stamp.
     //
