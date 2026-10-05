@@ -59,8 +59,15 @@ namespace hb_robot_skills{
         move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
         move_group_->setPlanningTime(planning_time_);
         
+        planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(shared_from_this(),"robot_description");
 
-        
+        if(!planning_scene_monitor_->getPlanningScene()){
+            throw std::runtime_error("failed to create planning scene");
+        }
+        planning_scene_monitor_->startStateMonitor();
+        planning_scene_monitor_->startSceneMonitor("/move_group/monitored_planning_scene");
+        planning_scene_monitor_->startWorldGeometryMonitor();
+
         const auto robot_model =
                 move_group_->getRobotModel();
         
@@ -290,6 +297,11 @@ namespace hb_robot_skills{
     ){
         move_group_->clearPoseTargets();
         move_group_->clearPathConstraints();
+        move_group_->setPlanningPipelineId("ompl");
+        move_group_->setPlannerId("RRTConnectkConfigDefault");
+        move_group_->setPlanningTime(planning_time_);
+        move_group_->setMaxVelocityScalingFactor(0.1);
+        move_group_->setMaxAccelerationScalingFactor(0.1);
         move_group_->setStartState(start_state);
         move_group_->setJointValueTarget(target_state);
         moveit::planning_interface::MoveGroupInterface::Plan plan;
@@ -419,7 +431,9 @@ namespace hb_robot_skills{
         }
         const moveit::core::RobotState arbitrary_start_state = *current_state;
 
-        auto p_scene = std::make_shared<planning_scene::PlanningScene>(move_group_->getRobotModel());
+        planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
+        
+
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
         if(!plan_opt){
             result->success = false;
@@ -436,10 +450,6 @@ namespace hb_robot_skills{
         for (const auto& segment : plan.segments){
             
             RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
-
-            if(segment.type != hb_perception::ProfileCutFeatureType::Web){
-                continue;
-            }
 
             auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
             if(!transit_in_traj){

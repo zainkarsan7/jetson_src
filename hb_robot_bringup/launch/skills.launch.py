@@ -33,11 +33,11 @@ def generate_launch_description():
         name = "cut_profile_server",
         output="screen",
         # prefix = ["gdb -ex run --args"],
-        parameters = [moveit_config.robot_description,
-        moveit_config.robot_description_semantic,
-        moveit_config.robot_description_kinematics,
-        
-        ],
+        # parameters = [moveit_config.robot_description,
+        # moveit_config.robot_description_semantic,
+        # moveit_config.robot_description_kinematics,
+        parameters = [moveit_config.to_dict()]
+        ,
     )
     return LaunchDescription([
         inspect_scene_server,

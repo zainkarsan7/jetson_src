@@ -3,7 +3,7 @@
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/display_trajectory.hpp>
 #include <moveit/robot_state/robot_state.h>
-
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include "hb_robot_perception/profile_types.hpp"
 #include "hb_robot_skills/motion/cut_planner.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
@@ -118,7 +118,7 @@ namespace hb_robot_skills{
         rclcpp::Subscription<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_sub_;
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_ ;
 
-
+        planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
 
     };
 

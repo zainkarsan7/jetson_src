@@ -42,6 +42,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
+            col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",1);
 
             auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
 
@@ -93,6 +94,20 @@ class PerceptionDebugNode : public rclcpp::Node {
         pcl::transformPointCloud(*cloud,*cloud,T_scene_cam.matrix().cast<float>());
         
         publishCloud(cloud,observation->camera_pose.header.frame_id,ob_pub_);
+
+        // COLLISION
+        
+        
+        PointCloud::Ptr col_cloud(new PointCloud);
+        pcl::VoxelGrid<PointT> vox;
+        vox.setInputCloud(cloud);
+        vox.setLeafSize(0.01f,0.01f,0.01f);
+        vox.filter(*col_cloud);
+        publishCloud(col_cloud,observation->camera_pose.header.frame_id,col_pub_);
+        
+
+        
+            
 
         auto wkpiece = extractor_.extract(cloud);
         if (!wkpiece){
@@ -218,6 +233,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ob_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr wk_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr col_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;

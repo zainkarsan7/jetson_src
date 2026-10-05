@@ -154,6 +154,9 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     return false;
                 }
 
+                std::cout<<"reference colliding "<<p_scene->isStateColliding(reference_state,planning_group_)<<std::endl;
+                std::cout<<"world objects: "<<p_scene->getWorld()->size()<<std::endl;
+
                 moveit::core::RobotState best(reference_state);
                 double best_cost  =std::numeric_limits<double>::infinity();
                 double highest_cost = 0.0;
@@ -181,6 +184,22 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                         continue;
                     }
                     candidate.update();
+                    // collision stuff:
+                    collision_detection::CollisionRequest col_req;
+                    collision_detection::CollisionResult col_res;
+                    col_req.group_name = planning_group_;
+                    col_req.contacts = true;
+                    col_req.max_contacts=  100;
+                    col_req.max_contacts_per_pair = 25;
+
+                    p_scene->checkCollision(col_req,col_res,candidate);
+                    if(col_res.collision){
+                        for (const auto& [pair, contacts]: col_res.contacts){
+                            std::cout<<"    "<<
+                            pair.first<<" <-> "<<
+                            pair.second<< ": "<<contacts.size()<<"contacts"<<std::endl;
+                        }
+                    }
 
 
 

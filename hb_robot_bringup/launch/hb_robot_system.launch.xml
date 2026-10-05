@@ -16,6 +16,13 @@
     <!-- <include file="$(find-pkg-share azure_kinect_ros2_driver)/launch/k4a_device_launch.py"> -->
         
     <include file="$(find-pkg-share hb_robot_bringup)/launch/kinect.launch.xml"/>
+  
+    <node  pkg="hb_robot_perception"
+    exec = "perception_node"
+    name="perception_node"
+    output="screen">
+    </node>
+
 
 
 
