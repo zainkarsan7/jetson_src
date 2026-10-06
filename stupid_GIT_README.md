@@ -105,6 +105,69 @@ and later when adding more pkgs need to do sparse -add
 
 git sparse-checkout add new_folder_1 new_folder 2 
 
+## Can NEVER remember str keywords:
+%f -float
+%.2f - truncate to 2nd decimal 
+%s -string
+%d -integer what the fuck
+%zu -std::size_t or size() what the actual fuck
+
+## can also never remember terminator shortcuts:
+
+- ctrl-shift o/e --> horiontal vertical split
+- ctrl-shift w --> close window
 
 
+## action send goals
 
+ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
+"{
+  center_pose: {
+      position: {x: -0.092, y: 1.03, z: 0.285},
+      orientation: {x: 0.078, y: 0.106, z: 0.772, w: 0.621}
+  },
+  range_x: 0.25,
+  range_y: 0.25,
+  num_viewpoints: 3,
+  pos_tol: 0.03,
+  orn_tol: 0.10,
+  max_ang_vel: 0.2,
+  num_candidates: 1,
+  sample_attempts: 3,
+  depth_range: 1.5
+}" --feedback
+
+ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
+
+
+ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{standoff: 0.0, ang_tol: 0.1, pos_tol: 0.05, execute: false}" --feedback
+
+
+### CAMERA CALIBRATION
+
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="ur10e_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05936830394761276 0.06008521367175501 0.1516701649741268" rpy="-1.5650543563273984 -0.7780553473289481 1.58389776401603"/>
+</joint>
+
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="ur10e_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
+</joint>
+
+## debugging line 
+prefix = ["gdb -ex run --args"],
+
+##
+rm -rf build/hb_robot_perception install/hb_robot_perception
+rm -rf build/hb_robot_skills install/hb_robot_skills
+
+colcon build \
+  --packages-select hb_robot_skills hb_robot_perception
+
+
+## NVMe SSM for the etc/fstab
+
+UUID=c76b89e9-f661-43f7-9a8a-7a8cb8fe8af5 /ssd/ ext4 defaults 0 2
