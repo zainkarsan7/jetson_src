@@ -171,3 +171,16 @@ colcon build \
 ## NVMe SSM for the etc/fstab
 
 UUID=c76b89e9-f661-43f7-9a8a-7a8cb8fe8af5 /ssd/ ext4 defaults 0 2
+
+
+## sphere stuff
+
+ros2 launch isaac_ros_cumotion robot_segmentation.launch.py \
+  robot_segmenter.robot:=/workspaces/isaac_ros-dev/src/hb_robot/hb_isaac_bringup/xrdf/hb_robot_cumotion.xrdf \
+  robot_segmenter.urdf_path:=/workspaces/isaac_ros-dev/src/hb_robot/hb_isaac_bringup/urdf/hb_robot_cumotion.urdf \
+  robot_segmenter.joint_states_topic:=/joint_states \
+  robot_segmenter.depth_image_topics:="['/k4a/depth_to_rgb/image_raw']" \
+  robot_segmenter.depth_camera_infos:="['/k4a/depth_to_rgb/camera_info']" \
+  robot_segmenter.depth_qos:=SENSOR_DATA \
+  robot_segmenter.depth_info_qos:=SENSOR_DATA \
+  robot_segmenter.log_debug:=True
