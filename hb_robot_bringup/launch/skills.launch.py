@@ -13,7 +13,7 @@ def generate_launch_description():
     .planning_pipelines(pipelines=[
         "ompl","chomp","pilz_industrial_motion_planner",
     ])
-    .sensors_3d(file_path="config/sensors_3d.yaml")
+    # .sensors_3d(file_path="config/sensors_3d.yaml")
     .to_moveit_configs()
     )
     inspect_scene_server= Node(
