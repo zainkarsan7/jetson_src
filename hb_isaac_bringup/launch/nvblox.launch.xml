@@ -12,7 +12,7 @@
             plugin="nvblox::NvbloxNode"
             name="nvblox_node">
 
-            <param from="$(find-pkg-share hb_robot)/config/nvblox.yaml"/>
+            <param from="$(find-pkg-share hb_isaac_bringup)/config/nvblox.yaml"/>
             <remap from="camera_0/depth/image" to="/k4a/depth_to_rgb/image_raw"/>
             <remap from="camera_0/depth/camera_info" to="/k4a/depth_to_rgb/camera_info"/>
 
