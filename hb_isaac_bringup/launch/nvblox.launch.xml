@@ -1,0 +1,22 @@
+<?xml version = "1.0"?>
+<launch>
+    <node  pkg="rclcpp_components"
+    exec = "component_container_mt"
+    name="nvblox_container"
+    output="screen">
+    </node>
+
+    <load_composable_node target="/nvblox_container">
+        <composable_node
+            pkg="nvblox_ros"
+            plugin="nvblox::NvbloxNode"
+            name="nvblox_node">
+
+            <param from="$(find-pkg-share hb_robot)/config/nvblox.yaml"/>
+            <remap from="camera_0/depth/image" to="/k4a/depth_to_rgb/image_raw"/>
+            <remap from="camera_0/depth/camera_info" to="/k4a/depth_to_rgb/camera_info"/>
+
+        
+        </composable_node>
+    </load_composable_node>
+</launch>
