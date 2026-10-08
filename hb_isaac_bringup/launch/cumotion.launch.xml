@@ -1,0 +1,11 @@
+<?xml version = "1.0"?>
+<launch>
+<node 
+pkg="isaac_ros_cumotion"
+exec="cumotion_goal_set_planner_node"
+name="cumotion_planner"
+output="screen">
+<param from="$(find-pkg-share hb_isaac_bringup)/config/cumotion.yaml"/>
+
+</node>
+</launch>
