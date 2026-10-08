@@ -1,6 +1,6 @@
 <?xml version = "1.0"?>
 <launch>
-    <node  pkg="azure_kinect_ros2_driver"
+    <node  pkg="azure_kinect_ros2_driver_codex"
     exec = "azure_kinect_node"
     name="k4a_ros2_node"
     output="screen"

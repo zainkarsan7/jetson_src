@@ -14,7 +14,7 @@
 
 // Project headers
 //
-#include "azure_kinect_ros2_driver/k4a_ros_device.h"
+#include "azure_kinect_ros2_driver_codex/k4a_ros_device.h"
 
 
 int main(int argc, char ** argv)

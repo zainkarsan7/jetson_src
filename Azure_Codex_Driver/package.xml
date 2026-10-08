@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>azure_kinect_ros2_driver</name>
+  <name>azure_kinect_ros2_driver_codex</name>
   <version>0.0.1</version>
   <description>ROS2 driver for the Azure Kinect depth camera sensor</description>
   <maintainer email="ckennedy2050@gmail.com">Campbell Kennedy</maintainer>

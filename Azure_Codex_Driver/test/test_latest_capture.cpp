@@ -1,5 +1,5 @@
 // Copyright (c) 2026. Licensed under the MIT License.
-#include "azure_kinect_ros2_driver/latest_capture.h"
+#include "azure_kinect_ros2_driver_codex/latest_capture.h"
 #include <gtest/gtest.h>
 #include <future>
 #include <memory>

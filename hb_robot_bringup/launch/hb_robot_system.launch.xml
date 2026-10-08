@@ -23,13 +23,13 @@
     output="screen">
     </node> -->
 
-    <node  pkg="hb_robot_perception"
+    <!-- <node  pkg="hb_robot_perception"
     exec = "collision_publisher_node"
     name="collision_depth_adapter"
     output="screen">
     <param name="decimation" value="10"/>
     </node>
-
+ -->
 
 
 

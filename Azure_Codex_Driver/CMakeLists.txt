@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(azure_kinect_ros2_driver)
+project(azure_kinect_ros2_driver_codex)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)

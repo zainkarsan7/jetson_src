@@ -1,5 +1,5 @@
 // Copyright (c) 2026. Licensed under the MIT License.
-#include "azure_kinect_ros2_driver/mjpeg_decoder.h"
+#include "azure_kinect_ros2_driver_codex/mjpeg_decoder.h"
 #include <gtest/gtest.h>
 #include <vector>
 #include <cstring>

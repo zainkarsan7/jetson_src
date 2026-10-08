@@ -32,10 +32,10 @@
 
 // Project headers
 //
-#include "azure_kinect_ros2_driver/k4a_calibration_transform_data.h"
-#include "azure_kinect_ros2_driver/k4a_ros_device_params.h"
-#include "azure_kinect_ros2_driver/latest_capture.h"
-#include "azure_kinect_ros2_driver/mjpeg_decoder.h"
+#include "azure_kinect_ros2_driver_codex/k4a_calibration_transform_data.h"
+#include "azure_kinect_ros2_driver_codex/k4a_ros_device_params.h"
+#include "azure_kinect_ros2_driver_codex/latest_capture.h"
+#include "azure_kinect_ros2_driver_codex/mjpeg_decoder.h"
 
 
 
