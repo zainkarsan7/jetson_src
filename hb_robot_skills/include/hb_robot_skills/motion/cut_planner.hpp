@@ -30,6 +30,48 @@ struct CutPathPoint{
 
 };
 
+struct RobotWorkpieceContact
+{
+
+    std::string robot_link;
+    Eigen::Vector3d pos_world;
+    Eigen::Vector3d normal_world;
+    double depth;
+};
+
+static std::vector<RobotWorkpieceContact> extractWorkpieceContacts(
+    const collision_detection::CollisionResult& col_res
+){
+    std::vector<RobotWorkpieceContact> out;
+    for (const auto& [pair,contacts]: col_res.contacts){
+        for (const auto& c: contacts){
+            const bool robot_first = 
+            c.body_type_1 == collision_detection::BodyTypes::ROBOT_LINK &&
+            c.body_type_2 == collision_detection::BodyTypes::WORLD_OBJECT &&
+            c.body_name_2 == "wk_section_collision";
+            
+            const bool robot_second = 
+            c.body_type_2== collision_detection::BodyTypes::ROBOT_LINK &&
+            c.body_type_1 == collision_detection::BodyTypes::WORLD_OBJECT &&
+            c.body_name_1 == "wk_section_collision";
+
+            if(!robot_first && !robot_second){
+                continue;
+            }
+            RobotWorkpieceContact contact;
+            contact.robot_link = robot_first? c.body_name_1 : c.body_name_2;
+            contact.pos_world = c.pos;
+            // because it goes from body 1 to body 2 
+            contact.normal_world = robot_first? -c.normal : c.normal;
+            contact.depth = c.depth;
+            out.push_back(contact);
+
+        }
+    }
+    return out;
+}
+
+
 struct CutSegment{
     // this struct is lke the glue to get from 2D profiles to 3D poses to robot states
     std::string name;
@@ -132,6 +174,13 @@ class CutPlanner{
     private:
 
         DebugVisCallback debug_vis_callback_;
+
+
+        bool refineCollision(moveit::core::RobotState& candidate,
+            const Eigen::Isometry3d& nominal_tcp_pose,
+            const moveit_msgs::msg::Constraints& constraints,
+            const collision_detection::CollisionResult collision_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene);
 
         bool isCloseEnough(const moveit::core::RobotState& seed_state, const moveit::core::RobotState& candidate_state)const;
 

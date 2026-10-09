@@ -76,7 +76,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
     private:
 
-    bool publishSectionCollision(const PointCloud& cloud, moveit::planning_interface::PlanningSceneInterface& scene){
+    bool publishSectionCollision(const PointCloud& cloud){
         if (cloud.empty()){
             RCLCPP_WARN(get_logger(),"cloud is empty, no collision objects published");
             return false;
@@ -109,7 +109,7 @@ class PerceptionDebugNode : public rclcpp::Node {
 
             return false;
         }
-        return scene.applyCollisionObject(col_obj);
+        return planning_scene_interface_.applyCollisionObject(col_obj);
     }
 
     void process(){
@@ -187,7 +187,10 @@ class PerceptionDebugNode : public rclcpp::Node {
         
 
         publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
-        publishSectionCollision(*section_model->cloud,planning_scene_interface_);
+        if(!publishSectionCollision(*section_model->cloud)){
+            RCLCPP_WARN(get_logger(), "didnt publish, internal issue or adding scene ojbects service not running");
+            
+        }
  
     }
 

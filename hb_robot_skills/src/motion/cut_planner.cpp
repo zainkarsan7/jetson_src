@@ -114,12 +114,53 @@ double CutPlanner::dq_cost(const moveit::core::RobotState& a, const moveit::core
     return cost;
 }
 
-// bool CutPlanner::isCloseEnough(const moveit::core::RobotState& seed_state, const moveit::core::RobotState& candidate_state)const{
-//     const auto& joints = joint_model_group_->getActiveJointModels();
-//     for const(auto * joint: joints){
-        
-//     }
-// }
+bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
+            const Eigen::Isometry3d& nominal_tcp_pose,
+            const moveit_msgs::msg::Constraints& constraints,
+            const collision_detection::CollisionResult collision_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene){
+                
+                /// decide from collision state if its a torch or body collision
+                // two strategies if torch -> nudge point away within constraint 
+                // if body, use contact jacobean solve min distance adjustment problem
+
+                std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision_state);
+                bool is_torch = false;
+                for (const auto & c : contacts){
+                    if(c.robot_link == plasma_link_){
+                        is_torch = true;
+                        break;
+                    }
+                }
+
+                if(is_torch){
+                    // do some profile standoff nudging 
+
+                }
+                else{
+                    // get worst interms of depth
+                    const auto worst = std::max_element(contacts.begin(),contacts.end(),
+                
+                [](const auto& a, const auto& b){
+                    return a.depth< b.depth;
+                });
+
+                const auto* link = robot_model_->getLinkModel(worst->robot_link);
+                const Eigen::Vector3d contact_pt = worst->pos_world;
+                const Eigen::Isometry3d& T_World_Link = candidate.getGlobalLinkTransform(link);
+                const Eigen::Vector3d contact_local = T_World_Link.inverse() * contact_pt;
+
+
+                Eigen::MatrixXd J;
+                candidate.getJacobian(joint_model_group_,
+                    link,contact_local, J);
+                const Eigen::MatrixXd J_lin = J.topRows(3);
+                // do minimization on |J_TCP * del_Q|^2 + del_Q^T * del_Q
+                // subject to distance = depth + tiny clearance n_c^T * JdelQ = d + epsilon 
+
+                }
+
+}
 
 
 bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,

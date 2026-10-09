@@ -75,7 +75,7 @@ namespace hb_robot_skills{
             throw std::runtime_error("failed to create planning scene");
         }
         planning_scene_monitor_->startStateMonitor();
-        planning_scene_monitor_->startSceneMonitor("/move_group/monitored_planning_scene");
+        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
 
         const auto robot_model =
                 move_group_->getRobotModel();
@@ -441,6 +441,9 @@ namespace hb_robot_skills{
         const moveit::core::RobotState arbitrary_start_state = *current_state;
 
         planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
+
+        const auto* world = p_scene->getWorld().get();
+        RCLCPP_INFO(get_logger(),"got world has wk_section_collision? %s", world->hasObject("wk_section_collision")? "Yep" : "nop");
         
 
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
