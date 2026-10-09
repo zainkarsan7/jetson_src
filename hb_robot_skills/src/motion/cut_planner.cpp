@@ -1,5 +1,9 @@
 #include "hb_robot_skills/motion/cut_planner.hpp"
+#include "moveit/kinematic_constraints/kinematic_constraint.h"
+#include "moveit/kinematic_constraints/utils.h"
 #include <Eigen/Geometry>
+#include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -114,11 +118,26 @@ double CutPlanner::dq_cost(const moveit::core::RobotState& a, const moveit::core
     return cost;
 }
 
+collision_detection::CollisionResult CutPlanner::checkCol(const moveit::core::RobotState& state, 
+const planning_scene::PlanningSceneConstPtr p_scene)const{
+    collision_detection::CollisionRequest col_req;
+    collision_detection::CollisionResult col_res;
+    col_req.group_name = planning_group_;
+    col_req.contacts = true;
+    col_req.max_contacts=  100;
+    col_req.max_contacts_per_pair = 25;
+
+    p_scene->checkCollision(col_req,col_res,state);
+    return col_res;
+
+}
+
+
 bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
             const Eigen::Isometry3d& nominal_tcp_pose,
             const moveit_msgs::msg::Constraints& constraints,
             const collision_detection::CollisionResult collision_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene){
+            const planning_scene::PlanningSceneConstPtr& p_scene) const{
                 
                 /// decide from collision state if its a torch or body collision
                 // two strategies if torch -> nudge point away within constraint 
@@ -129,12 +148,14 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 for (const auto & c : contacts){
                     if(c.robot_link == plasma_link_){
                         is_torch = true;
+                        std::cout<<"torch in collision"<<std::endl;
                         break;
                     }
                 }
 
                 if(is_torch){
-                    // do some profile standoff nudging 
+                    // do some profile standoff nudging
+                   
 
                 }
                 else{
@@ -151,12 +172,84 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 const Eigen::Vector3d contact_local = T_World_Link.inverse() * contact_pt;
 
 
-                Eigen::MatrixXd J;
-                candidate.getJacobian(joint_model_group_,
-                    link,contact_local, J);
-                const Eigen::MatrixXd J_lin = J.topRows(3);
-                // do minimization on |J_TCP * del_Q|^2 + del_Q^T * del_Q
-                // subject to distance = depth + tiny clearance n_c^T * JdelQ = d + epsilon 
+                Eigen::MatrixXd J_contact;
+                if(!candidate.getJacobian(joint_model_group_,
+                    link,contact_local, J_contact)){
+                        std::cerr<<"couldnt get contact jacobian"<<std::endl;
+                        return false;
+                    };
+                const Eigen::MatrixXd J_c = J_contact.topRows(3);
+
+                Eigen::MatrixXd J_tcp;
+                const auto* tcp_link = robot_model_->getLinkModel(plasma_link_);
+                if(!candidate.getJacobian(joint_model_group_,tcp_link,Eigen::Vector3d::Zero(),
+                J_tcp)){
+                    std::cerr<<"couldnt get tcp jacobian"<<std::endl;
+                    return false;
+                };
+
+                const Eigen::Index n = J_c.cols();
+                Eigen::Matrix<double, 6,1> tcp_weights;
+                tcp_weights<<100.0,100.0,100.0,1.0,1.0,1.0;
+                Eigen::Matrix<double,6,6> W_t = tcp_weights.asDiagonal();
+
+                constexpr double lambda_tcp = 1.0;
+                constexpr double lambda_q = 1e-3;
+                constexpr double clearance = 0.002;
+                // delta p is the normal direction * however deep the contact is plus some tiny clearance
+                const Eigen::Vector3d delta_p = (std::max(0.0,worst->depth) + clearance)* worst->normal_world;
+
+
+                // do a least squares min solve on Jc^T J_c + lambda_t * J_tcp^T * W* J_tcp + conditioner q
+                
+                Eigen::MatrixXd H = J_c.transpose() * J_c + lambda_tcp * J_tcp.transpose() * W_t * J_tcp + lambda_q * Eigen::MatrixXd::Identity(n,n);
+                Eigen::VectorXd b = J_c.transpose() * delta_p;
+                Eigen::VectorXd dq = H.ldlt().solve(b);
+                if(!dq.allFinite()){
+                    std::cerr<<"solve unstable"<<std::endl;
+                    return false;
+                }
+
+                std::vector<double> q;
+                candidate.copyJointGroupPositions(joint_model_group_,q);
+                if(q.size()!=6){
+                    std::cerr<<"not right number of joints in q"<<std::endl;
+                    return false;
+                }
+
+                constexpr double max_joint_step = 0.03;
+                const double max_abs = dq.cwiseAbs().maxCoeff();
+                if(max_abs>max_joint_step){
+                    dq *= max_abs/max_joint_step;
+                }
+                for(std::size_t i = 0; i<q.size();i++){
+                    q[i] += dq[static_cast<Eigen::Index>(i)];
+                }
+                moveit::core::RobotState trial(candidate);
+                trial.setJointGroupPositions(joint_model_group_,q);
+                trial.update();
+                if(!trial.satisfiesBounds(joint_model_group_)){
+                    std::cerr<<"applying dq didnt work, out of bounds"<<std::endl;
+                    return false;
+                }
+
+                // check kinematic constraint satisfaction
+
+                kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+                constraint_set.add(constraints, p_scene->getTransforms());
+                if(!constraint_set.decide(trial).satisfied){
+                    std::cout<<"contact nudging pushes out of constraint space"<<std::endl;
+                    return false;
+                }
+
+
+                // another collision detection round:
+                auto res = checkCol(trial,p_scene);
+                if(!res.collision){
+                    candidate=  trial;
+                    return true;
+                }
+                return false; // or iterate a bunch more times and require depth decreases
 
                 }
 
@@ -226,14 +319,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     }
                     candidate.update();
                     // collision stuff:
-                    collision_detection::CollisionRequest col_req;
-                    collision_detection::CollisionResult col_res;
-                    col_req.group_name = planning_group_;
-                    col_req.contacts = true;
-                    col_req.max_contacts=  100;
-                    col_req.max_contacts_per_pair = 25;
-
-                    p_scene->checkCollision(col_req,col_res,candidate);
+                    auto col_res = checkCol(candidate,p_scene);
                     if(col_res.collision){
                         for (const auto& [pair, contacts]: col_res.contacts){
                             std::cout<<"    "<<
