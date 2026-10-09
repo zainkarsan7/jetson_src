@@ -14,6 +14,11 @@
 #include <hb_robot_perception/profile_matcher.hpp>
 #include <hb_robot_perception/profile_library.hpp>
 #include <hb_robot_perception/profile_types.hpp>
+#include <shape_msgs/msg/solid_primitive.hpp>
+#include <geometry_msgs/msg/pose.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+
 #include <rclcpp/rclcpp.hpp>
 
 using namespace std::chrono_literals;
@@ -71,7 +76,41 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
     private:
 
-    
+    bool publishSectionCollision(const PointCloud& cloud, moveit::planning_interface::PlanningSceneInterface& scene){
+        if (cloud.empty()){
+            RCLCPP_WARN(get_logger(),"cloud is empty, no collision objects published");
+            return false;
+        }
+        moveit_msgs::msg::CollisionObject col_obj;
+        col_obj.header.frame_id=scene_frame_;
+        col_obj.id = "wk_section_collision";
+        col_obj.operation = moveit_msgs::msg::CollisionObject::ADD;
+        constexpr double rad = 0.003;
+        col_obj.primitives.reserve(cloud.size());
+        col_obj.primitive_poses.reserve(cloud.size());
+        for (const auto& p: cloud.points){
+            if(!std::isfinite(p.x)|| !std::isfinite(p.y) || !std::isfinite(p.z)){
+                continue;
+            }
+            shape_msgs::msg::SolidPrimitive sphere;
+            sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+            sphere.dimensions = {rad};
+            geometry_msgs::msg::Pose pose;
+            pose.orientation.w = 1.0;
+            pose.position.x = p.x;
+            pose.position.y = p.y;
+            pose.position.z = p.z;
+            col_obj.primitives.push_back(sphere);
+            col_obj.primitive_poses.push_back(pose);
+            
+        }
+        if(col_obj.primitives.empty()){
+            RCLCPP_WARN(get_logger(),"no primitives made it to col_obj");
+
+            return false;
+        }
+        return scene.applyCollisionObject(col_obj);
+    }
 
     void process(){
 
@@ -148,6 +187,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         
 
         publishCloud(section_model->cloud,observation->camera_pose.header.frame_id,sc_pub_);
+        publishSectionCollision(*section_model->cloud,planning_scene_interface_);
  
     }
 
@@ -290,6 +330,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
+    moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;

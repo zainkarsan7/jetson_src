@@ -17,11 +17,11 @@
         
     <include file="$(find-pkg-share hb_robot_bringup)/launch/kinect.launch.xml"/>
   
-    <!-- <node  pkg="hb_robot_perception"
+    <node  pkg="hb_robot_perception"
     exec = "perception_node"
     name="perception_node"
     output="screen">
-    </node> -->
+    </node>
 
     <!-- <node  pkg="hb_robot_perception"
     exec = "collision_publisher_node"

@@ -21,6 +21,8 @@ find_package(PCL REQUIRED COMPONENTS common filters segmentation search)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(moveit_ros_planning_interface REQUIRED)
 
 
 include_directories(include)
@@ -79,6 +81,8 @@ ament_target_dependencies(perception_node
   tf2_ros
   hb_robot_interfaces
   tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
   
 )
 target_link_libraries(perception_node
