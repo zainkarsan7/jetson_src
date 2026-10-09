@@ -1,0 +1,21 @@
+# Same camera resolution/FPS as the supplied Kinect launch; optimization is in
+# scheduling, memory reuse, clock estimation, and native compressed transport.
+/**:
+  ros__parameters:
+    color_enabled: true
+    color_format: bgra
+    color_resolution: 720P
+    depth_enabled: true
+    depth_mode: NFOV_UNBINNED
+    fps: 30
+    imu_rate_target: 50
+    point_cloud: false
+    rgb_point_cloud: false
+    driver_color_decode: true
+    native_mjpeg_transport: true
+    timestamp_max_slew_ppm: 500
+    timestamp_filter_window_ms: 2000
+    capture_timeout_ms: 1000
+    recovery_max_attempts: 3
+    recovery_backoff_ms: 500
+    max_capture_age_ms: 250

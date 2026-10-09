@@ -8,7 +8,7 @@
 #include <optional>
 #include <utility>
 
-namespace azure_kinect_ros2_driver
+namespace azure_kinect_ros2_driver_codex
 {
 // Single pending item: slow consumers never build an unbounded frame backlog.
 template<class T>

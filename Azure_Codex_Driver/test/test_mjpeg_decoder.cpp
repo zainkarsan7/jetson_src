@@ -4,7 +4,7 @@
 #include <vector>
 #include <cstring>
 
-using azure_kinect_ros2_driver::MjpegDecoder;
+using azure_kinect_ros2_driver_codex::MjpegDecoder;
 
 static k4a::image jpegFrame()
 {
@@ -56,4 +56,15 @@ TEST(MjpegDecoder, CorruptFrameDoesNotReturnOldPixelsAndNextFrameRecovers)
   auto next = decoder.decode(good, 16, 8);
   ASSERT_TRUE(next);
   EXPECT_EQ(next.handle(), first.handle());  // Reuse the worker's decoded buffer.
+}
+
+TEST(MjpegDecoder, DecodesIntoCallerStorageAndRejectsUndersizedBuffer)
+{
+  MjpegDecoder decoder;
+  auto encoded = jpegFrame();
+  std::vector<uint8_t> output(16 * 8 * 4, 0);
+  EXPECT_FALSE(decoder.decodeInto(encoded, 16, 8, output.data(), output.size() - 1, 64));
+  EXPECT_EQ(output.front(), 0);
+  ASSERT_TRUE(decoder.decodeInto(encoded, 16, 8, output.data(), output.size(), 64));
+  for (const auto pixel : output) EXPECT_GE(pixel, 250);
 }

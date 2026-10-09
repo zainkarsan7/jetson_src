@@ -60,7 +60,7 @@ validation are not part of the source archive and must not be copied to the Jets
 sudo apt-get install libturbojpeg0-dev ros-humble-diagnostic-msgs
 source /opt/ros/humble/setup.bash
 cd ~/ros2_pac_ws
-colcon build --symlink-install --packages-select azure_kinect_ros2_driver \
+colcon build --symlink-install --packages-select azure_kinect_ros2_driver_codex \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
@@ -103,10 +103,10 @@ worker or hard real-time scheduling in this patch.
 ## Diagnostics and comparison
 
 The node publishes `diagnostic_msgs/DiagnosticArray` at 1 Hz on `~/diagnostics`,
-normally `/k4a_ros2_node/diagnostics`:
+normally `/k4a_ros2_node_codex/diagnostics`:
 
 ```bash
-ros2 topic echo /k4a_ros2_node/diagnostics
+ros2 topic echo /k4a_ros2_node_codex/diagnostics
 ```
 
 Counters include captures received, overwritten pending captures, stale-output
@@ -143,7 +143,7 @@ later hardware JPEG decoder implementation is appropriate.
 ## Automated validation
 
 ```bash
-colcon test --packages-select azure_kinect_ros2_driver \
+colcon test --packages-select azure_kinect_ros2_driver_codex \
   --ctest-args -R '^test_' --output-on-failure
 colcon test-result --verbose
 ```

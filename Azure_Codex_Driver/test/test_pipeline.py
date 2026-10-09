@@ -10,24 +10,30 @@ import time
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 
 def run_case(executable, fake_sdk, mode):
     env = dict(os.environ, LD_PRELOAD=fake_sdk,
                K4A_TEST_FAULT='corrupt' if mode == 'no_color_demand' else mode)
     node = rclpy.create_node('pipeline_regression_' + mode)
-    depths, colors, diagnostics = [], [], []
+    depths, colors, diagnostics, compressed, infos = [], [], [], [], []
     subscriptions = [
         node.create_subscription(Image, '/k4a/depth/image_raw', depths.append, qos_profile_sensor_data),
-        node.create_subscription(DiagnosticArray, '/k4a_ros2_node/diagnostics', diagnostics.append, 10),
+        node.create_subscription(DiagnosticArray, '/k4a_ros2_node_codex/diagnostics', diagnostics.append, 10),
     ]
     if mode == 'jpeg':
         subscriptions.append(node.create_subscription(
             CompressedImage, '/rgb/image_raw/compressed', colors.append, qos_profile_sensor_data))
-    elif mode != 'no_color_demand':
+    elif mode not in ('no_color_demand', 'native_only', 'info_only'):
         subscriptions.append(node.create_subscription(
             Image, '/k4a/rgb/image_raw', colors.append, qos_profile_sensor_data))
+    if mode in ('native_only', 'native_both'):
+        subscriptions.append(node.create_subscription(
+            CompressedImage, '/k4a/rgb/image_raw/compressed', compressed.append, qos_profile_sensor_data))
+    if mode == 'info_only':
+        subscriptions.append(node.create_subscription(
+            CameraInfo, '/k4a/rgb/camera_info', infos.append, qos_profile_sensor_data))
     with tempfile.TemporaryFile(mode='w+') as output:
         command = [
             executable, '--ros-args', '-p', 'capture_timeout_ms:=200',
@@ -35,6 +41,8 @@ def run_case(executable, fake_sdk, mode):
         ]
         if mode == 'jpeg':
             command += ['-p', 'color_format:=jpeg']
+        if mode == 'plugin_transport':
+            command += ['-p', 'native_mjpeg_transport:=false']
         process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + (2 if mode == 'startup_failure' else 4)
@@ -69,9 +77,25 @@ def run_case(executable, fake_sdk, mode):
                 elif mode == 'jpeg':
                     assert depths and colors
                     assert bytes(colors[-1].data[:2]) == b'\xff\xd8'
+                elif mode == 'native_only':
+                    assert compressed and not colors
+                    assert counts['direct_color_decodes'] == 0
+                    assert counts['native_jpeg_frames'] > 0
+                elif mode == 'native_both':
+                    assert compressed and colors
+                    assert counts['direct_color_decodes'] > 0
+                    stamp = lambda msg: msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+                    assert set(map(stamp, compressed)) & set(map(stamp, colors)), 'RGB/JPEG timestamps differ'
+                elif mode == 'info_only':
+                    assert infos and not colors
+                    assert counts['direct_color_decodes'] == 0
+                elif mode == 'plugin_transport':
+                    assert colors and counts['direct_color_decodes'] > 0
                 if depths:
                     assert depths[-1].encoding == '32FC1'
                     assert struct.unpack('<f', bytes(depths[-1].data[:4]))[0] == 1.0
+                    stamps = [msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec for msg in depths]
+                    assert all(b > a for a, b in zip(stamps, stamps[1:])), 'Non-monotonic depth timestamps'
         except BaseException:
             output.seek(0)
             print(output.read())
@@ -97,7 +121,8 @@ if __name__ == '__main__':
     rclpy.init()
     try:
         for fault in ('recover', 'corrupt', 'always_fail', 'timeout', 'stale',
-                      'no_color_demand', 'jpeg', 'startup_failure'):
+                      'no_color_demand', 'jpeg', 'startup_failure',
+                      'native_only', 'native_both', 'info_only', 'plugin_transport'):
             run_case(sys.argv[1], sys.argv[2], fault)
     finally:
         rclpy.shutdown()

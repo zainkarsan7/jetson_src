@@ -6,8 +6,8 @@ def generate_launch_description():
 
     k4a_node = Node(
         package="azure_kinect_ros2_driver_codex",
-        executable="azure_kinect_node",
-        name="k4a_ros2_node",
+        executable="azure_kinect_node_codex",
+        name="k4a_ros2_node_codex",
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -27,7 +27,7 @@ def generate_launch_description():
             target_action=k4a_node,
             on_exit=[
                 launch.actions.LogInfo(
-                    msg="azure_kinect_node finished; shutting down all nodes"),
+                    msg="azure_kinect_node_codex finished; shutting down all nodes"),
                 launch.actions.EmitEvent(
                     event=launch.events.Shutdown())]))
 

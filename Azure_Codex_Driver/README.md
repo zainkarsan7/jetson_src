@@ -49,24 +49,24 @@ Follow the [installation instructions](https://github.com/microsoft/Azure-Kinect
 Clone the repo into the `src` directory of your [ROS2 workspace](https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html).
 
 `
-colcon build --symlink-install --packages-select azure_kinect_ros2_driver
+colcon build --symlink-install --packages-select azure_kinect_ros2_driver_codex
 `
 
 ## Running
 Source your workspace: `source <ROS2 ws>/install/setup.bash`
 
-`ros2 run azure_kinect_ros2_driver azure_kinect_node`
+`ros2 run azure_kinect_ros2_driver_codex azure_kinect_node_codex`
 
 or from a file recorded via `k4arecorder`:
 
-`ros2 run azure_kinect_ros2_driver azure_kinect_node --ros-args -p recording_file:=/path/to/myrecording.mkv`
+`ros2 run azure_kinect_ros2_driver_codex azure_kinect_node_codex --ros-args -p recording_file:=/path/to/myrecording.mkv`
 
 A simple Python-based subscriber is included to visualize some of the data being published. An `image_proc` node is used
 to undistort the images. Install via `sudo apt install ros-<$ROS2_DISTRO>-image-pipeline`
 
 Launch the nodes:
 
-`ros2 launch azure_kinect_ros2_driver k4a_test_record_launch.py`
+`ros2 launch azure_kinect_ros2_driver_codex k4a_test_record_launch.py`
 
 ## License
 

@@ -4,7 +4,7 @@
 #include <future>
 #include <memory>
 
-using azure_kinect_ros2_driver::LatestCapture;
+using azure_kinect_ros2_driver_codex::LatestCapture;
 using namespace std::chrono_literals;
 
 TEST(LatestCapture, ReplacesOldFrameAndReleasesItsResources)

@@ -20,7 +20,7 @@
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  const auto logger = rclcpp::get_logger("azure_kinect_node");
+  const auto logger = rclcpp::get_logger("azure_kinect_node_codex");
   int exit_code = 0;
   try
   {

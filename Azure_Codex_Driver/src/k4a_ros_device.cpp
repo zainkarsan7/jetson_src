@@ -17,7 +17,7 @@
 // Library headers
 //
 #include <angles/angles.h>
-#include <cv_bridge/cv_bridge.h>
+#include <opencv2/core.hpp>
 #include <k4a/k4a.hpp>
 
 //#include <sensor_msgs/distortion_models.hpp>
@@ -37,7 +37,7 @@ using namespace std;
 
 
 K4AROS2Device::K4AROS2Device()
-    : Node("k4a_ros2_node"),
+    : Node("k4a_ros2_node_codex"),
       qos_(1),
       process_cloud_(false),
       last_capture_time_usec_(0),
@@ -81,11 +81,19 @@ K4AROS2Device::K4AROS2Device()
   recovery_max_attempts_ = this->declare_parameter<int>("recovery_max_attempts", 3, startup_only);
   recovery_backoff_ms_ = this->declare_parameter<int>("recovery_backoff_ms", 500, startup_only);
   max_capture_age_ms_ = this->declare_parameter<int>("max_capture_age_ms", 250, startup_only);
+  const auto slew_ppm = declare_parameter<int>("timestamp_max_slew_ppm", 500, startup_only);
+  const auto window_ms = declare_parameter<int>("timestamp_filter_window_ms", 2000, startup_only);
+  const bool native_transport = declare_parameter<bool>("native_mjpeg_transport", true, startup_only);
   if (capture_timeout_ms_ < 100 || recovery_max_attempts_ < 0 ||
-      recovery_backoff_ms_ < 0 || max_capture_age_ms_ < 0)
+      recovery_backoff_ms_ < 0 || max_capture_age_ms_ < 0 || slew_ppm < 1 || slew_ppm > 1000 ||
+      window_ms < 100 || window_ms > 10000)
   {
     throw std::invalid_argument("Invalid capture timeout, recovery, or frame age parameter");
   }
+
+  timestamp_mapper_ = std::make_unique<azure_kinect_ros2_driver_codex::TimestampMapper>(
+      static_cast<int64_t>(window_ms) * 1000000, slew_ppm);
+  native_color_transport_ = native_transport && driver_color_decode_ && pColorFormat == "bgra" && pRecordingFile.empty();
 
   // TODO: QoS
   //int pQosReliability = this->declare_parameter<int>("qos_reliability", 1);
@@ -300,13 +308,19 @@ K4AROS2Device::K4AROS2Device()
     RCLCPP_INFO_STREAM(this->get_logger(),
                        "Advertised on topic: " << rgb_jpeg_publisher_->get_topic_name());
   }
-  else if (pColorFormat == "bgra")
+else if (pColorFormat == "bgra")
   {
-    rgb_raw_publisher_ = image_transport::create_camera_publisher(this,
-                                                                  topic_prefix + "rgb/image_raw",
-                                                                  qos_.get_rmw_qos_profile());
-    RCLCPP_INFO_STREAM(this->get_logger(),
-                       "Advertised on topic: " << rgb_raw_publisher_.getTopic());
+    if (native_color_transport_)
+    {
+      native_rgb_publisher_ = create_publisher<sensor_msgs::msg::Image>(topic_prefix + "rgb/image_raw", qos_);
+      native_rgb_info_publisher_ = create_publisher<sensor_msgs::msg::CameraInfo>(topic_prefix + "rgb/camera_info", qos_);
+      native_mjpeg_publisher_ = create_publisher<sensor_msgs::msg::CompressedImage>(topic_prefix + "rgb/image_raw/compressed", qos_);
+    }
+    else
+    {
+      rgb_raw_publisher_ = image_transport::create_camera_publisher(this,
+          topic_prefix + "rgb/image_raw", qos_.get_rmw_qos_profile());
+    }
   }
 
   depth_raw_publisher_ = image_transport::create_camera_publisher(this,
@@ -380,14 +394,18 @@ k4a_result_t K4AROS2Device::startCameras()
   color_format_ = get_parameter("color_format").as_string();
   rgb_cloud_ = get_parameter("rgb_point_cloud").as_bool();
   cloud_in_depth_ = get_parameter("point_cloud_in_depth_frame").as_bool();
+  rescale_ir_ = get_parameter("rescale_ir_to_mono8").as_bool();
+  ir_scale_ = get_parameter("ir_mono8_scaling_factor").as_double();
   try
   {
     if (k4a_device_)
     {
+      if (get_parameter("use_sim_time").as_bool())
+        throw std::invalid_argument("Live device timestamp mapping requires use_sim_time=false");
       calibration_data_->initialize(k4a_device_, device_config_.depth_mode, device_config_.color_resolution);
       if (driver_color_decode_ && color_enabled_ && color_format_ == "bgra")
       {
-        jpeg_decoder_ = std::make_unique<azure_kinect_ros2_driver::MjpegDecoder>();
+        jpeg_decoder_ = std::make_unique<azure_kinect_ros2_driver_codex::MjpegDecoder>();
         device_config_.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
       }
       k4a_device_.start_cameras(&device_config_);
@@ -468,6 +486,9 @@ void K4AROS2Device::stopImu()
 bool K4AROS2Device::recoverStreams()
 {
   recovering_ = true;
+  timestamp_ready_ = false;
+  timestamp_mapper_->reset();
+  ++timestamp_device_resets_;
   pending_capture_.clear();
   ++stream_generation_;
   // Blocks only IMU reads, not ROS publishing or capture-buffer destruction.
@@ -528,11 +549,36 @@ void K4AROS2Device::captureThread()
       last_success = now;
       last_capture_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
       ++captures_received_;
+      auto reference = capture.get_depth_image();
+      if (!reference) reference = capture.get_ir_image();
+      if (!reference) reference = capture.get_color_image();
+      if (!reference) continue;
+      const auto steady_before = std::chrono::steady_clock::now().time_since_epoch();
+      const auto ros_now = this->now().nanoseconds();
+      const auto steady_after = std::chrono::steady_clock::now().time_since_epoch();
+      const auto estimate = timestamp_mapper_->observe(reference.get_device_timestamp().count() * 1000,
+          reference.get_system_timestamp().count(), ros_now,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(steady_before).count(),
+          std::chrono::duration_cast<std::chrono::nanoseconds>(steady_after).count());
+      if (!estimate.ready) { ++timestamp_rejected_samples_; continue; }
+      timestamp_offset_ns_ = estimate.offset_ns;
+      timestamp_ready_ = true;
+      arrival_residual_ns_ = estimate.arrival_residual_ns;
+      if (estimate.device_reset)
+      {
+        ++timestamp_device_resets_;
+        RCLCPP_WARN(get_logger(), "Device clock moved backwards; re-anchoring timestamps");
+      }
+      if (estimate.ros_clock_jump)
+      {
+        ++timestamp_ros_clock_jumps_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "ROS/wall clock stepped; updating timestamp epoch");
+      }
       // Reset the failure budget only after a full second of healthy frames.
       if (healthy_captures < healthy_frame_count) ++healthy_captures;
       if (healthy_captures >= healthy_frame_count)
         unstable_restarts = 0;
-      if (pending_capture_.push(CapturePacket{std::move(capture), stream_generation_.load()})) ++captures_replaced_;
+      if (pending_capture_.push(CapturePacket{std::move(capture), stream_generation_.load(), estimate.offset_ns})) ++captures_replaced_;
     }
     catch (const std::exception& e)
     {
@@ -574,12 +620,38 @@ void K4AROS2Device::ensureColorToDepth(const k4a::capture& capture)
   }
 }
 
-bool K4AROS2Device::decodeColor(k4a::capture& capture)
+bool K4AROS2Device::decodeColor(k4a::capture& capture,
+    const std::shared_ptr<sensor_msgs::msg::Image>& direct_output)
 {
   auto encoded = capture.get_color_image();
   if (!encoded || encoded.get_format() != K4A_IMAGE_FORMAT_COLOR_MJPG) return true;
-  auto decoded = jpeg_decoder_ ? jpeg_decoder_->decode(encoded,
-      calibration_data_->getColorWidth(), calibration_data_->getColorHeight()) : k4a::image{};
+  k4a::image decoded;
+  if (jpeg_decoder_ && direct_output)
+  {
+    direct_output->width = calibration_data_->getColorWidth();
+    direct_output->height = calibration_data_->getColorHeight();
+    direct_output->encoding = sensor_msgs::image_encodings::BGRA8;
+    direct_output->is_bigendian = false;
+    direct_output->step = direct_output->width * 4;
+    direct_output->data.resize(static_cast<size_t>(direct_output->step) * direct_output->height);
+    if (jpeg_decoder_->decodeInto(encoded, direct_output->width, direct_output->height,
+        direct_output->data.data(), direct_output->data.size(), direct_output->step))
+    {
+      // SDK registration can read the same ROS-owned pixels without a BGRA copy.
+      // Keep their owner alive until every SDK image reference has been released.
+      auto owner = std::make_unique<std::shared_ptr<sensor_msgs::msg::Image>>(direct_output);
+      decoded = k4a::image::create_from_buffer(K4A_IMAGE_FORMAT_COLOR_BGRA32,
+          direct_output->width, direct_output->height, direct_output->step,
+          direct_output->data.data(), direct_output->data.size(),
+          [](void*, void* context) { delete static_cast<std::shared_ptr<sensor_msgs::msg::Image>*>(context); }, owner.get());
+      owner.release();
+      k4a_image_set_device_timestamp_usec(decoded.handle(), encoded.get_device_timestamp().count());
+      k4a_image_set_system_timestamp_nsec(decoded.handle(), encoded.get_system_timestamp().count());
+      ++direct_color_decodes_;
+    }
+  }
+  else if (jpeg_decoder_)
+    decoded = jpeg_decoder_->decode(encoded, calibration_data_->getColorWidth(), calibration_data_->getColorHeight());
   if (!decoded)
   {
     ++decode_errors_;
@@ -616,7 +688,7 @@ k4a_result_t K4AROS2Device::renderDepthToROS(std::shared_ptr<sensor_msgs::msg::I
 {
   cv::Mat depth_frame_buffer_mat(k4a_depth_frame.get_height_pixels(), k4a_depth_frame.get_width_pixels(), CV_16UC1,
                                  k4a_depth_frame.get_buffer(), k4a_depth_frame.get_stride_bytes());
-  depth_image = std::make_shared<sensor_msgs::msg::Image>();
+  if (!depth_image) depth_image = std::make_shared<sensor_msgs::msg::Image>();
   depth_image->height = k4a_depth_frame.get_height_pixels();
   depth_image->width = k4a_depth_frame.get_width_pixels();
   depth_image->encoding = sensor_msgs::image_encodings::TYPE_32FC1;
@@ -644,25 +716,19 @@ k4a_result_t K4AROS2Device::getIrFrame(const k4a::capture& capture, std::shared_
   return renderIrToROS(ir_image, k4a_ir_frame);
 }
 
-k4a_result_t K4AROS2Device::renderIrToROS(std::shared_ptr<sensor_msgs::msg::Image>& ir_image, k4a::image& k4a_ir_frame)
+k4a_result_t K4AROS2Device::renderIrToROS(std::shared_ptr<sensor_msgs::msg::Image>& image, k4a::image& source)
 {
-  cv::Mat ir_buffer_mat(k4a_ir_frame.get_height_pixels(), k4a_ir_frame.get_width_pixels(), CV_16UC1,
-                        k4a_ir_frame.get_buffer(), k4a_ir_frame.get_stride_bytes());
-
-  // Rescale the image to mono8 for visualization and usage for visual(-inertial) odometry.
-  if (this->get_parameter("rescale_ir_to_mono8").as_bool())
-  {
-    cv::Mat new_image(k4a_ir_frame.get_height_pixels(), k4a_ir_frame.get_width_pixels(), CV_8UC1);
-    // Use a scaling factor to re-scale the image. If using the illuminators, a value of 1 is appropriate.
-    // If using PASSIVE_IR, then a value of 10 is more appropriate; k4aviewer does a similar conversion.
-    ir_buffer_mat.convertTo(new_image, CV_8UC1, this->get_parameter("ir_mono8_scaling_factor").as_double());
-    ir_image = cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::MONO8, new_image).toImageMsg();
-  }
-  else
-  {
-    ir_image = cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::MONO16, ir_buffer_mat).toImageMsg();
-  }
-
+  if (!image) image = std::make_shared<sensor_msgs::msg::Image>();
+  image->width = source.get_width_pixels();
+  image->height = source.get_height_pixels();
+  image->encoding = rescale_ir_ ? sensor_msgs::image_encodings::MONO8 : sensor_msgs::image_encodings::MONO16;
+  image->is_bigendian = false;
+  image->step = image->width * (rescale_ir_ ? 1 : 2);
+  image->data.resize(static_cast<size_t>(image->step) * image->height);
+  cv::Mat input(image->height, image->width, CV_16UC1, source.get_buffer(), source.get_stride_bytes());
+  cv::Mat output(image->height, image->width, rescale_ir_ ? CV_8UC1 : CV_16UC1, image->data.data(), image->step);
+  if (rescale_ir_) input.convertTo(output, CV_8UC1, ir_scale_);
+  else input.copyTo(output);
   return K4A_RESULT_SUCCEEDED;
 }
 
@@ -717,13 +783,18 @@ k4a_result_t K4AROS2Device::getRbgFrame(const k4a::capture& capture, std::shared
 
 // Helper function that renders any BGRA K4A frame to a ROS ImagePtr. Useful for rendering intermediary frames
 // during debugging of image processing functions
-k4a_result_t K4AROS2Device::renderBGRA32ToROS(std::shared_ptr<sensor_msgs::msg::Image>& rgb_image, k4a::image& k4a_bgra_frame)
+k4a_result_t K4AROS2Device::renderBGRA32ToROS(std::shared_ptr<sensor_msgs::msg::Image>& image, k4a::image& source)
 {
-  cv::Mat rgb_buffer_mat(k4a_bgra_frame.get_height_pixels(), k4a_bgra_frame.get_width_pixels(), CV_8UC4,
-                         k4a_bgra_frame.get_buffer(), k4a_bgra_frame.get_stride_bytes());
-
-  rgb_image = cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::BGRA8, rgb_buffer_mat).toImageMsg();
-
+  if (!image) image = std::make_shared<sensor_msgs::msg::Image>();
+  image->width = source.get_width_pixels();
+  image->height = source.get_height_pixels();
+  image->encoding = sensor_msgs::image_encodings::BGRA8;
+  image->is_bigendian = false;
+  image->step = image->width * 4;
+  image->data.resize(static_cast<size_t>(image->step) * image->height);
+  cv::Mat input(image->height, image->width, CV_8UC4, source.get_buffer(), source.get_stride_bytes());
+  cv::Mat output(image->height, image->width, CV_8UC4, image->data.data(), image->step);
+  input.copyTo(output);
   return K4A_RESULT_SUCCEEDED;
 }
 
@@ -752,7 +823,7 @@ k4a_result_t K4AROS2Device::getRgbPointCloudInDepthFrame(const k4a::capture& cap
                                                                    &calibration_data_->point_cloud_image_);
 
   point_cloud->header.frame_id = calibration_data_->tf_prefix_ + calibration_data_->depth_camera_frame_;
-  point_cloud->header.stamp = timestampToROS(k4a_depth_frame.get_device_timestamp());
+  point_cloud->header.stamp = captureTimestampToROS(k4a_depth_frame.get_device_timestamp());
   this->printTimestampDebugMessage("RGB point cloud", point_cloud->header.stamp);
 
   return fillColorPointCloud(calibration_data_->point_cloud_image_, calibration_data_->transformed_rgb_image_,
@@ -784,7 +855,7 @@ k4a_result_t K4AROS2Device::getRgbPointCloudInRgbFrame(const k4a::capture& captu
       calibration_data_->transformed_depth_image_, K4A_CALIBRATION_TYPE_COLOR, &calibration_data_->point_cloud_image_);
 
   point_cloud->header.frame_id = calibration_data_->tf_prefix_ + calibration_data_->rgb_camera_frame_;
-  point_cloud->header.stamp = timestampToROS(k4a_bgra_frame.get_device_timestamp());
+  point_cloud->header.stamp = captureTimestampToROS(k4a_bgra_frame.get_device_timestamp());
   this->printTimestampDebugMessage("RGB point cloud", point_cloud->header.stamp);
 
   return fillColorPointCloud(calibration_data_->point_cloud_image_, k4a_bgra_frame, point_cloud);
@@ -801,7 +872,7 @@ k4a_result_t K4AROS2Device::getPointCloud(const k4a::capture& capture, std::shar
   }
 
   point_cloud->header.frame_id = calibration_data_->tf_prefix_ + calibration_data_->depth_camera_frame_;
-  point_cloud->header.stamp = timestampToROS(k4a_depth_frame.get_device_timestamp());
+  point_cloud->header.stamp = captureTimestampToROS(k4a_depth_frame.get_device_timestamp());
   this->printTimestampDebugMessage("Point cloud", point_cloud->header.stamp);
 
   // Tranform depth image to point cloud
@@ -945,6 +1016,7 @@ void K4AROS2Device::framePublisherThread()
       if (!pending_capture_.pop(packet, std::chrono::milliseconds(100))) continue;
       capture = std::move(packet.capture);
       generation = packet.generation;
+      active_capture_offset_ns_ = packet.offset_ns;
       if (recovering_) continue;
     }
     else
@@ -964,8 +1036,15 @@ void K4AROS2Device::framePublisherThread()
           throw std::runtime_error("Recording contains no captures");
         imu_stream_end_of_file_ = false;
         last_imu_time_usec_ = 0;
+        timestamp_ready_ = false;
       }
       last_capture_time_usec_ = getCaptureTimestamp(capture).count();
+      if (!timestamp_ready_)
+      {
+        timestamp_offset_ns_ = now().nanoseconds() - getCaptureTimestamp(capture).count() * 1000;
+        timestamp_ready_ = true;
+      }
+      active_capture_offset_ns_ = timestamp_offset_ns_.load();
     }
 
     const auto started = std::chrono::steady_clock::now();
@@ -982,6 +1061,7 @@ void K4AROS2Device::framePublisherThread()
   }
 }
 
+
 void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
 {
   depth_to_color_ready_ = false;
@@ -989,9 +1069,8 @@ void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
   auto depth = capture.get_depth_image();
   auto color = capture.get_color_image();
   auto ir = capture.get_ir_image();
-  auto reference = ir ? ir : color;
+  auto reference = depth ? depth : (ir ? ir : color);
   if (!reference) return;
-  // On Linux the SDK system timestamp and steady_clock both use CLOCK_MONOTONIC.
   const auto fresh = [&] {
     if (!k4a_device_) return true;
     if (!running_ || recovering_ || stream_generation_.load() != generation) return false;
@@ -1001,97 +1080,99 @@ void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
     return max_capture_age_ms_ == 0 || age <= static_cast<int64_t>(max_capture_age_ms_) * 1000;
   };
   if (!fresh()) { ++stale_captures_; return; }
-  if (k4a_device_)
-    updateTimestampOffset(reference.get_device_timestamp(), reference.get_system_timestamp());
 
+  // Snapshot graph demand once per processed capture, including all image transports.
+  const bool want_depth = depth_enabled_ && depth && depth_raw_publisher_.getNumSubscribers() > 0;
+  const bool want_ir = depth_enabled_ && ir && ir_raw_publisher_.getNumSubscribers() > 0;
+  const bool want_depth_rect = depth && color_enabled_ && depth_rect_publisher_.getNumSubscribers() > 0;
+  const bool want_rgb = color_enabled_ && color_format_ == "bgra" &&
+      (native_color_transport_ ? native_rgb_publisher_->get_subscription_count() > 0 : rgb_raw_publisher_.getNumSubscribers() > 0);
+  const bool want_rgb_rect = depth && color_enabled_ && color_format_ == "bgra" && rgb_rect_publisher_.getNumSubscribers() > 0;
+  const bool want_cloud = depth && process_cloud_ && pointcloud_publisher_->get_subscription_count() > 0;
   const auto check = [](k4a_result_t result) {
     if (result != K4A_RESULT_SUCCEEDED) throw std::runtime_error("Image/point cloud conversion failed");
   };
-  const auto publish_image = [&](image_transport::CameraPublisher& publisher,
-                                 std::shared_ptr<sensor_msgs::msg::Image>& image,
-                                 const k4a::image& source, bool color_geometry) {
+  const auto emit_image = [&](ImageSlot slot, image_transport::CameraPublisher& publisher,
+                              const k4a::image& source, bool color_geometry, const auto& render,
+                              std::shared_ptr<sensor_msgs::msg::Image> prepared = {}) {
     if (!fresh()) { ++stale_captures_; return; }
-    // Cached calibration is immutable; each publication gets its own header.
-    auto info = std::make_shared<sensor_msgs::msg::CameraInfo>(
-        color_geometry ? *rgb_raw_camerainfo_msg_ : *depth_raw_camerainfo_msg_);
-    image->header = info->header;
-    image->header.stamp = timestampToROS(source.get_device_timestamp());
+    auto image = prepared ? std::move(prepared) : image_pools_[slot].acquire();
+    auto info = info_pools_[slot].acquire();
+    if (!image || !info) { ++message_pool_drops_; return; }
+    check(render(image));
+    if (!fresh()) { ++stale_captures_; return; }
+    if (info->width == 0) *info = color_geometry ? *rgb_raw_camerainfo_msg_ : *depth_raw_camerainfo_msg_;
+    image->header.frame_id = info->header.frame_id;
+    image->header.stamp = captureTimestampToROS(source.get_device_timestamp());
     info->header.stamp = image->header.stamp;
-    publisher.publish(image, info);
+    if (slot == RGB_RAW && native_color_transport_) native_rgb_publisher_->publish(*image);
+    else publisher.publish(image, info);
   };
-
-  // Publish geometry first; optional color processing must not delay native depth.
-  if (depth_enabled_ && depth && depth_raw_publisher_.getNumSubscribers() > 0)
-  {
-    std::shared_ptr<sensor_msgs::msg::Image> image;
-    check(getDepthFrame(capture, image));
-    publish_image(depth_raw_publisher_, image, depth, false);
-  }
-  const bool cloud_requested = process_cloud_ && pointcloud_publisher_->get_subscription_count() > 0;
-  if (depth && cloud_requested && !rgb_cloud_ && fresh())
-  {
-    auto cloud = std::make_shared<sensor_msgs::msg::PointCloud2>();
-    check(getPointCloud(capture, cloud));
+  const auto emit_cloud = [&] {
+    if (!fresh()) { ++stale_captures_; return; }
+    auto cloud = cloud_pool_.acquire();
+    if (!cloud) { ++message_pool_drops_; return; }
+    if (!rgb_cloud_) check(getPointCloud(capture, cloud));
+    else check(cloud_in_depth_ ? getRgbPointCloudInDepthFrame(capture, cloud) : getRgbPointCloudInRgbFrame(capture, cloud));
     if (fresh()) pointcloud_publisher_->publish(*cloud);
     else ++stale_captures_;
-  }
-  if (depth_enabled_ && ir && ir_raw_publisher_.getNumSubscribers() > 0 && fresh())
-  {
-    std::shared_ptr<sensor_msgs::msg::Image> image;
-    check(getIrFrame(capture, image));
-    publish_image(ir_raw_publisher_, image, ir, false);
-  }
-  if (depth && color_enabled_ && depth_rect_publisher_.getNumSubscribers() > 0 && fresh())
-  {
-    std::shared_ptr<sensor_msgs::msg::Image> image;
-    check(getDepthFrame(capture, image, true));
-    publish_image(depth_rect_publisher_, image, depth, true);
-  }
+  };
+
+  if (want_depth)
+    emit_image(DEPTH_RAW, depth_raw_publisher_, depth, false, [&](auto& image) { return getDepthFrame(capture, image); });
+  if (want_cloud && !rgb_cloud_) emit_cloud();
+  if (want_ir)
+    emit_image(IR_RAW, ir_raw_publisher_, ir, false, [&](auto& image) { return getIrFrame(capture, image); });
+  if (want_depth_rect)
+    emit_image(DEPTH_RECT, depth_rect_publisher_, depth, true, [&](auto& image) { return getDepthFrame(capture, image, true); });
 
   if (color_enabled_ && color && fresh())
   {
-    if (color_format_ == "jpeg")
+    // Forward the original camera JPEG before any optional pixel decoding.
+    const auto jpeg_publisher = native_color_transport_ ? native_mjpeg_publisher_ : rgb_jpeg_publisher_;
+    const auto info_publisher = native_color_transport_ ? native_rgb_info_publisher_ : rgb_cam_info_jpeg_publisher_;
+    if (jpeg_publisher && color.get_format() == K4A_IMAGE_FORMAT_COLOR_MJPG &&
+        jpeg_publisher->get_subscription_count() > 0)
     {
-      if (rgb_jpeg_publisher_->get_subscription_count() > 0 || rgb_cam_info_jpeg_publisher_->get_subscription_count() > 0)
+      auto image = jpeg_pool_.acquire();
+      if (!image) ++message_pool_drops_;
+      else
       {
-        auto info = std::make_shared<sensor_msgs::msg::CameraInfo>(*rgb_raw_camerainfo_msg_);
-        info->header.stamp = timestampToROS(color.get_device_timestamp());
-        if (rgb_jpeg_publisher_->get_subscription_count() > 0)
-        {
-          auto image = std::make_shared<sensor_msgs::msg::CompressedImage>();
-          check(getJpegRgbFrame(capture, image));
-          image->header = info->header;
-          if (fresh()) rgb_jpeg_publisher_->publish(*image);
-          else ++stale_captures_;
-        }
-        if (fresh()) rgb_cam_info_jpeg_publisher_->publish(*info);
+        check(getJpegRgbFrame(capture, image));
+        image->header.frame_id = rgb_raw_camerainfo_msg_->header.frame_id;
+        image->header.stamp = captureTimestampToROS(color.get_device_timestamp());
+        if (fresh()) { jpeg_publisher->publish(*image); ++native_jpeg_frames_; }
+        else ++stale_captures_;
       }
     }
-    else if (rgb_raw_publisher_.getNumSubscribers() > 0 ||
-             (depth && rgb_rect_publisher_.getNumSubscribers() > 0) || (cloud_requested && rgb_cloud_))
+    // CameraInfo-only consumers do not trigger color decoding in native mode.
+    if (info_publisher && info_publisher->get_subscription_count() > 0)
     {
-      if (decodeColor(capture))
+      auto info = info_pools_[RGB_RAW].acquire();
+      if (!info) ++message_pool_drops_;
+      else
+      {
+        if (info->width == 0) *info = *rgb_raw_camerainfo_msg_;
+        info->header.stamp = captureTimestampToROS(color.get_device_timestamp());
+        if (fresh()) info_publisher->publish(*info);
+      }
+    }
+    const bool other_color_pixels = want_rgb_rect || (want_cloud && rgb_cloud_);
+    if (color_format_ == "bgra" && (want_rgb || other_color_pixels) && fresh())
+    {
+      auto raw = want_rgb ? image_pools_[RGB_RAW].acquire() : std::shared_ptr<sensor_msgs::msg::Image>{};
+      if (want_rgb && !raw) ++message_pool_drops_;
+      const bool direct = raw && color.get_format() == K4A_IMAGE_FORMAT_COLOR_MJPG;
+      if ((raw || other_color_pixels) && decodeColor(capture, raw))
       {
         color = capture.get_color_image();
-        if (rgb_raw_publisher_.getNumSubscribers() > 0 && fresh())
-        {
-          std::shared_ptr<sensor_msgs::msg::Image> image;
-          check(getRbgFrame(capture, image));
-          publish_image(rgb_raw_publisher_, image, color, true);
-        }
-        if (depth && rgb_rect_publisher_.getNumSubscribers() > 0 && fresh())
-        {
-          std::shared_ptr<sensor_msgs::msg::Image> image;
-          check(getRbgFrame(capture, image, true));
-          publish_image(rgb_rect_publisher_, image, color, false);
-        }
-        if (depth && cloud_requested && rgb_cloud_ && fresh())
-        {
-          auto cloud = std::make_shared<sensor_msgs::msg::PointCloud2>();
-          check(cloud_in_depth_ ? getRgbPointCloudInDepthFrame(capture, cloud) : getRgbPointCloudInRgbFrame(capture, cloud));
-          if (fresh()) pointcloud_publisher_->publish(*cloud);
-          else ++stale_captures_;
-        }
+        if (raw)
+          emit_image(RGB_RAW, rgb_raw_publisher_, color, true,
+              [&](auto& image) { return direct ? K4A_RESULT_SUCCEEDED : getRbgFrame(capture, image); }, raw);
+        if (want_rgb_rect)
+          emit_image(RGB_RECT, rgb_rect_publisher_, color, false,
+              [&](auto& image) { return getRbgFrame(capture, image, true); });
+        if (want_cloud && rgb_cloud_) emit_cloud();
       }
     }
   }
@@ -1170,7 +1251,7 @@ void K4AROS2Device::imuPublisherThread()
       }
       if (!read) break;
       // Always drain the SDK queue, but avoid constructing unused ROS messages.
-      if (imu_orientation_publisher_->get_subscription_count() == 0)
+      if (!timestamp_ready_ || imu_orientation_publisher_->get_subscription_count() == 0)
       {
         samples.clear();
         continue;
@@ -1237,6 +1318,14 @@ void K4AROS2Device::publishDiagnostics()
     entry.value = std::to_string(value);
     status.values.push_back(std::move(entry));
   };
+  add("timestamp_offset_ns", timestamp_offset_ns_.load());
+  add("timestamp_device_resets", timestamp_device_resets_.load());
+  add("timestamp_ros_clock_jumps", timestamp_ros_clock_jumps_.load());
+  add("timestamp_rejected_samples", timestamp_rejected_samples_.load());
+  add("timestamp_arrival_residual_us", arrival_residual_ns_.load() / 1000);
+  add("message_pool_drops", message_pool_drops_.load());
+  add("direct_color_decodes", direct_color_decodes_.load());
+  add("native_jpeg_frames", native_jpeg_frames_.load());
   add("captures_received", captures_received_.load());
   add("pending_captures_replaced", captures_replaced_.load());
   add("stale_output_drops", stale);
@@ -1276,87 +1365,22 @@ std::chrono::microseconds K4AROS2Device::getCaptureTimestamp(const k4a::capture&
   return std::chrono::microseconds::zero();
 }
 
-// Converts a k4a *device* timestamp to a ros::Time object
-rclcpp::Time K4AROS2Device::timestampToROS(const std::chrono::microseconds& k4a_timestamp_us)
+// Acquisition publishes an atomic mapping for IMU; no per-message clock reads,
+// locks, or opportunistic initialization from a delayed IMU sample.
+rclcpp::Time K4AROS2Device::timestampToROS(const std::chrono::microseconds& timestamp)
 {
-  std::lock_guard<std::mutex> lock(timestamp_mutex_);
-  // This will give INCORRECT timestamps until the first image.
-  if (device_to_realtime_offset_.count() == 0)
-  {
-    initializeTimestampOffset(k4a_timestamp_us);
-  }
-
-  std::chrono::nanoseconds timestamp_in_realtime = k4a_timestamp_us + device_to_realtime_offset_;
-  // Set as ROS_TIME clock
-  rclcpp::Time ros_time(timestamp_in_realtime.count(), RCL_ROS_TIME);
-
-  return ros_time;
+  return rclcpp::Time(timestamp.count() * 1000 + timestamp_offset_ns_.load(), RCL_ROS_TIME);
 }
 
-// Converts a k4a_imu_sample_t timestamp to a ros::Time object
-rclcpp::Time K4AROS2Device::timestampToROS(const uint64_t& k4a_timestamp_us)
+rclcpp::Time K4AROS2Device::timestampToROS(const uint64_t& timestamp)
 {
-  return timestampToROS(std::chrono::microseconds(k4a_timestamp_us));
+  return timestampToROS(std::chrono::microseconds(timestamp));
 }
 
-void K4AROS2Device::initializeTimestampOffset(const std::chrono::microseconds& k4a_device_timestamp_us)
+rclcpp::Time K4AROS2Device::captureTimestampToROS(const std::chrono::microseconds& timestamp)
 {
-  // We have no better guess than "now".
-  std::chrono::nanoseconds realtime_clock = std::chrono::system_clock::now().time_since_epoch();
-
-  device_to_realtime_offset_ = realtime_clock - k4a_device_timestamp_us;
-
-  RCLCPP_WARN_STREAM(this->get_logger(), "Initializing the device to realtime offset based on wall clock: "
-                  << device_to_realtime_offset_.count() << " ns");
+  return rclcpp::Time(timestamp.count() * 1000 + active_capture_offset_ns_, RCL_ROS_TIME);
 }
-
-void K4AROS2Device::updateTimestampOffset(const std::chrono::microseconds& k4a_device_timestamp_us,
-                                         const std::chrono::nanoseconds& k4a_system_timestamp_ns)
-{
-  std::lock_guard<std::mutex> lock(timestamp_mutex_);
-  // System timestamp is on monotonic system clock.
-  // Device time is on AKDK hardware clock.
-  // We want to continuously estimate diff between realtime and AKDK hardware clock as low-pass offset.
-  // This consists of two parts: device to monotonic, and monotonic to realtime.
-
-  // First figure out realtime to monotonic offset. This will change to keep updating it.
-  std::chrono::nanoseconds realtime_clock = std::chrono::system_clock::now().time_since_epoch();
-  std::chrono::nanoseconds monotonic_clock = std::chrono::steady_clock::now().time_since_epoch();
-
-  std::chrono::nanoseconds monotonic_to_realtime = realtime_clock - monotonic_clock;
-
-  // Next figure out the other part (combined).
-  std::chrono::nanoseconds device_to_realtime =
-      k4a_system_timestamp_ns - k4a_device_timestamp_us + monotonic_to_realtime;
-  // If we're over a second off, just snap into place.
-  const auto offset_error = device_to_realtime_offset_- device_to_realtime;
-  if (device_to_realtime_offset_.count() == 0 ||
-      std::abs((device_to_realtime_offset_ - device_to_realtime).count()) > 1e7) // ZK - CHANGED THIS FROM 1e7
-  {
-    // RCLCPP_WARN_STREAM(this->get_logger(), "Initializing or re-initializing the device to realtime offset: "
-    //   << device_to_realtime.count() << " ns");
-
-    RCLCPP_WARN(this->get_logger(),"timestamp offset reset: "
-              "old=%ld ns, new=%ld ns error = %.3f ms", 
-              static_cast<long>(device_to_realtime_offset_.count()),
-              static_cast<long>(device_to_realtime.count()),
-              static_cast<double>(offset_error.count())/1e6);
-  
-    
-    device_to_realtime_offset_ = device_to_realtime;
-  }
-  else
-  {
-    // Low-pass filter!
-    constexpr double alpha = 0.10;
-    device_to_realtime_offset_ = device_to_realtime_offset_ +
-                                 std::chrono::nanoseconds(static_cast<int64_t>(
-                                     std::floor(alpha * (device_to_realtime - device_to_realtime_offset_).count())));
-  }
-}
-
-
-
 
 void K4AROS2Device::printTimestampDebugMessage(const std::string& name, const rclcpp::Time& timestamp)
 {

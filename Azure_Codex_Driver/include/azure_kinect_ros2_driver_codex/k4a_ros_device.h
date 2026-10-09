@@ -36,6 +36,8 @@
 #include "azure_kinect_ros2_driver_codex/k4a_ros_device_params.h"
 #include "azure_kinect_ros2_driver_codex/latest_capture.h"
 #include "azure_kinect_ros2_driver_codex/mjpeg_decoder.h"
+#include "azure_kinect_ros2_driver_codex/timestamp_mapper.h"
+#include "azure_kinect_ros2_driver_codex/message_pool.h"
 
 
 
@@ -89,7 +91,7 @@ class K4AROS2Device : public rclcpp::Node
     void captureThread();
     bool recoverStreams();
     void processCapture(k4a::capture capture, uint64_t generation);
-    bool decodeColor(k4a::capture& capture);
+    bool decodeColor(k4a::capture& capture, const std::shared_ptr<sensor_msgs::msg::Image>& direct_output = {});
     void ensureDepthToColor(const k4a::capture& capture);
     void ensureColorToDepth(const k4a::capture& capture);
     void publishDiagnostics();
@@ -104,14 +106,8 @@ class K4AROS2Device : public rclcpp::Node
     // Converts a k4a_imu_sample_t timestamp to a ros::Time object
     rclcpp::Time timestampToROS(const uint64_t& k4a_timestamp_us);
 
-    // Updates the timestamp offset (stored as start_time_) between the device time and ROS time.
-    // This is a low-pass filtered update based on the system time from k4a, which represents the
-    // time the message arrived at the USB bus.
-    void updateTimestampOffset(const std::chrono::microseconds& k4a_device_timestamp_us,
-                               const std::chrono::nanoseconds& k4a_system_timestamp_ns);
-    // Make an initial guess based on wall clock. The best we can do when no image timestamps are
-    // available.
-    void initializeTimestampOffset(const std::chrono::microseconds& k4a_device_timestamp_us);
+    // The capture worker freezes one mapping for every output from a capture.
+    rclcpp::Time captureTimestampToROS(const std::chrono::microseconds& timestamp);
 
     // When using IMU throttling, computes a mean measurement from a set of IMU samples
     k4a_imu_sample_t computeMeanIMUSample(const std::vector<k4a_imu_sample_t>& samples);
@@ -120,6 +116,10 @@ class K4AROS2Device : public rclcpp::Node
     rclcpp::QoS qos_;
 
     image_transport::CameraPublisher rgb_raw_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr native_rgb_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr native_rgb_info_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr native_mjpeg_publisher_;
+    bool native_color_transport_ = false;
 
     std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>> rgb_cam_info_jpeg_publisher_;
     std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::CompressedImage>> rgb_jpeg_publisher_;
@@ -154,9 +154,25 @@ class K4AROS2Device : public rclcpp::Node
 
 
 
-    std::chrono::nanoseconds device_to_realtime_offset_{0};
-    std::mutex timestamp_mutex_;
+    std::unique_ptr<azure_kinect_ros2_driver_codex::TimestampMapper> timestamp_mapper_;
+    std::atomic_int64_t timestamp_offset_ns_{0};
+    std::atomic_bool timestamp_ready_{false};
+    int64_t active_capture_offset_ns_ = 0;  // Frame worker only.
+    std::atomic_int64_t arrival_residual_ns_{0};
+    std::atomic_uint64_t timestamp_device_resets_{0};
+    std::atomic_uint64_t timestamp_ros_clock_jumps_{0};
+    std::atomic_uint64_t timestamp_rejected_samples_{0};
     std::mutex debug_mutex_;
+    enum ImageSlot { DEPTH_RAW, IR_RAW, DEPTH_RECT, RGB_RAW, RGB_RECT, IMAGE_SLOT_COUNT };
+    std::array<azure_kinect_ros2_driver_codex::MessagePool<sensor_msgs::msg::Image>, IMAGE_SLOT_COUNT> image_pools_;
+    std::array<azure_kinect_ros2_driver_codex::MessagePool<sensor_msgs::msg::CameraInfo>, IMAGE_SLOT_COUNT> info_pools_;
+    azure_kinect_ros2_driver_codex::MessagePool<sensor_msgs::msg::CompressedImage> jpeg_pool_;
+    azure_kinect_ros2_driver_codex::MessagePool<sensor_msgs::msg::PointCloud2> cloud_pool_;
+    std::atomic_uint64_t message_pool_drops_{0};
+    std::atomic_uint64_t direct_color_decodes_{0};
+    std::atomic_uint64_t native_jpeg_frames_{0};
+    bool rescale_ir_ = false;
+    double ir_scale_ = 1.0;
 
     // Thread control
     std::atomic_bool running_{false};
@@ -167,10 +183,10 @@ class K4AROS2Device : public rclcpp::Node
     bool cameras_started_ = false;
     bool imu_started_ = false;
     k4a_device_configuration_t device_config_ = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-    struct CapturePacket { k4a::capture capture; uint64_t generation = 0; };
-    azure_kinect_ros2_driver::LatestCapture<CapturePacket> pending_capture_;
+    struct CapturePacket { k4a::capture capture; uint64_t generation = 0; int64_t offset_ns = 0; };
+    azure_kinect_ros2_driver_codex::LatestCapture<CapturePacket> pending_capture_;
     std::thread capture_thread_;
-    std::unique_ptr<azure_kinect_ros2_driver::MjpegDecoder> jpeg_decoder_;
+    std::unique_ptr<azure_kinect_ros2_driver_codex::MjpegDecoder> jpeg_decoder_;
     bool depth_to_color_ready_ = false;
     bool color_to_depth_ready_ = false;
     bool driver_color_decode_ = true;

@@ -6,7 +6,7 @@
 #include <turbojpeg.h>
 #include <stdexcept>
 
-namespace azure_kinect_ros2_driver
+namespace azure_kinect_ros2_driver_codex
 {
 // Worker-owned decoder. Returned pixels are valid until the next decode call;
 // ROS messages must own their copied pixels before that call (no buffer loaning).
@@ -21,14 +21,20 @@ public:
   MjpegDecoder(const MjpegDecoder&) = delete;
   MjpegDecoder& operator=(const MjpegDecoder&) = delete;
 
+  bool decodeInto(const k4a::image& encoded, int width, int height,
+                  uint8_t* buffer, size_t size, int stride)
+  {
+    if (!buffer || width <= 0 || width > 16384 || height <= 0 || height > 16384 ||
+        stride < width * 4 || size < static_cast<size_t>(stride) * height ||
+        !validHeader(encoded, width, height)) return false;
+    return tjDecompress2(decoder_, encoded.get_buffer(), encoded.get_size(), buffer,
+        width, stride, height, TJPF_BGRA, TJFLAG_FASTDCT) == 0;
+  }
+
   k4a::image decode(const k4a::image& encoded, int expected_width, int expected_height)
   {
-    if (!encoded || encoded.get_format() != K4A_IMAGE_FORMAT_COLOR_MJPG ||
-        expected_width <= 0 || expected_height <= 0) return {};
-    int width = 0, height = 0, subsampling = 0, colorspace = 0;
-    if (tjDecompressHeader3(decoder_, encoded.get_buffer(), encoded.get_size(),
-        &width, &height, &subsampling, &colorspace) != 0 ||
-        width != expected_width || height != expected_height) return {};
+    const int width = expected_width, height = expected_height;
+    if (!validHeader(encoded, width, height)) return {};
     // Allocate only after validating the JPEG dimensions against calibration.
     if (!output_ || output_.get_width_pixels() != width || output_.get_height_pixels() != height)
       output_ = k4a::image::create(K4A_IMAGE_FORMAT_COLOR_BGRA32, width, height, width * 4);
@@ -43,6 +49,14 @@ public:
   }
 
 private:
+  bool validHeader(const k4a::image& encoded, int expected_width, int expected_height)
+  {
+    if (!encoded || encoded.get_format() != K4A_IMAGE_FORMAT_COLOR_MJPG ||
+        expected_width <= 0 || expected_width > 16384 || expected_height <= 0 || expected_height > 16384) return false;
+    int width = 0, height = 0, subsampling = 0, colorspace = 0;
+    return tjDecompressHeader3(decoder_, encoded.get_buffer(), encoded.get_size(),
+        &width, &height, &subsampling, &colorspace) == 0 && width == expected_width && height == expected_height;
+  }
   tjhandle decoder_;
   k4a::image output_;
 };
