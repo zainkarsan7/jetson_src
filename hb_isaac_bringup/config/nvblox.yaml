@@ -3,7 +3,7 @@
     # cuda stream setting
     cuda_stream_type: 1  # 0: cuda default stream, 1: blocking async stream, 2: non blocking async stream, 3: per-thread default stream.
     # miscellaneous
-    voxel_size: 0.05
+    voxel_size: 0.02
     num_cameras: 1
     use_tf_transforms: true
     mapping_type: "static_tsdf"  # ["static_tsdf", "static_occupancy"]
@@ -77,7 +77,7 @@
       do_depth_preprocessing: false
       depth_preprocessing_num_dilations: 3
       # projective integrator (tsdf/color/occupancy)
-      projective_integrator_max_integration_distance_m: 1.0
+      projective_integrator_max_integration_distance_m: 2.0
       projective_integrator_truncation_distance_vox: 4.0
       projective_integrator_weighting_mode: "inverse_square_tsdf_distance_penalty"
       projective_integrator_max_weight: 5.0
