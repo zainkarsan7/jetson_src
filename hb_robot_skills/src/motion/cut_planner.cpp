@@ -136,15 +136,21 @@ const planning_scene::PlanningSceneConstPtr p_scene)const{
 bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
             const Eigen::Isometry3d& nominal_tcp_pose,
             const moveit_msgs::msg::Constraints& constraints,
-            const collision_detection::CollisionResult collision_state,
+            const collision_detection::CollisionResult& collision_state,
             const planning_scene::PlanningSceneConstPtr& p_scene) const{
                 
                 /// decide from collision state if its a torch or body collision
                 // two strategies if torch -> nudge point away within constraint 
                 // if body, use contact jacobean solve min distance adjustment problem
-
+                
                 moveit::core::RobotState trial(candidate);
                 std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision_state);
+                
+                if(contacts.empty()){
+                    std::cerr<<"no workpiece contacts"<<std::endl;
+                    return false;
+                }
+                
                 constexpr double clearance = 0.002;
                 // get worst interms of depth
                 const auto worst = std::max_element(contacts.begin(),contacts.end(),
@@ -159,22 +165,21 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                     if(c.robot_link == plasma_link_){
                         is_torch = true;
                         //collect all torch norms
-                        torch_outward += c.normal_world.normalized();
-                        if (c.depth > max_torch_collision_depth){
-                            max_torch_collision_depth = c.depth;
-                        }
+                        
+                        const double depth  = std::max(0.0,c.depth);
+                        torch_outward += c.normal_world.normalized() * depth;
+                        max_torch_collision_depth = std::max(max_torch_collision_depth, depth);
                     }
-                    
-
                 }
 
                 if(is_torch){
                     // do some profile standoff nudging
                     std::cout<<"torch in collision"<<std::endl;
                     torch_outward.normalize();
-                    torch_outward *= max_torch_collision_depth + clearance;
-                    Eigen::Isometry3d trial_pose =  nominal_tcp_pose;
-                    trial_pose.translation() = max_torch_collision_depth*torch_outward;
+                    const Eigen::Vector3d displacement = (std::max(0.0,max_torch_collision_depth) + clearance) * torch_outward;
+                    
+                    Eigen::Isometry3d trial_pose =  candidate.getGlobalLinkTransform(plasma_link_);
+                    trial_pose.translation()+=displacement;
 
                     std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
                     2.0);
@@ -231,7 +236,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
 
                 std::vector<double> q;
                 candidate.copyJointGroupPositions(joint_model_group_,q);
-                if(q.size()!=6){
+                if(q.size()!=static_cast<std::size_t>(dq.size())){
                     std::cerr<<"not right number of joints in q"<<std::endl;
                     return false;
                 }
@@ -239,7 +244,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 constexpr double max_joint_step = 0.03;
                 const double max_abs = dq.cwiseAbs().maxCoeff();
                 if(max_abs>max_joint_step){
-                    dq *= max_abs/max_joint_step;
+                    dq *= max_joint_step/max_abs;
                 }
                 for(std::size_t i = 0; i<q.size();i++){
                     q[i] += dq[static_cast<Eigen::Index>(i)];
@@ -271,8 +276,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                     return true;
                 }
                 return false; // or iterate a bunch more times and require depth decreases
-
-                
+            
 
 }
 
@@ -316,6 +320,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                 double best_cost  =std::numeric_limits<double>::infinity();
                 double highest_cost = 0.0;
                 bool found = false;
+                kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
 
                 for (unsigned int i=0; i<100; i++){
                    
@@ -342,15 +347,35 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     // collision stuff:
                     auto col_res = checkCol(candidate,p_scene);
                     if(col_res.collision){
-                        for (const auto& [pair, contacts]: col_res.contacts){
-                            std::cout<<"    "<<
-                            pair.first<<" <-> "<<
-                            pair.second<< ": "<<contacts.size()<<"contacts"<<std::endl;
+                        // for (const auto& [pair, contacts]: col_res.contacts){
+                        //     std::cout<<"    "<<
+                        //     pair.first<<" <-> "<<
+                        //     pair.second<< ": "<<contacts.size()<<"contacts"<<std::endl;
+                        // }
+                        if(!refineCollision(candidate,cand_pose,constraints,col_res,p_scene)){
+                            std::cout<<"failed fixing sample: "<<i<<std::endl;
+                            continue;
                         }
                     }
+                    candidate.update();
+                    if(!candidate.satisfiesBounds(joint_model_group_)){
+                        std::cout<<"fixed sample "<<i<<" doesnt satisfy model group bounds"<<std::endl;
+                        continue;
+                    }
+                    if(!constraint_set.add(constraints,p_scene->getTransforms())){
+                        std::cout<<"fixed sample "<<i<<" couldnt add constraints"<<std::endl;
+                        continue;
+                    }
 
-
-
+                    if(!constraint_set.decide(candidate).satisfied){
+                        std::cout<<"fixed sample "<<i<<" coudlnt satisfy constrinats"<<std::endl;
+                        continue;
+                    }
+                    if(!p_scene->isStateColliding(candidate,planning_group_)){
+                        std::cout<<"fixed sample "<<i<<" still in collision"<<std::endl;
+                        continue;
+                    }
+                    
                     // if(!sampler->sample(candidate, reference_state,1)) continue;
                     double cost = CutPlanner::dq_cost(reference_state, candidate);
                     if (cost<best_cost){

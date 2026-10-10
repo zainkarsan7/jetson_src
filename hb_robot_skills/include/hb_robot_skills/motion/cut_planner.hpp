@@ -179,7 +179,7 @@ class CutPlanner{
         bool refineCollision(moveit::core::RobotState& candidate,
             const Eigen::Isometry3d& nominal_tcp_pose,
             const moveit_msgs::msg::Constraints& constraints,
-            const collision_detection::CollisionResult collision_state,
+            const collision_detection::CollisionResult& collision_state,
             const planning_scene::PlanningSceneConstPtr& p_scene) const;
 
         bool isCloseEnough(const moveit::core::RobotState& seed_state, const moveit::core::RobotState& candidate_state)const;
