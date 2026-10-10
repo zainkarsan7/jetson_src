@@ -143,29 +143,48 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 // two strategies if torch -> nudge point away within constraint 
                 // if body, use contact jacobean solve min distance adjustment problem
 
+                moveit::core::RobotState trial(candidate);
                 std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision_state);
+                constexpr double clearance = 0.002;
+                // get worst interms of depth
+                const auto worst = std::max_element(contacts.begin(),contacts.end(),
+                [](const auto& a, const auto& b){
+                    return a.depth< b.depth;
+                });
+                
                 bool is_torch = false;
+                Eigen::Vector3d torch_outward = Eigen::Vector3d::Zero();
+                double max_torch_collision_depth = 0.0;
                 for (const auto & c : contacts){
                     if(c.robot_link == plasma_link_){
                         is_torch = true;
-                        std::cout<<"torch in collision"<<std::endl;
-                        break;
+                        //collect all torch norms
+                        torch_outward += c.normal_world.normalized();
+                        if (c.depth > max_torch_collision_depth){
+                            max_torch_collision_depth = c.depth;
+                        }
                     }
+                    
+
                 }
 
                 if(is_torch){
                     // do some profile standoff nudging
-                   
+                    std::cout<<"torch in collision"<<std::endl;
+                    torch_outward.normalize();
+                    torch_outward *= max_torch_collision_depth + clearance;
+                    Eigen::Isometry3d trial_pose =  nominal_tcp_pose;
+                    trial_pose.translation() = max_torch_collision_depth*torch_outward;
 
+                    std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
+                    2.0);
+
+                    if(!trial.setFromIK(joint_model_group_,trial_pose,plasma_link_,consistency_limits,0.05)){
+                        std::cerr<<"ik trial pose failed" <<std::endl;
+                        return false;
+                    }
                 }
                 else{
-                    // get worst interms of depth
-                    const auto worst = std::max_element(contacts.begin(),contacts.end(),
-                
-                [](const auto& a, const auto& b){
-                    return a.depth< b.depth;
-                });
-
                 const auto* link = robot_model_->getLinkModel(worst->robot_link);
                 const Eigen::Vector3d contact_pt = worst->pos_world;
                 const Eigen::Isometry3d& T_World_Link = candidate.getGlobalLinkTransform(link);
@@ -195,7 +214,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
 
                 constexpr double lambda_tcp = 1.0;
                 constexpr double lambda_q = 1e-3;
-                constexpr double clearance = 0.002;
+                
                 // delta p is the normal direction * however deep the contact is plus some tiny clearance
                 const Eigen::Vector3d delta_p = (std::max(0.0,worst->depth) + clearance)* worst->normal_world;
 
@@ -225,8 +244,10 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 for(std::size_t i = 0; i<q.size();i++){
                     q[i] += dq[static_cast<Eigen::Index>(i)];
                 }
-                moveit::core::RobotState trial(candidate);
                 trial.setJointGroupPositions(joint_model_group_,q);
+            }
+                
+                
                 trial.update();
                 if(!trial.satisfiesBounds(joint_model_group_)){
                     std::cerr<<"applying dq didnt work, out of bounds"<<std::endl;
@@ -251,7 +272,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 }
                 return false; // or iterate a bunch more times and require depth decreases
 
-                }
+                
 
 }
 
