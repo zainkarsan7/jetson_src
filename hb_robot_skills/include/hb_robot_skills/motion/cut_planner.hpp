@@ -117,7 +117,24 @@ struct ExecutableCut{
     moveit::planning_interface::MoveGroupInterface::Plan transit_out;
 };
 
+struct CollisionDebugEvent{
+    std::string label;
+    unsigned int sample = 0;
+    unsigned int iter = 0;
 
+
+    
+
+    std::string strategy; // torch, body, accepted, rejected
+    moveit::core::RobotState state;
+    Eigen::Isometry3d nominal_tcp_pose;
+    std::vector<RobotWorkpieceContact> contacts;
+    CollisionDebugEvent(
+        const moveit::core::RobotState& rob_state,
+        const Eigen::Isometry3d& tcp):
+        state(rob_state),
+        nominal_tcp_pose(tcp){ }
+};
 
 struct CutPlan{
     std::string profile_name;
@@ -136,8 +153,6 @@ struct CutRequest{
 
 class CutPlanner{
     public: 
-
-        
 
         CutPlanner(
             moveit::core::RobotModelConstPtr robot_model,
@@ -162,20 +177,29 @@ class CutPlanner{
             const planning_scene::PlanningSceneConstPtr& p_scene
         ) const;
 
+
+
         using DebugVisCallback = std::function<void(const CutSegment&)>;
         void setDebugVisCallback(DebugVisCallback callback){
             debug_vis_callback_ = std::move(callback);
         }
+
+
+        using CollisionDebugCallback = std::function<void(const CollisionDebugEvent&)>;
+        void setCollisionDebugVisCallback(CollisionDebugCallback callback){
+            collision_debug_vis_callback_ = std::move(callback);
+        }
+
         moveit_msgs::msg::Constraints makeBoxConstraints(
             const CutSegment& segment,
             const double pos_tol, 
             const double ang_tol
         )const;
     private:
-
+        CollisionDebugCallback collision_debug_vis_callback_;
         DebugVisCallback debug_vis_callback_;
 
-
+        
         bool refineCollision(moveit::core::RobotState& candidate,
             const Eigen::Isometry3d& nominal_tcp_pose,
             const moveit_msgs::msg::Constraints& constraints,
@@ -200,11 +224,11 @@ class CutPlanner{
     const moveit_msgs::msg::Constraints& constraints,
     const planning_scene::PlanningSceneConstPtr& p_scene)const;
 
-        bool proposeTorchNudge(moveit::core::RobotState trial,
-        std::vector<RobotWorkpieceContact> contacts);
+        bool proposeTorchNudge(moveit::core::RobotState& trial,
+        std::vector<RobotWorkpieceContact>& contacts)const;
 
-        bool proposeJacobeanStep(moveit::core::RobotState trial,
-        std::vector<RobotWorkpieceContact> contacts);
+        bool proposeJacobeanStep(moveit::core::RobotState& trial,
+        std::vector<RobotWorkpieceContact>& contacts)const;
             
         moveit_msgs::msg::Constraints makePoseConstraints(
             const Eigen::Isometry3d nominal_pose,
@@ -212,7 +236,7 @@ class CutPlanner{
             const double ang_tol
         )const;
 
-        
+
         Eigen::Isometry3d makeToolPose(
             const Eigen::Vector3f& position,
             const Eigen::Vector3f& tangent,

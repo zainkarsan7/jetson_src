@@ -1,6 +1,7 @@
 #include "hb_robot_skills/cut_profile_server.hpp"
 #include <chrono>
 #include <thread>
+#include <iomanip>
 #include <sstream>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
@@ -61,6 +62,10 @@ namespace hb_robot_skills{
 
         auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
         visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
+        collision_debug_pub_ =
+    create_publisher<visualization_msgs::msg::MarkerArray>(
+        "/cut_profile/debug_collision", marker_qos);
+        debug_robot_pub_ = create_publisher<moveit_msgs::msg::DisplayRobotState>("/cut_profile/debug_robot",marker_qos);
 
     }
 
@@ -90,6 +95,10 @@ namespace hb_robot_skills{
             publishCandidateVisualization(segment);
         }
         );
+
+        cut_planner_->setCollisionDebugVisCallback([this](const motion::CollisionDebugEvent& event){
+            publishCollisionDebug(event);
+        });
 
         display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
         10
@@ -438,6 +447,7 @@ namespace hb_robot_skills{
             std::lock_guard<std::mutex>lock(debug_segments_mutex);
             debug_segs_.clear();
         }
+        clearCollisionDebug();
         const moveit::core::RobotState arbitrary_start_state = *current_state;
 
         planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
@@ -568,8 +578,18 @@ namespace hb_robot_skills{
 
 
     }
+    void CutProfileServer::clearCollisionDebug()
+{
+    visualization_msgs::msg::MarkerArray array;
+    visualization_msgs::msg::Marker clear;
 
-    
+    clear.action =
+        visualization_msgs::msg::Marker::DELETEALL;
+
+    array.markers.push_back(clear);
+
+    collision_debug_pub_->publish(array);
+}
     
     void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){
         motion::CutPlan debug_plan;
@@ -633,8 +653,8 @@ makeArrow(
             origin +
             direction.normalized() * length));
 
-    marker.scale.x = 0.003;
-    marker.scale.y = 0.007;
+    marker.scale.x = 0.001;
+    marker.scale.y = 0.001;
     marker.scale.z = 0.010;
 
     marker.color.a = 1.0;
@@ -1037,7 +1057,208 @@ CutProfileServer::publishVisualization(
             frame_id));
 }
 
-    void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
+void CutProfileServer::publishCollisionDebug(
+    const motion::CollisionDebugEvent& event)
+{
+    using Marker = visualization_msgs::msg::Marker;
+
+    visualization_msgs::msg::MarkerArray array;
+
+    const auto stamp = now();
+    const std::string frame_id = move_group_->getPlanningFrame();
+
+    // Separate namespace for each sample/iteration.
+    // This preserves the history of the correction steps in RViz.
+    const std::string ns =
+        "sample_" + std::to_string(event.sample) +
+        "_iter_" + std::to_string(event.iter);
+
+    int id = 0;
+
+    // -------------------------------------------------------
+    // 1. Nominal TCP frame
+    // -------------------------------------------------------
+
+    drawFrame(
+        array,
+        event.nominal_tcp_pose,
+        frame_id,
+        stamp,
+        ns + "_nominal_tcp",
+        id,
+        0.045,
+        0.35);
+
+    // -------------------------------------------------------
+    // 2. Proposed TCP frame
+    // -------------------------------------------------------
+
+    const Eigen::Isometry3d actual_tcp =
+        event.state.getGlobalLinkTransform(plasma_link_);
+
+    drawFrame(
+        array,
+        actual_tcp,
+        frame_id,
+        stamp,
+        ns + "_actual_tcp",
+        id,
+        0.035,
+        1.0);
+
+    // -------------------------------------------------------
+    // 3. TCP displacement from nominal
+    // -------------------------------------------------------
+
+    const Eigen::Vector3d nominal_pos =
+        event.nominal_tcp_pose.translation();
+
+    const Eigen::Vector3d actual_pos =
+        actual_tcp.translation();
+
+    const Eigen::Vector3d tcp_delta =
+        actual_pos - nominal_pos;
+
+    if (tcp_delta.norm() > 1e-6)
+    {
+        auto arrow = makeArrow(
+            frame_id,
+            stamp,
+            ns + "_tcp_displacement",
+            id++,
+            nominal_pos,
+            tcp_delta,
+            tcp_delta.norm());
+
+        arrow.color.r = 0.0;
+        arrow.color.g = 1.0;
+        arrow.color.b = 0.2;
+        arrow.color.a = 1.0;
+
+        array.markers.push_back(std::move(arrow));
+    }
+
+    // -------------------------------------------------------
+    // 4. Collision contacts
+    // -------------------------------------------------------
+
+    for (const auto& contact : event.contacts)
+    {
+        // Contact point sphere
+        Marker sphere;
+
+        sphere.header.frame_id = frame_id;
+        sphere.header.stamp = stamp;
+
+        sphere.ns = ns + "_contacts";
+        sphere.id = id++;
+
+        sphere.type = Marker::SPHERE;
+        sphere.action = Marker::ADD;
+
+        sphere.pose.position = toPoint(contact.pos_world);
+        sphere.pose.orientation.w = 1.0;
+
+        sphere.scale.x = 0.0015;
+        sphere.scale.y = 0.0015;
+        sphere.scale.z = 0.0015;
+
+        sphere.color.r = 1.0;
+        sphere.color.g = 0.0;
+        sphere.color.b = 0.0;
+        sphere.color.a = 0.9;
+
+        array.markers.push_back(std::move(sphere));
+
+        // Contact separation normal
+        if (contact.normal_world.norm() > 1e-8)
+        {
+            auto arrow = makeArrow(
+                frame_id,
+                stamp,
+                ns + "_contact_normals",
+                id++,
+                contact.pos_world,
+                contact.normal_world,
+                0.03);
+
+            arrow.color.r = 1.0;
+            arrow.color.g = 0.5;
+            arrow.color.b = 0.0;
+            arrow.color.a = 1.0;
+
+            array.markers.push_back(std::move(arrow));
+        }
+
+        // Label the colliding link and penetration depth
+        std::ostringstream ss;
+
+        ss << contact.robot_link
+           << " "
+           << std::fixed
+           << std::setprecision(1)
+           << (1000.0 * contact.depth)
+           << " mm";
+
+        makeLabel(
+            array,
+            contact.pos_world,
+            ss.str(),
+            frame_id,
+            stamp,
+            ns + "_contact_labels",
+            id);
+    }
+
+    // -------------------------------------------------------
+    // 5. Iteration/status label
+    // -------------------------------------------------------
+
+    std::ostringstream status;
+
+    status
+        << event.label
+        << " | sample " << event.sample
+        << " | iter " << event.iter
+        << " | " << event.strategy
+        << " | contacts " << event.contacts.size()
+        << " | TCP offset "
+        << std::fixed << std::setprecision(2)
+        << (1000.0 * tcp_delta.norm())
+        << " mm";
+
+    makeLabel(
+        array,
+        actual_pos,
+        status.str(),
+        frame_id,
+        stamp,
+        ns + "_status",
+        id);
+
+    // -------------------------------------------------------
+    // 6. Publish markers and proposed robot state
+    // -------------------------------------------------------
+
+    collision_debug_pub_->publish(array);
+
+    publishDebugRobot(event.state);
+}
+    
+    void CutProfileServer::publishDebugRobot(
+    const moveit::core::RobotState& state)
+{
+    moveit_msgs::msg::DisplayRobotState msg;
+
+    moveit::core::robotStateToRobotStateMsg(
+        state, msg.state);
+
+    msg.highlight_links.clear();
+
+    debug_robot_pub_->publish(msg);
+}
+
+void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
         std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
             
             {std::lock_guard<std::mutex> lock(approval_mutex_);

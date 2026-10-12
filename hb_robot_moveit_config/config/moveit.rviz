@@ -4,20 +4,16 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
-        - /Global Options1
-        - /Status1
-        - /AzureKinect1
+        - /MotionPlanning1/Scene Geometry1
         - /AzureKinect1/Topic1
         - /DepthCloud1/Auto Size1
-        - /PointCloud21
-        - /PointCloud21/Topic1
-        - /MarkerArray2
-        - /MarkerArray2/Topic1
-        - /MarkerArray3/Topic1
-        - /Marker1
+        - /MarkerArray2/Namespaces1
         - /Marker1/Topic1
-      Splitter Ratio: 0.5
-    Tree Height: 376
+        - /MarkerArray4/Status1
+        - /MarkerArray4/Topic1
+        - /MarkerArray4/Namespaces1
+      Splitter Ratio: 0.7102615833282471
+    Tree Height: 418
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_visual_tools/RvizVisualToolsGui
@@ -199,7 +195,7 @@ Visualization Manager:
       Planning Scene Topic: monitored_planning_scene
       Robot Description: robot_description
       Scene Geometry:
-        Scene Alpha: 1
+        Scene Alpha: 0.20000000298023224
         Scene Color: 50; 230; 50
         Scene Display Time: 0.009999999776482582
         Show Scene Geometry: true
@@ -597,7 +593,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 1
@@ -611,19 +607,21 @@ Visualization Manager:
       Style: Points
       Topic:
         Depth: 5
-        Durability Policy: Transient Local
+        Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /perception/section_cloud
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        profile_boundary: true
+        profile_labels: false
+        section_observed: false
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -635,7 +633,48 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        approach_paths: true
+        cut_pose_bottom_flange_appr_normal: true
+        cut_pose_bottom_flange_appr_tangent: true
+        cut_pose_bottom_flange_approach_normal: true
+        cut_pose_bottom_flange_approach_tangent: true
+        cut_pose_bottom_flange_end_normal: true
+        cut_pose_bottom_flange_end_tangent: true
+        cut_pose_bottom_flange_labels: true
+        cut_pose_bottom_flange_retr_normal: true
+        cut_pose_bottom_flange_retr_tangent: true
+        cut_pose_bottom_flange_retract_normal: true
+        cut_pose_bottom_flange_retract_tangent: true
+        cut_pose_bottom_flange_start_normal: true
+        cut_pose_bottom_flange_start_tangent: true
+        cut_pose_left_web_appr_normal: true
+        cut_pose_left_web_appr_tangent: true
+        cut_pose_left_web_approach_normal: true
+        cut_pose_left_web_approach_tangent: true
+        cut_pose_left_web_end_normal: true
+        cut_pose_left_web_end_tangent: true
+        cut_pose_left_web_labels: true
+        cut_pose_left_web_retr_normal: true
+        cut_pose_left_web_retr_tangent: true
+        cut_pose_left_web_retract_normal: true
+        cut_pose_left_web_retract_tangent: true
+        cut_pose_left_web_start_normal: true
+        cut_pose_left_web_start_tangent: true
+        cut_pose_top_flange_appr_normal: true
+        cut_pose_top_flange_appr_tangent: true
+        cut_pose_top_flange_approach_normal: true
+        cut_pose_top_flange_approach_tangent: true
+        cut_pose_top_flange_end_normal: true
+        cut_pose_top_flange_end_tangent: true
+        cut_pose_top_flange_labels: true
+        cut_pose_top_flange_retr_normal: true
+        cut_pose_top_flange_retr_tangent: true
+        cut_pose_top_flange_retract_normal: true
+        cut_pose_top_flange_retract_tangent: true
+        cut_pose_top_flange_start_normal: true
+        cut_pose_top_flange_start_tangent: true
+        cut_segments: true
+        retract_paths: true
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -647,7 +686,7 @@ Visualization Manager:
       Enabled: true
       Name: Marker
       Namespaces:
-        layer: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -655,6 +694,25 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /nvblox_node/tsdf_layer_marker
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        sample_0_iter_0_actual_tcp_normal: true
+        sample_0_iter_0_actual_tcp_tangent: true
+        sample_0_iter_0_contact_labels: true
+        sample_0_iter_0_contact_normals: true
+        sample_0_iter_0_contacts: true
+        sample_0_iter_0_nominal_tcp_normal: true
+        sample_0_iter_0_nominal_tcp_tangent: true
+        sample_0_iter_0_status: true
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /cut_profile/debug_collision
       Value: true
   Enabled: true
   Global Options:
@@ -674,25 +732,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.387187957763672
+      Distance: 0.6394604444503784
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.46746110916137695
-        Y: 1.4534412622451782
-        Z: 0.24116872251033783
+        X: -0.3673732280731201
+        Y: 1.297851324081421
+        Z: 0.10444249957799911
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.944797158241272
+      Pitch: 0.08479601889848709
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 6.26318883895874
+      Yaw: 5.008189678192139
     Saved: ~
 Window Geometry:
   AzureKinect:
@@ -708,7 +766,7 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000001f300000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072000000003d000000530000004100fffffffb000000100044006900730070006c006100790073010000003d000001fb000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000023e000002150000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff00000001000000e600000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000001e70000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000001f300000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072000000003d0000004c0000001600000016fb000000100044006900730070006c006100790073010000003d00000225000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000268000001eb0000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff000000160000001600000001000000e600000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000001e70000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RvizVisualToolsGui:
     collapsed: false
   Trajectory - Trajectory Slider:

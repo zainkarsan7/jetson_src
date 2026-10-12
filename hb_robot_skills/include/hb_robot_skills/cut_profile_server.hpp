@@ -2,6 +2,7 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/display_trajectory.hpp>
+#include <moveit_msgs/msg/display_robot_state.hpp>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include "hb_robot_perception/profile_types.hpp"
@@ -50,6 +51,8 @@ namespace hb_robot_skills{
             visualization_msgs::msg::MarkerArray makeVisualization(const motion::CutPlan& plan, const std::string& frame_id)const;
             
             void publishVisualization(const motion::CutPlan& plan, const std::string& frame_id);
+            void clearCollisionDebug();
+            void publishCollisionDebug(const motion::CollisionDebugEvent& event);
 
             void publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
             const std::string& stage);
@@ -69,6 +72,9 @@ namespace hb_robot_skills{
             );
             std::unordered_map<std::string, motion::CutSegment> debug_segs_;
             std::mutex debug_segments_mutex;
+
+            void publishDebugRobot(const moveit::core::RobotState& state);
+
 
             void publishCandidateVisualization(const motion::CutSegment segment);
             
@@ -117,6 +123,9 @@ namespace hb_robot_skills{
         mutable std::mutex estimate_mutex_;
         rclcpp::Subscription<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_sub_;
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_ ;
+        rclcpp::Publisher<moveit_msgs::msg::DisplayRobotState>::SharedPtr debug_robot_pub_;
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+            collision_debug_pub_;
 
         planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
 
