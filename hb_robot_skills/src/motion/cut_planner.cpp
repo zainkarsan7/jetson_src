@@ -132,72 +132,80 @@ const planning_scene::PlanningSceneConstPtr p_scene)const{
 
 }
 
+bool CutPlanner::constraintsSatisfied(moveit::core::RobotState& trial,
+    const moveit_msgs::msg::Constraints& constraints,
+    const planning_scene::PlanningSceneConstPtr& p_scene)const{
+    
+        if(!trial.satisfiesBounds(joint_model_group_)){
+            std::cout<<"trial doesnt satisfy model group bounds"<<std::endl;
+            return false;
+        }
+        kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+        if(!constraint_set.add(constraints,p_scene->getTransforms())){
+            std::cout<<"trial couldnt add constraints"<<std::endl;
+            return false;
+        }
 
-bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
-            const Eigen::Isometry3d& nominal_tcp_pose,
-            const moveit_msgs::msg::Constraints& constraints,
-            const collision_detection::CollisionResult& collision_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene) const{
-                
-                /// decide from collision state if its a torch or body collision
-                // two strategies if torch -> nudge point away within constraint 
-                // if body, use contact jacobean solve min distance adjustment problem
-                
-                moveit::core::RobotState trial(candidate);
-                std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision_state);
-                
-                if(contacts.empty()){
-                    std::cerr<<"no workpiece contacts"<<std::endl;
-                    return false;
-                }
-                
-                constexpr double clearance = 0.002;
-                // get worst interms of depth
-                const auto worst = std::max_element(contacts.begin(),contacts.end(),
-                [](const auto& a, const auto& b){
-                    return a.depth< b.depth;
-                });
-                
-                bool is_torch = false;
-                Eigen::Vector3d torch_outward = Eigen::Vector3d::Zero();
-                double max_torch_collision_depth = 0.0;
-                for (const auto & c : contacts){
-                    if(c.robot_link == plasma_link_){
-                        is_torch = true;
-                        //collect all torch norms
-                        
-                        const double depth  = std::max(0.0,c.depth);
-                        torch_outward += c.normal_world.normalized() * depth;
-                        max_torch_collision_depth = std::max(max_torch_collision_depth, depth);
-                    }
-                }
+        if(!constraint_set.decide(trial).satisfied){
+            std::cout<<"trial coudlnt satisfy constrinats"<<std::endl;
+            return false;
+        }
+        return true;
 
-                if(is_torch){
-                    // do some profile standoff nudging
-                    std::cout<<"torch in collision"<<std::endl;
-                    torch_outward.normalize();
-                    const Eigen::Vector3d displacement = (std::max(0.0,max_torch_collision_depth) + clearance) * torch_outward;
-                    
-                    Eigen::Isometry3d trial_pose =  candidate.getGlobalLinkTransform(plasma_link_);
-                    trial_pose.translation()+=displacement;
+    }
 
-                    std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
-                    2.0);
 
-                    if(!trial.setFromIK(joint_model_group_,trial_pose,plasma_link_,consistency_limits,0.05)){
-                        std::cerr<<"ik trial pose failed" <<std::endl;
-                        return false;
-                    }
-                }
-                else{
-                const auto* link = robot_model_->getLinkModel(worst->robot_link);
+
+
+bool CutPlanner::proposeTorchNudge(moveit::core::RobotState trial,
+        std::vector<RobotWorkpieceContact> contacts){
+        constexpr double clearance = 0.002;              
+        Eigen::Vector3d torch_outward = Eigen::Vector3d::Zero();
+        double max_torch_collision_depth = 0.0;
+        for (const auto & c : contacts){
+            if(c.robot_link == plasma_link_){
+                //collect all torch norms
+                const double depth  = std::max(0.0,c.depth);
+                torch_outward += c.normal_world.normalized() * depth;
+                max_torch_collision_depth = std::max(max_torch_collision_depth, depth);
+            }
+        }
+       
+        // do some profile standoff nudging
+        std::cout<<"torch in collision"<<std::endl;
+        torch_outward.normalize();
+        const Eigen::Vector3d displacement = (std::max(0.0,max_torch_collision_depth) + clearance) * torch_outward;
+        
+        Eigen::Isometry3d trial_pose =  trial.getGlobalLinkTransform(plasma_link_);
+        trial_pose.translation()+=displacement;
+
+        std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
+        2.0);
+
+        if(!trial.setFromIK(joint_model_group_,trial_pose,plasma_link_,consistency_limits,0.05)){
+            std::cerr<<"ik trial pose failed" <<std::endl;
+            return false;
+        }
+        return true;
+    }
+
+bool CutPlanner::proposeJacobeanStep(moveit::core::RobotState trial,
+std::vector<RobotWorkpieceContact> contacts){
+
+    const auto worst = std::max_element(contacts.begin(),contacts.end(),
+            [](const auto& a, const auto& b){
+                return a.depth< b.depth;
+            });
+
+
+            const auto* link = robot_model_->getLinkModel(worst->robot_link);
                 const Eigen::Vector3d contact_pt = worst->pos_world;
-                const Eigen::Isometry3d& T_World_Link = candidate.getGlobalLinkTransform(link);
+                const Eigen::Isometry3d& T_World_Link = trial.getGlobalLinkTransform(link);
                 const Eigen::Vector3d contact_local = T_World_Link.inverse() * contact_pt;
 
 
                 Eigen::MatrixXd J_contact;
-                if(!candidate.getJacobian(joint_model_group_,
+                if(!trial.getJacobian(joint_model_group_,
                     link,contact_local, J_contact)){
                         std::cerr<<"couldnt get contact jacobian"<<std::endl;
                         return false;
@@ -206,7 +214,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
 
                 Eigen::MatrixXd J_tcp;
                 const auto* tcp_link = robot_model_->getLinkModel(plasma_link_);
-                if(!candidate.getJacobian(joint_model_group_,tcp_link,Eigen::Vector3d::Zero(),
+                if(!trial.getJacobian(joint_model_group_,tcp_link,Eigen::Vector3d::Zero(),
                 J_tcp)){
                     std::cerr<<"couldnt get tcp jacobian"<<std::endl;
                     return false;
@@ -219,6 +227,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
 
                 constexpr double lambda_tcp = 1.0;
                 constexpr double lambda_q = 1e-3;
+                constexpr double clearance = 0.002;
                 
                 // delta p is the normal direction * however deep the contact is plus some tiny clearance
                 const Eigen::Vector3d delta_p = (std::max(0.0,worst->depth) + clearance)* worst->normal_world;
@@ -235,7 +244,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                 }
 
                 std::vector<double> q;
-                candidate.copyJointGroupPositions(joint_model_group_,q);
+                trial.copyJointGroupPositions(joint_model_group_,q);
                 if(q.size()!=static_cast<std::size_t>(dq.size())){
                     std::cerr<<"not right number of joints in q"<<std::endl;
                     return false;
@@ -250,37 +259,63 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                     q[i] += dq[static_cast<Eigen::Index>(i)];
                 }
                 trial.setJointGroupPositions(joint_model_group_,q);
-            }
+    return true;    
+
+
+} 
+
+
+bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
+            const Eigen::Isometry3d& nominal_tcp_pose,
+            const moveit_msgs::msg::Constraints& constraints,
+            const collision_detection::CollisionResult& collision_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene) const{
                 
+                /// decide from collision state if its a torch or body collision
+                // two strategies if torch -> nudge point away within constraint 
+                // if body, use contact jacobean solve min distance adjustment problem
                 
-                trial.update();
-                if(!trial.satisfiesBounds(joint_model_group_)){
-                    std::cerr<<"applying dq didnt work, out of bounds"<<std::endl;
-                    return false;
+                moveit::core::RobotState trial(candidate);
+                
+                for (unsigned int iter = 0; iter<5; iter++){
+                    const auto collision = checkCol(trial,p_scene);
+                    if(!collision.collision){
+                        if(constraintsSatisfied(trial,constraints,p_scene)){
+                            //
+                            candidate= trial;
+                            return true;
+                        }
+                        return false;
+                    }
+
+                    std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision_state);
+                    bool torch_nudge = false;
+                    if(contacts.empty()){
+                        std::cerr<<"no workpiece contacts"<<std::endl;
+                        return false;
+                    }
+                    // decide which strategy first:
+                    //
+                    const bool torch_collision = std::any_of(contacts.begin(),contacts.end(),[&](const auto& c){
+                        return c.robot_link == plasma_link_;
+                    });
+                    bool updated = false;
+                    if(torch_collision){
+                        updated = proposeTorchNudge(trial,contacts);
+                    }
+                    else{
+                        updated = proposeJacobeanStep(trial,contacts);
+                    }
+                    if(!updated){
+                        return false;
+                    }
+                    trial.update();
+                   
+                    }
+                
+                    return false;     
                 }
-
-                // check kinematic constraint satisfaction
-
-                kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
-                constraint_set.add(constraints, p_scene->getTransforms());
-                if(!constraint_set.decide(trial).satisfied){
-                    std::cout<<"contact nudging pushes out of constraint space"<<std::endl;
-                    return false;
-                }
-
-
-                // another collision detection round:
-                auto res = checkCol(trial,p_scene);
-                if(!res.collision){
-                    candidate=  trial;
-                    return true;
-                }
-                return false; // or iterate a bunch more times and require depth decreases
-            
-
-}
-
-
+                    
 bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
             moveit::core::RobotState& state,
             const moveit::core::RobotState& reference_state,
@@ -324,7 +359,6 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
 
                 for (unsigned int i=0; i<100; i++){
                    
-
                     Eigen::Vector3d cand_position;
                     Eigen::Quaterniond cand_orn;
 
@@ -340,12 +374,15 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
                     2.0);
                     if(!candidate.setFromIK(joint_model_group_,cand_pose,plasma_link_,consistency_limits,0.05)){
-                        // std::cerr<<"ik failed" <<std::endl;
+                        std::cerr<<"ik failed for sample "<<i<<std::endl;
                         continue;
                     }
                     candidate.update();
                     // collision stuff:
+
+                   
                     auto col_res = checkCol(candidate,p_scene);
+
                     if(col_res.collision){
                         // for (const auto& [pair, contacts]: col_res.contacts){
                         //     std::cout<<"    "<<
@@ -358,23 +395,12 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                         }
                     }
                     candidate.update();
-                    if(!candidate.satisfiesBounds(joint_model_group_)){
-                        std::cout<<"fixed sample "<<i<<" doesnt satisfy model group bounds"<<std::endl;
-                        continue;
-                    }
-                    if(!constraint_set.add(constraints,p_scene->getTransforms())){
-                        std::cout<<"fixed sample "<<i<<" couldnt add constraints"<<std::endl;
-                        continue;
-                    }
-
-                    if(!constraint_set.decide(candidate).satisfied){
-                        std::cout<<"fixed sample "<<i<<" coudlnt satisfy constrinats"<<std::endl;
-                        continue;
-                    }
+                    
                     if(!p_scene->isStateColliding(candidate,planning_group_)){
                         std::cout<<"fixed sample "<<i<<" still in collision"<<std::endl;
                         continue;
                     }
+                    std::cout<<"fixed sample "<<i<<"is collision free"<<std::endl;
                     
                     // if(!sampler->sample(candidate, reference_state,1)) continue;
                     double cost = CutPlanner::dq_cost(reference_state, candidate);
@@ -394,8 +420,6 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                 state = best;
                 return true;
 
-
-
                 // constexpr unsigned int max_attempts=  100;
                 // if(!sampler->sample(state,reference_state,max_attempts)){
                 //     return false;
@@ -404,9 +428,6 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                 // return true;
 
             }
-
-
-
 
 bool CutPlanner::solveSegmentConstraints(CutSegment& segment, 
             const moveit::core::RobotState& seed_state, 
@@ -720,8 +741,17 @@ CutSegment CutPlanner::makeSegment(
     // transform to world;
     Eigen::Vector3f norm_world = world_from_profile.linear() * norm_profile;
     Eigen::Vector3f tan_world = world_from_profile.linear() * tangent_profile;
-        
-    Eigen::Vector3f start_world = world_from_profile* Eigen::Vector3f(feature.start.x(),feature.start.y(),0.0f);
+
+    Eigen::Vector3f torch_feature_start = Eigen::Vector3f(feature.start.x(),feature.start.y(),0.0f);
+    Eigen::Vector3f torch_feature_end = Eigen::Vector3f(feature.end.x(),feature.end.y(),0.0f);
+    if(feature.type == hb_perception::ProfileCutFeatureType::Web)  {
+        // apply an offset of torch rad away from start and end :
+        torch_feature_start += tangent_profile.normalized() * request.torch_diameter * 0.5;
+        torch_feature_end -= tangent_profile.normalized() * request.torch_diameter * 0.5;
+
+    }
+    
+    Eigen::Vector3f start_world = world_from_profile* torch_feature_start;
     start_world += request.standoff * norm_world;
     segment.start_pose = makeToolPose(start_world,tan_world,norm_world);
     segment.start_constraints = makePoseConstraints(segment.start_pose,request.pos_tol,request.ang_tol);
@@ -731,7 +761,7 @@ CutSegment CutPlanner::makeSegment(
     segment.approach_pose = makeToolPose(approach_world,tan_world,norm_world);
     segment.approach_constraints = makePoseConstraints(segment.approach_pose,request.pos_tol,request.ang_tol);
 
-    Eigen::Vector3f end_world = world_from_profile* Eigen::Vector3f(feature.end.x(),feature.end.y(),0.0f);
+    Eigen::Vector3f end_world = world_from_profile* torch_feature_end;
     end_world += request.standoff * norm_world;
     segment.end_pose = makeToolPose(end_world,tan_world,norm_world);
     segment.end_constraints = makePoseConstraints(segment.end_pose,request.pos_tol,request.ang_tol);

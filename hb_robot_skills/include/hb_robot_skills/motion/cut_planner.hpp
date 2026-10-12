@@ -129,7 +129,7 @@ struct CutRequest{
     float standoff = 0.0f;
     float approach_dist = 0.05f;
     float retract_dist = 0.05f;
-
+    float torch_diameter = 0.025f;
     double pos_tol = 0.003;
     double ang_tol = 0.03;
 };
@@ -196,15 +196,23 @@ class CutPlanner{
 
         float approachScore(const CutSegment& segment, const Eigen::Vector3f& tcp_pos)const;
 
-        
+        bool constraintsSatisfied(moveit::core::RobotState& trial,
+    const moveit_msgs::msg::Constraints& constraints,
+    const planning_scene::PlanningSceneConstPtr& p_scene)const;
 
+        bool proposeTorchNudge(moveit::core::RobotState trial,
+        std::vector<RobotWorkpieceContact> contacts);
+
+        bool proposeJacobeanStep(moveit::core::RobotState trial,
+        std::vector<RobotWorkpieceContact> contacts);
+            
         moveit_msgs::msg::Constraints makePoseConstraints(
             const Eigen::Isometry3d nominal_pose,
             const double pos_tol, 
             const double ang_tol
         )const;
 
-
+        
         Eigen::Isometry3d makeToolPose(
             const Eigen::Vector3f& position,
             const Eigen::Vector3f& tangent,
