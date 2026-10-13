@@ -1,8 +1,13 @@
 #include "hb_robot_perception/workpiece_extractor.hpp"
+#include "hb_robot_perception/profile_matcher.hpp"
+#include "hb_robot_perception/profile_types.hpp"
 #include <limits.h>
+#include <array>
+#include <cmath>
 #include <pcl/common/centroid.h>
 #include <pcl/common/pca.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/features/normal_3d_omp.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/common/point_tests.h>
@@ -86,6 +91,41 @@ namespace hb_perception{
             
         }
 
+        Eigen::Vector3f WorkpieceExtractor::estimateAxisFromNormals(
+            const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr& cloud,
+            float radius = 0.025f
+        )const{
+            std::vector<Eigen::Vector3f> normals;
+            if(!cloud || cloud->size()<30){
+                return Eigen::Vector3f::Zero();
+            }
+            pcl::NormalEstimationOMP<PointT, pcl::Normal>estimator;
+            estimator.setNumberOfThreads(4);
+            auto tree = std::make_shared<pcl::search::KdTree<PointT>>();
+            estimator.setSearchMethod(tree);
+            estimator.setInputCloud(cloud);
+            estimator.setRadiusSearch(radius);
+            pcl::PointCloud<pcl::Normal>output;
+            estimator.compute(output);
+            normals.reserve(output.size());
+            
+
+            Eigen::Matrix3f M = Eigen::Matrix3f::Zero();
+            for (const auto & n : output.points){
+
+               Eigen::Vector3f v(n.normal_x,n.normal_y,n.normal_z);
+               if(!v.allFinite()||v.norm()<1e-5){
+                continue;
+               }
+               const auto unit = v.normalized();
+               M.noalias() += unit * unit.transpose();
+            }
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f>eig(M);
+            return eig.eigenvectors().col(0).normalized();
+        }
+        
+
+
         bool WorkpieceExtractor::estimatePrincipalGeometry(
             const PointCloud::ConstPtr& cloud,
             WorkpieceModel& workpiece) const{
@@ -96,6 +136,7 @@ namespace hb_perception{
             Eigen::Matrix3f cov;
             pcl::computeCovarianceMatrixNormalized(*cloud,centroid4,cov);
 
+            
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(cov);
             if(solver.info()!=Eigen::Success){
                 return false;
@@ -112,6 +153,32 @@ namespace hb_perception{
             workpiece.l_axes = workpiece.p_axes.col(0);
 
             return true;
+        }
+
+        WorkpieceModel WorkpieceExtractor::withAxis(const WorkpieceModel& source, Eigen::Vector3f axis){
+            WorkpieceModel result = source;
+            axis.normalize();
+            if(axis.dot(source.l_axes)<0.0f){
+                axis=-axis;
+            }
+            Eigen::Vector3f x = source.p_axes.col(1);
+            x -= x.dot(axis)*axis;
+
+            if(x.norm() < 1e-4f){
+                x = axis.unitOrthogonal();
+
+            }
+            x.normalize();
+
+            const Eigen::Vector3f y = axis.cross(x).normalized();
+            result.l_axes = axis;
+            result.p_axes.col(0) = axis;
+            result.p_axes.col(1) = x;
+            result.p_axes.col(2) = y;
+
+            return result;
+
+
         }
 
         std::optional<WorkpieceModel> WorkpieceExtractor::extract(
@@ -249,8 +316,6 @@ namespace hb_perception{
 
 
         }
-
-
 
 
 

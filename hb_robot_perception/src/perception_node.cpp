@@ -54,6 +54,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             ob_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/ob_cloud",1);
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
+            normal_axis_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/nm_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
                 
 
@@ -185,6 +186,33 @@ class PerceptionDebugNode : public rclcpp::Node {
             return;
         }
 
+
+        Eigen::Vector3f srf_normal_axis = extractor_.estimateAxisFromNormals(wkpiece->cloud);
+        std::optional<WorkpieceModel> normal_model;
+        normal_model = extractor_.withAxis(*wkpiece,srf_normal_axis);
+        const auto pca_result = validateAxis(extractor_,matcher_,*wkpiece, profiles);
+        RCLCPP_INFO(get_logger(),"PCA: sections %d rms = %.4f, inliers = %.2f, score=%.4f",
+        pca_result.valid_sections,
+        pca_result.mean_rms,
+        pca_result.mean_inlier_fraction,
+        pca_result.score
+    );
+
+    if(normal_model){
+        const auto norm_result = validateAxis(extractor_,matcher_,*normal_model, profiles);
+        const float angle_deg = std::acos(std::clamp(std::abs(wkpiece->l_axes.normalized().dot(normal_model->l_axes.normalized())),0.0f,1.0f))*180.0f/M_PI;
+        RCLCPP_INFO(get_logger(),"Norm: sections %d rms = %.4f, inliers = %.2f, score=%.4f, degree diff %.4f",
+        norm_result.valid_sections,
+        norm_result.mean_rms,
+        norm_result.mean_inlier_fraction,
+        norm_result.score, angle_deg
+    );
+    publishAxis(normal_model->centroid,normal_model->l_axes,observation->stamp);
+        
+    }
+    
+
+
         const auto& best_match = matches.front();
 
         // observation_model_.reset();
@@ -264,6 +292,46 @@ class PerceptionDebugNode : public rclcpp::Node {
             std::lock_guard<std::mutex>lock(collision_mutex_);
             latest_cam_info_ = msg;
         }
+    }
+
+    void publishAxis(const Eigen::Vector3f& origin,
+        const Eigen::Vector3f& axis,
+        const rclcpp::Time& stamp){
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = scene_frame_;
+        marker.header.stamp = stamp;
+        marker.ns=  "normal_axis";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::ARROW;
+        marker.action =visualization_msgs::msg::Marker::ADD;
+
+        geometry_msgs::msg::Point a,b;
+
+        a.x = origin.x();
+        a.y = origin.y();
+        a.z = origin.z();
+
+        const Eigen::Vector3f end = origin + 0.25f*axis.normalized();
+        b.x = end.x();
+        b.y = end.y();
+        b.z = end.z();
+        marker.points={a,b};
+
+
+
+        marker.scale.x = 0.006;
+        marker.scale.y = 0.012;
+        marker.scale.z = 0.015;
+        marker.color.r = 1.0f;
+        marker.color.g = 0.6f;
+        marker.color.b = 0.0f;
+        marker.color.a = 1.0f;
+
+        visualization_msgs::msg::MarkerArray array_;
+        array_.markers.push_back(marker);
+        normal_axis_pub_->publish(array_);
+    
     }
 
     void publishPCA(const WorkpieceModel& model,std::string frame_id, const rclcpp::Time& observation_stamp){
@@ -409,6 +477,7 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr col_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr normal_axis_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;

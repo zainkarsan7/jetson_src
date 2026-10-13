@@ -50,6 +50,7 @@ struct WorkpieceModel{
     Eigen::Matrix3f p_axes = Eigen::Matrix3f::Identity();
     Eigen::Vector3f l_axes = Eigen::Vector3f::UnitX();
     Eigen::Vector3f eigs = Eigen::Vector3f::Zero();
+    Eigen::Vector3f srf_axis_estimate = Eigen::Vector3f::Zero();
 };
 
 inline PointCloud::Ptr depthToCloud(const sensor_msgs::msg::Image::ConstSharedPtr& depth, 
