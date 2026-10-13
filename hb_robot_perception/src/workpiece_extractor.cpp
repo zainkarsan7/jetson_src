@@ -14,6 +14,65 @@
 
 namespace hb_perception{
 
+
+AxisValidation validateAxis(
+    const WorkpieceExtractor& extractor,
+    const ProfileMatcher& matcher,
+    const WorkpieceModel& model,
+    const std::vector<ProfileModel>& profiles)
+{
+    AxisValidation result;
+    result.axis = model.l_axes;
+
+    constexpr std::array<float, 5> offsets{
+        -0.06f, -0.03f, 0.0f, 0.03f, 0.06f
+    };
+
+    float rms_sum = 0.0f;
+    float inlier_sum = 0.0f;
+
+    for (const float s : offsets)
+    {
+        const auto section =
+            extractor.extractSection(model, s, 0.015f);
+
+        if (!section || section->points_2d.size() < 30)
+            continue;
+
+        const auto matches =
+            matcher.match(*section, profiles);
+
+        if (matches.empty())
+            continue;
+
+        const auto& best = matches.front();
+
+        if (!std::isfinite(best.rms_dist))
+            continue;
+
+        ++result.valid_sections;
+        rms_sum += best.rms_dist;
+        inlier_sum += best.inlier_fraction;
+    }
+
+    if (result.valid_sections == 0)
+        return result;
+
+    result.mean_rms =
+        rms_sum / result.valid_sections;
+
+    result.mean_inlier_fraction =
+        inlier_sum / result.valid_sections;
+
+    // Diagnostic ranking, not yet a calibrated confidence score.
+    result.score =
+        result.mean_rms
+        + 0.01f * (1.0f - result.mean_inlier_fraction)
+        + 0.01f * (5 - result.valid_sections);
+
+    return result;
+}
+
         using PointT = pcl::PointXYZRGB;
         using PointCloud = pcl::PointCloud<PointT>;
         
@@ -155,7 +214,7 @@ namespace hb_perception{
             return true;
         }
 
-        WorkpieceModel WorkpieceExtractor::withAxis(const WorkpieceModel& source, Eigen::Vector3f axis){
+        WorkpieceModel WorkpieceExtractor::withAxis(const WorkpieceModel& source, Eigen::Vector3f axis)const{
             WorkpieceModel result = source;
             axis.normalize();
             if(axis.dot(source.l_axes)<0.0f){
