@@ -93,7 +93,7 @@ namespace hb_perception{
 
         Eigen::Vector3f WorkpieceExtractor::estimateAxisFromNormals(
             const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr& cloud,
-            float radius = 0.025f
+            float radius
         )const{
             std::vector<Eigen::Vector3f> normals;
             if(!cloud || cloud->size()<30){

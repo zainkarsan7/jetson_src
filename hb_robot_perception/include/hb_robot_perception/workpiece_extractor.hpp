@@ -37,7 +37,7 @@ class WorkpieceExtractor{
         float long_pos,
         float thickness)const;
 
-        Eigen::Vector3f WorkpieceExtractor::estimateAxisFromNormals(
+        Eigen::Vector3f estimateAxisFromNormals(
             const pcl::PointCloud<pcl::PointXYZRGB>::ConstPtr& cloud,
             float radius = 0.025f
         )const;
