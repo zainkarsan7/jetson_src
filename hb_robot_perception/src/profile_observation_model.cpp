@@ -111,30 +111,65 @@ namespace hb_perception{
         const float rad = config_.support_radius;
         const float rad_sq = rad * rad;
 
+        for (auto& sample: coverage_samples_){
+
+            const Eigen::Vector2f p_section = current_match_.transform * sample.position;
+            Point query;
+            query.x = p_section.x();
+            query.y = p_section.y();
+            query.z = 0.0f;
+            std::vector<int> indices;
+            std::vector<float> sq_dists;
+
+            const int found = tree.radiusSearch(
+                query,
+                rad,
+                indices,
+                sq_dists
+            );
+            if (found<=0){
+                continue;
+            }
+
+            unsigned int valid_neighbors = 0;
+            double residual_sum = 0.0;
+            for(const float d2 : sq_dists){
+                if(!std::isfinite(d2)){
+                    continue;
+                }
+                valid_neighbors++;
+                residual_sum+=std::sqrt(d2);
+            }
+            if (valid_neighbors == 0){
+                continue;
+            }
+
+            const float frame_support =  clamp01(static_cast<float>(valid_neighbors)/static_cast<float>(config_.target_neighbors));
+            sample.support = std::max(sample.support, frame_support);
+            const float frame_residual = static_cast<float>(residual_sum)/static_cast<float>(valid_neighbors);
+            
+            const uint32_t prev_count = sample.num_obs;
+            sample.mean_residual = (sample.mean_residual  * prev_count + frame_residual)/(prev_count+1);
+            sample.num_obs +=1;
+            return true;
+
+        }
 
         
-
-
-
-
-
     }
+    float ProfileObservationModel::coverageFraction()const{
+            if(coverage_samples_.empty()){
+                return 0.0f;
+            }
+            std::size_t supported = 0;
 
+            for (const auto& sample: coverage_samples_){
+                if(sample.support>=0.75f){
+                    ++supported;
+                }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            }
+            return static_cast<float>(supported)/static_cast<float>(coverage_samples_.size());
+        }
 
 }

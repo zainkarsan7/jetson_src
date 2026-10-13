@@ -17,7 +17,7 @@ find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters segmentation search)
+find_package(PCL REQUIRED COMPONENTS common filters segmentation search kdtree)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
@@ -62,6 +62,7 @@ pcl_common
 pcl_filters
 pcl_segmentation
 pcl_search
+pcl_kdtree
 )  
 
 add_executable(perception_node

@@ -14,6 +14,7 @@
 #include <hb_robot_perception/profile_matcher.hpp>
 #include <hb_robot_perception/profile_library.hpp>
 #include <hb_robot_perception/profile_types.hpp>
+#include <hb_robot_perception/profile_observation_model.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
@@ -54,10 +55,13 @@ class PerceptionDebugNode : public rclcpp::Node {
             wk_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/wk_cloud",1);
             mk_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/wk_axes",1);
             sc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/section_cloud",1);
+                
+
             // auto col_pub_qos =rclcpp::SensorDataQoS().keep_last(1);
             // col_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/perception/collision_cloud",col_pub_qos);
 
             auto pe_qos = rclcpp::QoS(1).reliable().transient_local();
+            coverage_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profile_coverage",pe_qos);
 
             profile_marker_pub_ =create_publisher<visualization_msgs::msg::MarkerArray>("/perception/profiles",pe_qos);
 
@@ -129,9 +133,12 @@ class PerceptionDebugNode : public rclcpp::Node {
         
         RCLCPP_INFO(get_logger(),"latest observation %.6f is %.3f",observation->stamp.seconds(), (now() - observation->stamp).seconds());
         
-        
+        if(observation->stamp <= last_processed_stamp_){
+            return;
+        }
         last_processed_stamp_ = observation->stamp;
         RCLCPP_INFO(get_logger(),"latest observation at %ld",observation->stamp);
+        
         
         auto cloud = observationToCloud(*observation, depth_range_);
         if(!cloud){
@@ -169,6 +176,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             RCLCPP_WARN(get_logger(),"SOMETHING WRONG IN SECTION EXTRACTION");
             return;
         }
+       
         auto profiles = ProfileLibrary::ipnProfiles();
         RCLCPP_INFO(get_logger(),"made ipn profiles");
         auto matches = matcher_.match(*section_model,profiles);
@@ -176,6 +184,25 @@ class PerceptionDebugNode : public rclcpp::Node {
             RCLCPP_INFO(get_logger(),"matching didnt work");
             return;
         }
+
+        const auto& best_match = matches.front();
+        if(active_profile_name_ != best_match.profile.name){
+            observation_model_.reset();
+            observation_model_.setMatch(best_match);
+            active_profile_name_ = best_match.profile.name;
+            RCLCPP_INFO(get_logger(),"init coverage model for %s",active_profile_name_.c_str());
+
+        }
+        if(observation_model_.integrate(*section_model)){
+            RCLCPP_INFO(get_logger(), "profile coverage %.1f over %zu boundary samples""from %zu observations",
+            observation_model_.coverage().size(),observation_model_.observationCount());
+        }
+        publishCoverage(observation_model_,section_model->frame,observation->stamp);
+
+
+
+
+
         for (const auto& match : matches){
             RCLCPP_INFO(get_logger(),"best profile %s | RMS %.2f mm | inliers %.1f | score %.3f",
           match.profile.name.c_str(), match.rms_dist,match.inlier_fraction,match.score);
@@ -318,6 +345,52 @@ class PerceptionDebugNode : public rclcpp::Node {
             cloud_pub_->publish(msg);
     }
 
+
+    void publishCoverage(const hb_perception::ProfileObservationModel& model,
+    const Eigen::Isometry3f& world_from_section,
+    const rclcpp::Time& stamp){
+
+        using Marker = visualization_msgs::msg::Marker;
+
+        visualization_msgs::msg::MarkerArray array;
+
+        Marker clear;
+        clear.action = Marker::DELETEALL;
+        array.markers.push_back(clear);
+        int id = 0;
+        for (const auto& sample: model.coverage()){
+            const Eigen::Vector2f p_section = model.match().transform * sample.position;
+            const Eigen::Vector3f p_world = world_from_section*Eigen::Vector3f(p_section.x(),p_section.y(),0.0f);
+            Marker marker;
+            marker.header.frame_id = scene_frame_;
+            marker.header.stamp = stamp;
+            marker.ns = "profile_coverage";
+            marker.id = id++;
+            marker.type = Marker::SPHERE;
+            marker.action = Marker::ADD;
+            marker.pose.position.x = p_world.x();
+            marker.pose.position.y = p_world.y();
+            marker.pose.position.z = p_world.z();
+            marker.pose.orientation.w = 1.0;
+            marker.scale.x = 0.002;
+            marker.scale.y = 0.002;
+            marker.scale.z = 0.002;
+            const float s = std::clamp(sample.support, 0.0f,1.0f);
+
+
+            marker.color.r = s<0.5f ? 1.0f: 2.0f * (1.0f*-s);
+            marker.color.g = s<0.5f ? 2.0f*s:1.0f;
+            marker.color.b = 0.0f;
+            marker.color.a = 1.0f;
+            array.markers.push_back(std::move(marker));
+
+
+        }
+        coverage_pub_->publish(array);
+
+    }
+
+
     std::string scene_frame_;
     std::string rgb_topic_;
     std::string depth_topic_;
@@ -331,9 +404,11 @@ class PerceptionDebugNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr sc_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr col_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mk_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
     moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
+
 
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr cam_info_sub_;
@@ -343,6 +418,8 @@ class PerceptionDebugNode : public rclcpp::Node {
 
     double depth_range_;
     hb_perception::ProfileMatcher matcher_;
+    hb_perception::ProfileObservationModel observation_model_;
+    std::string active_profile_name_;
     rclcpp::CallbackGroup::SharedPtr processing_group_;
     rclcpp::Time last_processed_stamp_{0,0,RCL_ROS_TIME};
 
