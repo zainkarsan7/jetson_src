@@ -8,10 +8,40 @@
 #include <hb_robot_skills/motion/exploration_types.hpp>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/robot_model/robot_model.h>
+#include "hb_robot_perception/profile_types.hpp"
+#include <moveit/planning_scene/planning_scene.h>
 
 
 
 namespace hb_robot_skills::motion{
+
+
+class NBVPlanner{
+public:
+NBVPlanner(moveit::core::RobotModelConstPtr robot_model,
+std::string planning_group,
+std::string camera_link);
+
+std::optional<ProfileViewSolution> plan(
+    const moveit::core::RobotState& start_state,
+    const ProfileInspectionRequest& request,
+    const hb_perception::ProfileMatch& profile_estimate,
+    const planning_scene::PlanningSceneConstPtr& p_scene
+)const;
+
+private:
+
+    std::vector<ProfileViewCandidate> generateCandidates(
+        const ProfileInspectionRequest& request,
+        const hb_perception::ProfileMatch& profile_estimate
+    )const;
+
+    double predictedInformationGain(
+        const ProfileViewCandidate& candidate,
+        const hb_perception::ProfileMatch& profile_estimate
+    )const;
+
+};
 
 
 class ExplorationPlanner{

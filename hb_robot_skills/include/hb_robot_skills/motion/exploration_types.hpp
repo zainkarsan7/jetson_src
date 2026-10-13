@@ -25,6 +25,44 @@ namespace hb_robot_skills::motion{
 
     };
 
+    struct ProfileInspectionRequest{
+        Eigen::Isometry3d profile_pose;
+        double cam_dist = 0.5;
+        double angular_range = 0.3;
+
+        double min_information_gain = 0.05;
+        double max_motion_cost = 3.0;
+
+        double pos_tol{0.05};
+        double roll_tol{0.1};
+
+        std::size_t num_viewpoints{1};
+
+        std::size_t num_candidates{3};
+        double ik_timeout{0.02};
+        double joint_delta{1.2};
+
+    };
+
+    struct ProfileViewCandidate{
+
+        Eigen::Isometry3d cam_pose;
+        double predicted_gain = 0.0;
+        double visibility_score = 0.0;
+        double motion_cost = 0.0;
+        double total_score = 0.0;
+
+    };
+
+    struct ProfileViewSolution{
+        moveit::core::RobotState robot_state;
+        ProfileViewCandidate candidate;
+        explicit ProfileViewSolution(const moveit::core::RobotState& state):
+        robot_state(state){}
+    };
+
+
+
     struct ViewCandidate{
         Eigen::Isometry3d nominal_pose = Eigen::Isometry3d::Identity();
         Eigen::Isometry3d candidate_pose = Eigen::Isometry3d::Identity();
