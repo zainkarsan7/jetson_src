@@ -24,11 +24,7 @@ find_package(hb_robot_interfaces REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 
-
 include_directories(include)
-
-
-
 
 add_library(hb_perception
   src/observation_buffer.cpp
@@ -37,6 +33,7 @@ add_library(hb_perception
   src/workpiece_extractor.cpp
   src/profile_matcher.cpp
   src/profile_library.cpp
+  src/profile_observation_model.cpp
 )
 
 target_include_directories(hb_perception

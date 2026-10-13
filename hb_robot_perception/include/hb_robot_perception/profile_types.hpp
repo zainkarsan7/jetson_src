@@ -1,8 +1,8 @@
 #pragma once
 
-
+#include "hb_robot_perception/perception_types.hpp"
 #include <Eigen/Geometry>
-
+#include <rclcpp/rclcpp.hpp>
 #include <limits>
 #include <string>
 #include <vector>
@@ -57,6 +57,9 @@ namespace hb_perception{
         float width = 0.0;
     };
 
+    
+
+    
 
     struct ProfileMatch{
         ProfileModel profile;
@@ -69,7 +72,7 @@ namespace hb_perception{
         float score = 0.0f;
     };
 
-
+    
 
 
 

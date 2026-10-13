@@ -25,7 +25,7 @@ std::string camera_link);
 std::optional<ProfileViewSolution> plan(
     const moveit::core::RobotState& start_state,
     const ProfileInspectionRequest& request,
-    const hb_perception::ProfileMatch& profile_estimate,
+    const hb_perception::ProfileObservationModel& observed_profile,
     const planning_scene::PlanningSceneConstPtr& p_scene
 )const;
 
@@ -40,6 +40,12 @@ private:
         const ProfileViewCandidate& candidate,
         const hb_perception::ProfileMatch& profile_estimate
     )const;
+
+    moveit::core::RobotModelConstPtr robot_model_;
+    const moveit::core::JointModelGroup* joint_model_group_;
+
+    std::string planning_group_;
+    std::string camera_link_;
 
 };
 
