@@ -84,20 +84,20 @@ namespace hb_perception{
         const SectionModel& section
     ){
 
-        if(!initialized_ || coverage_samples_.empty() || !section.cloud || section.cloud->empty()){
+        if(!initialized_ || coverage_samples_.empty() || section.points_2d.empty()){
             std::cerr<<"emtpy section model or no samples or not initialized"<<std::endl;
             return false;
         }
         using Point = pcl::PointXYZ;
         auto cloud2d = pcl::make_shared<pcl::PointCloud<Point>>();
-        cloud2d->reserve(section.cloud->size());
-        for (const auto& sp : section.cloud->points){
-            if(!std::isfinite(sp.x)|| !std::isfinite(sp.y)){
+        cloud2d->reserve(section.points_2d.size());
+        for (const auto& sp : section.points_2d){
+            if(!sp.allFinite()){
                 continue;
             }
             Point q;
-            q.x = sp.x;
-            q.y = sp.y;
+            q.x = sp.x();
+            q.y = sp.y();
             q.z = 0.0f;
             cloud2d->push_back(q);
         }
@@ -151,9 +151,12 @@ namespace hb_perception{
             const uint32_t prev_count = sample.num_obs;
             sample.mean_residual = (sample.mean_residual  * prev_count + frame_residual)/(prev_count+1);
             sample.num_obs +=1;
-            return true;
+            
 
         }
+        
+        ++num_obs_;
+        return true;
 
         
     }

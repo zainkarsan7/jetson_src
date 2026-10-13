@@ -186,17 +186,22 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
 
         const auto& best_match = matches.front();
-        if(active_profile_name_ != best_match.profile.name){
-            observation_model_.reset();
-            observation_model_.setMatch(best_match);
-            active_profile_name_ = best_match.profile.name;
-            RCLCPP_INFO(get_logger(),"init coverage model for %s",active_profile_name_.c_str());
 
-        }
-        if(observation_model_.integrate(*section_model)){
-            RCLCPP_INFO(get_logger(), "profile coverage %.1f over %zu boundary samples""from %zu observations",
-            observation_model_.coverage().size(),observation_model_.observationCount());
-        }
+        // observation_model_.reset();
+        observation_model_.setMatch(best_match);
+        observation_model_.integrate(*section_model);
+
+        // if(active_profile_name_ != best_match.profile.name){
+        //     observation_model_.reset();
+        //     observation_model_.setMatch(best_match);
+        //     active_profile_name_ = best_match.profile.name;
+        //     RCLCPP_INFO(get_logger(),"init coverage model for %s",active_profile_name_.c_str());
+
+        // }
+        // if(observation_model_.integrate(*section_model)){
+        //     RCLCPP_INFO(get_logger(), "profile coverage %.1f over %zu boundary samples""from %zu observations",
+        //     observation_model_.coverage().size(),observation_model_.observationCount());
+        // }
         publishCoverage(observation_model_,section_model->frame,observation->stamp);
 
 
@@ -378,7 +383,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             const float s = std::clamp(sample.support, 0.0f,1.0f);
 
 
-            marker.color.r = s<0.5f ? 1.0f: 2.0f * (1.0f*-s);
+            marker.color.r = s<0.5f ? 1.0f: 2.0f * (1.0f-s);
             marker.color.g = s<0.5f ? 2.0f*s:1.0f;
             marker.color.b = 0.0f;
             marker.color.a = 1.0f;
