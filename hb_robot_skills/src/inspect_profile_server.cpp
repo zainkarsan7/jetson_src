@@ -35,7 +35,7 @@ namespace hb_robot_skills{
     depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/depth_to_rgb/image_raw");
     camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
     scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
-    acquisition_timeout_ = declare_parameter<double>("acquisition timeout",2.0);
+    acquisition_timeout_ = declare_parameter<double>("acquisition_timeout",2.0);
     
 }
     void InspectProfileServer::initialize(){
@@ -46,11 +46,13 @@ namespace hb_robot_skills{
             move_group_->getRobotModel();
 
         nbv_planner_ = std::make_unique<motion::NBVPlanner>(robot_model,planning_group_,camera_link_);
-        planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(
+        
+        planning_scene_monitor_ = std::make_shared<
+        planning_scene_monitor::PlanningSceneMonitor>(
             shared_from_this(), "robot_description"
         );
         if(!planning_scene_monitor_->getPlanningScene()) throw std::runtime_error("Planning Scene Montiro failed");
-        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene")
+        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
         planning_scene_monitor_->startWorldGeometryMonitor();
         planning_scene_monitor_->startStateMonitor();
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -62,9 +64,7 @@ namespace hb_robot_skills{
         const auto qos = rclcpp::QoS(1).transient_local().reliable();
 
         display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
-        10
-        //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
-        );
+        10);
         scene_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>
         ("/profile_inspection/scene_cloud",qos);
         
@@ -182,6 +182,185 @@ InspectProfileServer::planToState(
 
     return plan;
 }
+bool InspectProfileServer::updateWorkpieceCollision(
+    const hb_perception::WorkpieceModel& workpiece)
+{
+    if (!workpiece.cloud || workpiece.cloud->empty())
+        return false;
+
+    // 1. Longitudinal direction from the smallest eigenvector
+    //    of the surface-normal covariance.
+    Eigen::Vector3f z =
+        extractor_.estimateAxisFromNormals(
+            workpiece.cloud, 0.025f);
+
+    if (!z.allFinite() || z.norm() < 1e-6f)
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Invalid normal-derived workpiece axis");
+        return false;
+    }
+
+    z.normalize();
+
+    // Keep the axis sign consistent with the extracted workpiece.
+    if (z.dot(workpiece.l_axes) < 0.0f)
+        z = -z;
+
+    // 2. Build an orthonormal frame around the normal-derived axis.
+    // Prefer the secondary PCA direction for cross-section orientation.
+    Eigen::Vector3f x =
+        workpiece.p_axes.col(1);
+
+    x -= x.dot(z) * z;
+
+    // If the projected PCA direction is degenerate, use a
+    // world-axis fallback that is not parallel to z.
+    if (!x.allFinite() || x.norm() < 1e-5f)
+    {
+        const Eigen::Vector3f reference =
+            std::abs(z.dot(Eigen::Vector3f::UnitX())) < 0.9f
+                ? Eigen::Vector3f::UnitX()
+                : Eigen::Vector3f::UnitY();
+
+        x = reference - reference.dot(z) * z;
+    }
+
+    x.normalize();
+
+    Eigen::Vector3f y = z.cross(x).normalized();
+
+    // Recompute x to remove numerical orthogonality error.
+    x = y.cross(z).normalized();
+
+    Eigen::Matrix3f R;
+    R.col(0) = x;
+    R.col(1) = y;
+    R.col(2) = z;
+
+    // 3. Project every finite cloud point into the new box frame.
+    Eigen::Vector3f min_local =
+        Eigen::Vector3f::Constant(
+            std::numeric_limits<float>::infinity());
+
+    Eigen::Vector3f max_local =
+        Eigen::Vector3f::Constant(
+            -std::numeric_limits<float>::infinity());
+
+    std::size_t valid_points = 0;
+
+    for (const auto& p : workpiece.cloud->points)
+    {
+        const Eigen::Vector3f world(p.x, p.y, p.z);
+
+        if (!world.allFinite())
+            continue;
+
+        const Eigen::Vector3f local =
+            R.transpose() * (world - workpiece.centroid);
+
+        min_local = min_local.cwiseMin(local);
+        max_local = max_local.cwiseMax(local);
+
+        ++valid_points;
+    }
+
+    if (valid_points < 30 ||
+        !min_local.allFinite() ||
+        !max_local.allFinite())
+    {
+        RCLCPP_WARN(
+            get_logger(),
+            "Insufficient points for workpiece collision box");
+        return false;
+    }
+
+    // 4. Dimensions and center from the actual point bounds.
+    const Eigen::Vector3f center_local =
+        0.5f * (min_local + max_local);
+
+    const Eigen::Vector3f center_world =
+        workpiece.centroid + R * center_local;
+
+    const Eigen::Vector3f dimensions =
+        max_local - min_local;
+
+    constexpr double padding = 0.02;  // 20 mm on each side
+
+    Eigen::Quaternionf q(R);
+    q.normalize();
+
+    // 5. Construct the MoveIt collision object.
+    moveit_msgs::msg::CollisionObject object;
+
+    object.header.frame_id = scene_frame_;
+    object.header.stamp = now();
+
+    object.id = "inspection_workpiece";
+    object.operation =
+        moveit_msgs::msg::CollisionObject::ADD;
+
+    shape_msgs::msg::SolidPrimitive box;
+    box.type = shape_msgs::msg::SolidPrimitive::BOX;
+
+    box.dimensions.resize(3);
+
+    box.dimensions[
+        shape_msgs::msg::SolidPrimitive::BOX_X] =
+        static_cast<double>(dimensions.x()) + 2.0 * padding;
+
+    box.dimensions[
+        shape_msgs::msg::SolidPrimitive::BOX_Y] =
+        static_cast<double>(dimensions.y()) + 2.0 * padding;
+
+    box.dimensions[
+        shape_msgs::msg::SolidPrimitive::BOX_Z] =
+        static_cast<double>(dimensions.z()) + 2.0 * padding;
+
+    geometry_msgs::msg::Pose pose;
+
+    pose.position.x = center_world.x();
+    pose.position.y = center_world.y();
+    pose.position.z = center_world.z();
+
+    pose.orientation.x = q.x();
+    pose.orientation.y = q.y();
+    pose.orientation.z = q.z();
+    pose.orientation.w = q.w();
+
+    object.primitives.push_back(box);
+    object.primitive_poses.push_back(pose);
+
+    // 6. Publish to the MoveIt planning scene.
+    const bool applied =
+        planning_scene_interface_.applyCollisionObject(object);
+
+    if (!applied)
+    {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Failed to apply workpiece collision object");
+        return false;
+    }
+
+    RCLCPP_INFO(
+        get_logger(),
+        "Workpiece collision box: "
+        "%.3f x %.3f x %.3f m, "
+        "%zu points",
+        box.dimensions[
+            shape_msgs::msg::SolidPrimitive::BOX_X],
+        box.dimensions[
+            shape_msgs::msg::SolidPrimitive::BOX_Y],
+        box.dimensions[
+            shape_msgs::msg::SolidPrimitive::BOX_Z],
+        valid_points);
+
+    return true;
+}
+
+
 
 bool InspectProfileServer::waitForStability()
 {
@@ -263,6 +442,20 @@ InspectProfileServer::estimateProfile()
 
     if (!workpiece)
         return std::nullopt;
+
+    
+    const Eigen::Vector3f normal_axis =
+        extractor_.estimateAxisFromNormals(
+            workpiece->cloud, 0.025f);
+
+    if (!normal_axis.allFinite() ||
+        normal_axis.norm() < 1e-6f)
+    {
+        return std::nullopt;
+    }
+
+    *workpiece =
+        extractor_.withAxis(*workpiece, normal_axis);
 
     auto section =
         extractor_.extractSection(
@@ -426,7 +619,7 @@ void InspectProfileServer::execute(
     auto result = std::make_shared<InspectProfile::Result>();
 
     result->success = false;
-    result->views_captured = 0;
+    result->viewpoints_captured = 0;
 
     scene_model_->clear();
     observation_model_.reset();
@@ -478,7 +671,7 @@ void InspectProfileServer::execute(
             return;
         }
 
-        ++result->views_captured;
+        ++result->viewpoints_captured;
 
         scene_model_->downsample(0.005f);
         publishSceneCloud();
@@ -489,7 +682,13 @@ void InspectProfileServer::execute(
         {
             publishProfile(*estimate);
             publishCoverage(estimate->section);
-
+            if (!updateWorkpieceCollision(estimate->workpiece))
+            {
+                fail(
+                    InspectProfile::Result::PLANNING_FAILED,
+                    "Could not update workpiece collision geometry");
+                return;
+            }
             RCLCPP_INFO(
                 get_logger(),
                 "View %u: %s RMS %.2f mm, inliers %.2f, "
@@ -584,10 +783,14 @@ void InspectProfileServer::execute(
             // the monitored scene for candidate checking.
             auto scene_snapshot = locked->diff();
 
+
+            
             next_view = nbv_planner_->plan(
                 *current_state,
                 request,
-                scene_snapshot);
+               observation_model_,
+               scene_snapshot
+            );
         }
 
         if (!next_view)
@@ -619,7 +822,7 @@ void InspectProfileServer::execute(
         display_msg.trajectory.push_back(
             trajectory->trajectory_
         );
-        display_traj_pub_->publish(display_msg)
+        display_traj_pub_->publish(display_msg);
 
         if (skip_motion_)
         {

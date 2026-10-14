@@ -31,7 +31,8 @@
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include <condition_variable>
-
+#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
@@ -119,6 +120,7 @@ class InspectProfileServer: public rclcpp::Node{
 
         std::unique_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
         planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+
         moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
         
         
@@ -132,26 +134,26 @@ class InspectProfileServer: public rclcpp::Node{
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_marker_pub_;
         rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
 
-        // std::string planning_group_;
-        // std::string camera_link_;
-        // double planning_time_;
-        // double stability_timeout_;
-        // std::mutex execution_mutex_;
-        // bool skip_motion_{true};
-        // bool require_plan_approval_{false};
+        std::string planning_group_;
+        std::string camera_link_;
+        double planning_time_;
+        double stability_timeout_;
+        std::mutex execution_mutex_;
+        bool skip_motion_{true};
+        bool require_plan_approval_{false};
 
-        // std::shared_ptr<hb_perception::SceneModel> scene_model_;
-        // std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
-        // // configure acquisition stuff
-        // std::string rgb_topic_;
-        // std::string depth_topic_;
-        // std::string camera_info_topic_;
-        // std::string scene_frame_;
-        // double acquisition_timeout_;
+        std::shared_ptr<hb_perception::SceneModel> scene_model_;
+        std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
+        // configure acquisition stuff
+        std::string rgb_topic_;
+        std::string depth_topic_;
+        std::string camera_info_topic_;
+        std::string scene_frame_;
+        double acquisition_timeout_;
 
-        // // tf buffer stuff
-        // std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-        // std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+        // tf buffer stuff
+        std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+        std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
         
 };
