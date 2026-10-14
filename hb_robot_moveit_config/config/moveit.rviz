@@ -14,13 +14,15 @@ Panels:
         - /MarkerArray4/Topic1
         - /MarkerArray4/Namespaces1
         - /MarkerArray5
-        - /MarkerArray5/Status1
         - /MarkerArray5/Topic1
         - /MarkerArray6
         - /MarkerArray6/Status1
         - /MarkerArray6/Topic1
         - /MarkerArray7
         - /MarkerArray7/Topic1
+        - /MarkerArray8
+        - /MarkerArray8/Status1
+        - /MarkerArray8/Topic1
       Splitter Ratio: 0.7102615833282471
     Tree Height: 418
   - Class: rviz_common/Help
@@ -628,9 +630,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        profile_boundary: true
-        profile_labels: false
-        section_observed: false
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -679,7 +679,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        normal_axis: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -691,25 +691,39 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        workpiece_pca: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /perception/wk_axes
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        profile_coverage: true
+        profile_boundary: true
+        profile_labels: true
+        section_observed: true
       Topic:
         Depth: 5
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /perception/profile_coverage
+        Value: /profile_inspection/matches
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        profile_support: true
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /profile_inspection/coverage
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /profile_inspection/camera_poses
       Value: true
   Enabled: true
   Global Options:
@@ -729,25 +743,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.022040843963623
+      Distance: 2.14939022064209
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.3501178026199341
-        Y: 1.8258211612701416
-        Z: 0.15290424227714539
+        X: -0.3777680993080139
+        Y: 1.7370771169662476
+        Z: 0.076910100877285
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4397963881492615
+      Pitch: 0.699796736240387
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.708197593688965
+      Yaw: 5.64819860458374
     Saved: ~
 Window Geometry:
   AzureKinect:

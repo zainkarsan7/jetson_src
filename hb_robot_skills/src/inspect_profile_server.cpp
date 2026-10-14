@@ -1,6 +1,7 @@
 #include "hb_robot_skills/inspect_profile_server.hpp"
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -76,7 +77,10 @@ namespace hb_robot_skills{
         profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>
         ("/profile_inspection/estimate",qos);
 
-
+        camera_pose_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+        "/profile_inspection/camera_poses",
+        qos);
+    
 
         
         action_server_ = rclcpp_action::create_server<InspectProfile>(
@@ -801,6 +805,16 @@ void InspectProfileServer::execute(
             return;
         }
 
+         publishCameraPose(
+            next_view->candidate.nominal_cam_pose,
+            "nbv_nominal",
+            0);
+
+        publishCameraPose(
+            next_view->candidate.actual_cam_pose,
+            "nbv_ik_solution",
+            10);
+
         auto trajectory = planToState(
             *current_state,
             next_view->robot_state);
@@ -904,6 +918,67 @@ void InspectProfileServer::execute(
         InspectProfile::Result::INSUFFICIENT_GEOMETRY,
         "Inspection budget exhausted without sufficient geometry");
 }
+
+void InspectProfileServer::publishCameraPose(
+    const Eigen::Isometry3d& pose,
+    const std::string& ns,
+    int id_base)
+{
+    visualization_msgs::msg::MarkerArray array;
+
+    constexpr double axis_length = 0.15;
+    constexpr double shaft_diameter = 0.006;
+    constexpr double head_diameter = 0.014;
+    constexpr double head_length = 0.02;
+
+    const std::array<std::array<float, 3>, 3> colors{{
+        {{1.0f, 0.0f, 0.0f}}, // +X forward: red
+        {{0.0f, 1.0f, 0.0f}}, // +Y left: green
+        {{0.0f, 0.0f, 1.0f}}  // +Z up: blue
+    }};
+
+    for (int i = 0; i < 3; ++i)
+    {
+        visualization_msgs::msg::Marker marker;
+
+        marker.header.frame_id = scene_frame_;
+        marker.header.stamp = now();
+        marker.ns = ns;
+        marker.id = id_base + i;
+        marker.type = visualization_msgs::msg::Marker::ARROW;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        const Eigen::Vector3d origin = pose.translation();
+        const Eigen::Vector3d endpoint =
+            origin + axis_length * pose.linear().col(i);
+
+        geometry_msgs::msg::Point start;
+        start.x = origin.x();
+        start.y = origin.y();
+        start.z = origin.z();
+
+        geometry_msgs::msg::Point end;
+        end.x = endpoint.x();
+        end.y = endpoint.y();
+        end.z = endpoint.z();
+
+        marker.points = {start, end};
+
+        marker.scale.x = shaft_diameter;
+        marker.scale.y = head_diameter;
+        marker.scale.z = head_length;
+
+        marker.color.r = colors[i][0];
+        marker.color.g = colors[i][1];
+        marker.color.b = colors[i][2];
+        marker.color.a = 1.0f;
+
+        array.markers.push_back(std::move(marker));
+    }
+
+    camera_pose_pub_->publish(array);
+}
+
 
 
 }

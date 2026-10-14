@@ -142,6 +142,8 @@ ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approv
 
 ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{standoff: 0.0, ang_tol: 0.1, pos_tol: 0.05, execute: false}" --feedback
 
+ros2 action send_goal /inspect_profile hb_robot_interfaces/action/InspectProfile "{max_views: 3, samples_per_view: 3, depth_range: 1.5, camera_standoff: 0.5}" --feedback
+
 
 ### CAMERA CALIBRATION
 

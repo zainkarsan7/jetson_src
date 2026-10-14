@@ -95,6 +95,13 @@ class InspectProfileServer: public rclcpp::Node{
             const hb_perception::WorkpieceModel& workpiece
         );
 
+
+        void publishCameraPose(
+            const Eigen::Isometry3d& pose,
+            const std::string& ns,
+            int id_base);
+
+
         struct ProfileEstimate{
             hb_perception::WorkpieceModel workpiece;
             hb_perception::SectionModel section;    
@@ -133,7 +140,8 @@ class InspectProfileServer: public rclcpp::Node{
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_marker_pub_;
         rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
-
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr camera_pose_pub_;
+    
         std::string planning_group_;
         std::string camera_link_;
         double planning_time_;

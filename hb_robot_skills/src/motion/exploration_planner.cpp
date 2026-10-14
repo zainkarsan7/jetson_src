@@ -318,18 +318,20 @@ namespace hb_robot_skills::motion{
         for (double theta: angles){
             const Eigen::Vector3d radial = std::cos(theta)*x + std::sin(theta)*y;
             const Eigen::Vector3d camera_position = request.target_world + request.cam_dist*radial;
-
+            //x axis here
             const Eigen::Vector3d forward = (request.target_world - camera_position).normalized();
-            Eigen::Vector3d right = axis.cross(forward);
-            if(right.norm() < 1e-6){
+            const Eigen::Vector3d desired_up = axis;
+            Eigen::Vector3d left = desired_up.cross(forward);
+            // Eigen::Vector3d right = axis.cross(forward);
+            if(left.norm() < 1e-6){
                 continue;
             }
-            right.normalize();
-            const Eigen::Vector3d down = forward.cross(right).normalized();
+            left.normalize();
+            const Eigen::Vector3d up = forward.cross(left).normalized();
             Eigen::Matrix3d R;
-            R.col(0) = right;
-            R.col(1) = down;
-            R.col(2) = forward;
+            R.col(0) = forward;
+            R.col(1) = left;
+            R.col(2) = up;
 
             ProfileViewCandidate candidate;
             candidate.nominal_cam_pose.linear() = R;
@@ -426,9 +428,9 @@ moveit_msgs::msg::Constraints NBVPlanner::makePoseConstraints(
             orn_constraint.orientation.z = q.z();
             orn_constraint.orientation.w = q.w();
 
-            orn_constraint.absolute_x_axis_tolerance = request.ang_tol;
+            orn_constraint.absolute_x_axis_tolerance = M_PI;
             orn_constraint.absolute_y_axis_tolerance = request.ang_tol;
-            orn_constraint.absolute_z_axis_tolerance = M_PI;
+            orn_constraint.absolute_z_axis_tolerance = request.ang_tol;
 
             orn_constraint.parameterization = moveit_msgs::msg::OrientationConstraint::ROTATION_VECTOR;
             orn_constraint.weight = 1.0;
