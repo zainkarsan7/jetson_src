@@ -160,11 +160,6 @@ bool insideExpandedProfileBounds(
         std::abs(p.y()) <= hy;
 }
 
-
-
-
-
-
 ProfileMatcher::ProfileMatcher(): params_(){}
 
 
@@ -192,10 +187,6 @@ hb_robot_interfaces::msg::ProfileEstimate ProfileMatcher::getProfileEstimateMsg(
     msg.section_thickness = section.thickness;
     msg.observation_points_count = section.points_2d.size();
     
-
-
-    
-
     return msg;
 }
 

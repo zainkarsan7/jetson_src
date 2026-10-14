@@ -1,6 +1,10 @@
 #include "hb_robot_skills/motion/trajectory_validator.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
+
+#include "moveit/kinematic_constraints/kinematic_constraint.h"
+#include "moveit/kinematic_constraints/utils.h"
+
 #include "moveit/robot_model/joint_model_group.h"
 #include "rclcpp/rclcpp.hpp"
 #include <algorithm>
@@ -261,6 +265,252 @@ namespace hb_robot_skills::motion{
                 result.n_succeeded_views ++;
             }
             return result;
+        }
+
+
+        //NBV STUFF 
+         std::vector<ProfileViewCandidate> NBVPlanner::generateCandidates(
+        const ProfileInspectionRequest& request,
+        const hb_perception::ProfileMatch& profile_estimate
+    )const{
+
+        std::vector<ProfileViewCandidate> result;
+        const Eigen::Vector3d axis = request.world_from_member.linear().col(2).normalized();
+        const Eigen::Vector3d x = request.world_from_member.linear().col(0).normalized();
+        const Eigen::Vector3d y = request.world_from_member.linear().col(1).normalized();
+
+        constexpr std::array<double,8> angles{
+            0.0,M_PI/4.0,M_PI/2.0,M_PI * 0.75, M_PI, M_PI*1.25, M_PI * 1.5, M_PI * 1.75
+        };
+
+        for (double theta: angles){
+            const Eigen::Vector3d radial = std::cos(theta)*x + std::sin(theta)*y;
+            const Eigen::Vector3d camera_position = request.target_world + request.cam_dist*radial;
+
+            const Eigen::Vector3d forward = (request.target_world - camera_position).normalized();
+            Eigen::Vector3d right = axis.cross(forward);
+            if(right.norm() < 1e-6){
+                continue;
+            }
+            right.normalize();
+            const Eigen::Vector3d down = forward.cross(right).normalized();
+            Eigen::Matrix3d R;
+            R.col(0) = right;
+            R.col(1) = down;
+            R.col(2) = forward;
+
+            ProfileViewCandidate candidate;
+            candidate.nominal_cam_pose.linear() = R;
+            candidate.nominal_cam_pose.translation() = camera_position;
+            candidate.view_constraints = makePoseConstraints(request,candidate);
+            result.push_back(candidate);
+            if(static_cast<std::size_t>(result.size())>= request.num_candidates) break;
+
+        }   
+        return result;
+
+    }
+
+
+    std::optional<ProfileViewSolution> NBVPlanner::plan(
+    const moveit::core::RobotState& start_state,
+    const ProfileInspectionRequest& request,
+    const hb_perception::ProfileObservationModel& observed_profile,
+    const planning_scene::PlanningSceneConstPtr& p_scene
+)const{
+
+    const auto candidates = generateCandidates(request,observed_profile.match());
+    std::optional<ProfileViewSolution> best;
+    double best_score = -std::numeric_limits<double>::infinity();
+
+    for (const auto& cand : candidates){
+        auto soln = solveViewConstraints(start_state,cand,request,p_scene);
+        if(!soln){
+            std::cerr<<"solution not found"<<std::endl;
+            continue;
+        }
+        soln->candidate.predicted_gain = predictedInformationGain(*soln,observed_profile.match());
+        const double score = soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
+        if(score>best_score){
+            best_score = score;
+            best = std::move(soln);
+        }
+    }
+    return best;
+
+}
+
+double NBVPlanner::predictedInformationGain(
+        const ProfileViewSolution& solution,
+        const hb_perception::ProfileMatch& profile_estimate
+    )const{
+
+
+
+        return solution.candidate.motion_cost;
+    }
+
+
+moveit_msgs::msg::Constraints NBVPlanner::makePoseConstraints(
+            const ProfileInspectionRequest& request,
+            const ProfileViewCandidate candidate
+        )const{
+            moveit_msgs::msg::Constraints constraints;
+            const std::string& ref_frame = robot_model_->getModelFrame();
+
+            moveit_msgs::msg::PositionConstraint pos_constraint;
+            pos_constraint.header.frame_id = ref_frame;
+            pos_constraint.link_name = camera_link_;
+            pos_constraint.weight = 1.0;
+            pos_constraint.target_point_offset.x=0.0;
+            pos_constraint.target_point_offset.y=0.0;
+            pos_constraint.target_point_offset.z=0.0;
+
+
+            shape_msgs::msg::SolidPrimitive sphere;
+            sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+            sphere.dimensions.resize(1);
+            sphere.dimensions[shape_msgs::msg::SolidPrimitive::SPHERE_RADIUS] = request.pos_tol;
+            geometry_msgs::msg::Pose sphere_pose;
+            sphere_pose.position.x = candidate.nominal_cam_pose.translation().x();
+            sphere_pose.position.y = candidate.nominal_cam_pose.translation().y();
+            sphere_pose.position.z = candidate.nominal_cam_pose.translation().z();
+            sphere_pose.orientation.w = 1.0;
+
+
+            //orientation stuff
+            moveit_msgs::msg::OrientationConstraint orn_constraint;
+            orn_constraint.header.frame_id = ref_frame;
+            orn_constraint.link_name = camera_link_;
+
+            const Eigen::Quaterniond q(candidate.nominal_cam_pose.linear());
+            orn_constraint.orientation.x = q.x();
+            orn_constraint.orientation.y = q.y();
+            orn_constraint.orientation.z = q.z();
+            orn_constraint.orientation.w = q.w();
+
+            orn_constraint.absolute_x_axis_tolerance = request.ang_tol;
+            orn_constraint.absolute_y_axis_tolerance = request.ang_tol;
+            orn_constraint.absolute_z_axis_tolerance = M_PI;
+
+            orn_constraint.parameterization = moveit_msgs::msg::OrientationConstraint::ROTATION_VECTOR;
+            orn_constraint.weight = 1.0;
+            constraints.orientation_constraints.push_back(orn_constraint);
+            return constraints;
+
+        }
+
+
+
+bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+            moveit::core::RobotState& state,
+            const moveit::core::RobotState& reference_state,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+            )const{
+
+                if(!p_scene){
+                    std::cerr<<"no planning scene"<<std::endl;
+                    return false;
+                }
+                auto sampler = constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(
+                    p_scene,
+                    planning_group_,
+                    constraints
+                );
+
+                auto ik_sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(sampler);
+                if(!ik_sampler){
+                    std::cerr<<"ik sampler fucked"<<std::endl;
+                    return false;
+                }
+
+                if(!sampler){
+                    std::cerr<<"samplers fucked"<<std::endl;
+                    return false;
+                }
+                
+                if(!sampler->isValid()){
+                    std::cerr<<"samplers invalid and fucked"<<std::endl;
+                    return false;
+                }
+
+                
+                moveit::core::RobotState best(reference_state);
+                double best_cost  =std::numeric_limits<double>::infinity();
+                double highest_cost = 0.0;
+                bool found = false;
+                kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+
+                for (unsigned int i=0; i<100; i++){
+                   
+                    Eigen::Vector3d cand_position;
+                    Eigen::Quaterniond cand_orn;
+
+                    if(!ik_sampler->samplePose(cand_position, cand_orn, reference_state,1)){
+                        
+                        std::cerr<<"sampler couldnt find pose"<<std::endl;
+                        continue;
+                    } 
+                    Eigen::Isometry3d cand_pose = Eigen::Isometry3d::Identity();
+                    cand_pose.translation() = cand_position;
+                    cand_pose.linear() = cand_orn.toRotationMatrix();
+                    moveit::core::RobotState ik_candidate(reference_state);
+                    std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
+                    2.0);
+                    if(!ik_candidate.setFromIK(joint_model_group_,cand_pose,camera_link_,consistency_limits,0.05)){
+                        // std::cerr<<"ik failed for sample "<<i<<std::endl;
+                        continue;
+                    }
+                    ik_candidate.update();
+
+
+                    double cost = dq_cost(reference_state, ik_candidate, joint_model_group_);
+                    if (cost<best_cost){
+                        best_cost = cost;
+                        best = ik_candidate;
+                        found = true;
+                    }
+                    if (cost>highest_cost) highest_cost = cost;
+
+                }
+                if(!found){
+                    return false;
+                }
+                std::cout<<"sampling candidates max cost:  "<<highest_cost<<"best cost: "<<best_cost<<std::endl;
+
+                state = best;
+                return true;
+
+                }
+
+
+ std::optional<ProfileViewSolution> NBVPlanner::solveViewConstraints(
+    const moveit::core::RobotState& seed_state,
+            const ProfileViewCandidate& candidate,
+            const ProfileInspectionRequest& request,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+        )const{
+
+            moveit::core::RobotState state(seed_state);
+
+            if(!sampleConstraint(candidate.view_constraints,
+                    state,
+                    seed_state,
+                    p_scene)){
+                    std::cout<<"sampling failed"<<std::endl;
+                    return std::nullopt;
+                }
+            state.update();
+
+            if(!state.satisfiesBounds(joint_model_group_)){
+                return std::nullopt;
+            }
+            ProfileViewSolution solution(state);
+            solution.candidate = candidate;
+            solution.candidate.actual_cam_pose = state.getGlobalLinkTransform(camera_link_);
+            solution.candidate.motion_cost = dq_cost(seed_state, state, joint_model_group_);
+            
+            return solution;
         }
      
  }

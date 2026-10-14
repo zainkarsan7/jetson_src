@@ -9,12 +9,26 @@
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/robot_model/robot_model.h>
 #include "hb_robot_perception/profile_types.hpp"
+#include "hb_robot_perception/profile_observation_model.hpp"
 #include <moveit/planning_scene/planning_scene.h>
+#include "moveit/kinematic_constraints/kinematic_constraint.h"
+#include "moveit/kinematic_constraints/utils.h"
+#include <moveit/constraint_samplers/constraint_sampler_manager.h>
+#include <moveit/constraint_samplers/default_constraint_samplers.h>
 
 
 
 namespace hb_robot_skills::motion{
 
+static inline double dq_cost(const moveit::core::RobotState& a, const moveit::core::RobotState& b, const moveit::core::JointModelGroup* jmg){
+                    const auto& joints = jmg->getActiveJointModels();
+                    double cost = 0.0;
+                    for (const auto * joint: joints){
+                        const double d = joint->distance(a.getJointPositions(joint),b.getJointPositions(joint));
+                        cost+= d*d; 
+                    }
+                    return cost;
+                };
 
 class NBVPlanner{
 public:
@@ -31,13 +45,30 @@ std::optional<ProfileViewSolution> plan(
 
 private:
 
+    moveit_msgs::msg::Constraints makePoseConstraints(
+            const ProfileInspectionRequest& request,
+            const ProfileViewCandidate candidate
+        )const;
+    
+    bool sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+        moveit::core::RobotState& state,
+        const moveit::core::RobotState& reference_state,
+        const planning_scene::PlanningSceneConstPtr& p_scene
+        )const;
+
+    std::optional<ProfileViewSolution> solveViewConstraints(const moveit::core::RobotState& seed_state,
+            const ProfileViewCandidate& candidate,
+            const ProfileInspectionRequest& request,
+            const planning_scene::PlanningSceneConstPtr& p_scene
+        )const;
+
     std::vector<ProfileViewCandidate> generateCandidates(
         const ProfileInspectionRequest& request,
         const hb_perception::ProfileMatch& profile_estimate
     )const;
 
     double predictedInformationGain(
-        const ProfileViewCandidate& candidate,
+        const ProfileViewSolution& solution,
         const hb_perception::ProfileMatch& profile_estimate
     )const;
 
