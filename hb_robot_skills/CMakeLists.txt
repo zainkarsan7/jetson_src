@@ -14,7 +14,10 @@ find_package(hb_robot_perception REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(moveit_core REQUIRED)
+find_package(shape_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(moveit_ros_planning REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -91,6 +94,9 @@ ament_target_dependencies(inspect_profile_server
   tf2_eigen
   sensor_msgs
   moveit_msgs
+  moveit_ros_planning
+  moveit_core
+  shape_msgs
   moveit_ros_planning_interface
   visualization_msgs
 )
