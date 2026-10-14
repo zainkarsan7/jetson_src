@@ -82,6 +82,7 @@ namespace hb_robot_skills{
         qos);
     
 
+
         
         action_server_ = rclcpp_action::create_server<InspectProfile>(
             shared_from_this(),
@@ -757,6 +758,20 @@ void InspectProfileServer::execute(
         request.target_world =
             estimate->world_from_member.translation();
 
+
+        const auto candidates =
+    nbv_planner_->debugCandidates(
+        request,
+        estimate->match);
+
+        for (std::size_t i = 0; i < candidates.size(); ++i)
+        {
+            publishCameraPose(
+                candidates[i].nominal_cam_pose,
+                "nbv_candidates",
+                static_cast<int>(100 + 3 * i));
+        }
+
         const auto current_state =
             move_group_->getCurrentState(2.0);
 
@@ -767,6 +782,8 @@ void InspectProfileServer::execute(
                 "Cannot obtain current robot state");
             return;
         }
+
+        current_state->update();
 
         std::optional<motion::ProfileViewSolution> next_view;
 
@@ -787,7 +804,7 @@ void InspectProfileServer::execute(
             // the monitored scene for candidate checking.
             auto scene_snapshot = locked->diff();
 
-
+            
             
             next_view = nbv_planner_->plan(
                 *current_state,
@@ -941,9 +958,10 @@ void InspectProfileServer::publishCameraPose(
     {
         visualization_msgs::msg::Marker marker;
 
-        marker.header.frame_id = scene_frame_;
+        marker.header.frame_id = move_group_->getRobotModel()->getModelFrame();
         marker.header.stamp = now();
         marker.ns = ns;
+        marker.pose.orientation.w=1.0;
         marker.id = id_base + i;
         marker.type = visualization_msgs::msg::Marker::ARROW;
         marker.action = visualization_msgs::msg::Marker::ADD;
@@ -975,7 +993,15 @@ void InspectProfileServer::publishCameraPose(
 
         array.markers.push_back(std::move(marker));
     }
-
+    RCLCPP_INFO(
+    get_logger(),
+    "Publishing camera pose '%s' in frame '%s' "
+    "at [%.3f, %.3f, %.3f]",
+    ns.c_str(),
+    move_group_->getRobotModel()->getModelFrame().c_str(),
+    pose.translation().x(),
+    pose.translation().y(),
+    pose.translation().z());
     camera_pose_pub_->publish(array);
 }
 

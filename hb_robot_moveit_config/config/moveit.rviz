@@ -6,6 +6,8 @@ Panels:
       Expanded:
         - /Global Options1
         - /MotionPlanning1/Scene Geometry1
+        - /TF1
+        - /TF1/Frames1
         - /AzureKinect1/Topic1
         - /DepthCloud1/Auto Size1
         - /MarkerArray2/Namespaces1
@@ -16,12 +18,10 @@ Panels:
         - /MarkerArray5
         - /MarkerArray5/Topic1
         - /MarkerArray6
-        - /MarkerArray6/Status1
         - /MarkerArray6/Topic1
         - /MarkerArray7
         - /MarkerArray7/Topic1
         - /MarkerArray8
-        - /MarkerArray8/Status1
         - /MarkerArray8/Topic1
       Splitter Ratio: 0.7102615833282471
     Tree Height: 418
@@ -330,13 +330,13 @@ Visualization Manager:
         camera_body:
           Value: false
         camera_visor:
-          Value: true
+          Value: false
         depth_camera_link:
-          Value: true
+          Value: false
         imu_link:
-          Value: true
+          Value: false
         rgb_camera_link:
-          Value: true
+          Value: false
         robot_mount:
           Value: false
         ur10e_base:
@@ -346,7 +346,7 @@ Visualization Manager:
         ur10e_base_link_inertia:
           Value: false
         ur10e_bracket_link:
-          Value: true
+          Value: false
         ur10e_flange:
           Value: false
         ur10e_forearm_link:
@@ -727,7 +727,7 @@ Visualization Manager:
       Value: true
   Enabled: true
   Global Options:
-    Background Color: 255; 255; 255
+    Background Color: 119; 118; 123
     Fixed Frame: world
     Frame Rate: 30
   Name: root
@@ -743,25 +743,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.14939022064209
+      Distance: 9.059518814086914
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.3777680993080139
-        Y: 1.7370771169662476
-        Z: 0.076910100877285
+        X: -0.2615242004394531
+        Y: 1.451096534729004
+        Z: -0.13628065586090088
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.699796736240387
+      Pitch: 0.874796450138092
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.64819860458374
+      Yaw: 6.083200454711914
     Saved: ~
 Window Geometry:
   AzureKinect:

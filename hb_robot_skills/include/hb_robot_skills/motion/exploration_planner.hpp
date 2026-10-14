@@ -44,6 +44,10 @@ std::optional<ProfileViewSolution> plan(
     const planning_scene::PlanningSceneConstPtr& p_scene
 )const;
 
+std::vector<ProfileViewCandidate> debugCandidates(
+    const ProfileInspectionRequest& request,
+    const hb_perception::ProfileMatch& profile_estimate) const;
+
 private:
 
     moveit_msgs::msg::Constraints makePoseConstraints(
