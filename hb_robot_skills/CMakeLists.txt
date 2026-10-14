@@ -79,6 +79,27 @@ hb_motion
 hb_robot_perception::hb_perception
 )
 
+add_executable(inspect_profile_server
+src/inspect_profile_server.cpp)
+
+ament_target_dependencies(inspect_profile_server 
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  sensor_msgs
+  moveit_msgs
+  moveit_ros_planning_interface
+  visualization_msgs
+)
+
+target_link_libraries(inspect_profile_server
+hb_motion
+hb_robot_perception::hb_perception
+)
+
 add_executable(cut_profile_server
 src/cut_profile_server.cpp)
 
@@ -104,6 +125,7 @@ hb_robot_perception::hb_perception
 install(
   TARGETS
     inspect_scene_server
+    inspect_profile_server
     approve_motion_server
     cut_profile_server
     hb_motion

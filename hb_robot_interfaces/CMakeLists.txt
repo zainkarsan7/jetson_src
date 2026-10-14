@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ApproveMotion.srv"
   "action/ExecuteCut.action"
   "action/InspectCut.action"
+  "action/InspectProfile.action"
   "action/InspectScene.action"
   "action/CutProfile.action"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs sensor_msgs moveit_msgs

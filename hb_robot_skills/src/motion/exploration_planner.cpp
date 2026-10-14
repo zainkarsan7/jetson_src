@@ -13,7 +13,8 @@
 #include <stdexcept>
 #include <utility>
 #include <random>
-
+#include <iostream>
+#include <array>
 
 namespace hb_robot_skills::motion{
 
@@ -269,6 +270,37 @@ namespace hb_robot_skills::motion{
 
 
         //NBV STUFF 
+
+        NBVPlanner::NBVPlanner(
+            moveit::core::RobotModelConstPtr robot_model,
+            std::string planning_group,
+            std::string camera_link
+        ):
+        robot_model_(std::move(robot_model)),
+        joint_model_group_(nullptr),
+        planning_group_(std::move(planning_group)),
+        camera_link_(std::move(camera_link))
+
+        {
+            if(!robot_model_){
+                throw std::invalid_argument("NBV Planner: robot model null");
+
+            }
+
+            joint_model_group_ = robot_model_->getJointModelGroup(planning_group_);
+            if(!joint_model_group_){
+                throw std::invalid_argument("NBV Planner: planning group doesnt exist");
+
+            }
+
+            if(!robot_model_->hasLinkModel(camera_link_)){
+                throw std::invalid_argument("NBV Planner: camera link doesnt exist");
+
+            }
+        }
+
+
+
          std::vector<ProfileViewCandidate> NBVPlanner::generateCandidates(
         const ProfileInspectionRequest& request,
         const hb_perception::ProfileMatch& profile_estimate
@@ -330,7 +362,7 @@ namespace hb_robot_skills::motion{
             continue;
         }
         soln->candidate.predicted_gain = predictedInformationGain(*soln,observed_profile.match());
-        const double score = soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
+        const double score = -  soln->candidate.motion_cost;
         if(score>best_score){
             best_score = score;
             best = std::move(soln);
@@ -377,6 +409,11 @@ moveit_msgs::msg::Constraints NBVPlanner::makePoseConstraints(
             sphere_pose.position.z = candidate.nominal_cam_pose.translation().z();
             sphere_pose.orientation.w = 1.0;
 
+            pos_constraint.constraint_region.primitives.push_back(sphere);
+            pos_constraint.constraint_region.primitive_poses.push_back(sphere_pose);
+
+            constraints.position_constraints.push_back(pos_constraint);
+   
 
             //orientation stuff
             moveit_msgs::msg::OrientationConstraint orn_constraint;
@@ -405,7 +442,8 @@ moveit_msgs::msg::Constraints NBVPlanner::makePoseConstraints(
 bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
             moveit::core::RobotState& state,
             const moveit::core::RobotState& reference_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene
+            const planning_scene::PlanningSceneConstPtr& p_scene,
+            const ProfileInspectionRequest& request
             )const{
 
                 if(!p_scene){
@@ -418,11 +456,6 @@ bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     constraints
                 );
 
-                auto ik_sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(sampler);
-                if(!ik_sampler){
-                    std::cerr<<"ik sampler fucked"<<std::endl;
-                    return false;
-                }
 
                 if(!sampler){
                     std::cerr<<"samplers fucked"<<std::endl;
@@ -434,14 +467,20 @@ bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     return false;
                 }
 
-                
+
+                auto ik_sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(sampler);
+                if(!ik_sampler){
+                    std::cerr<<"ik sampler fucked"<<std::endl;
+                    return false;
+                }
+
                 moveit::core::RobotState best(reference_state);
                 double best_cost  =std::numeric_limits<double>::infinity();
                 double highest_cost = 0.0;
                 bool found = false;
                 kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
 
-                for (unsigned int i=0; i<100; i++){
+                for (unsigned int i=0; i<request.num_samples; i++){
                    
                     Eigen::Vector3d cand_position;
                     Eigen::Quaterniond cand_orn;
@@ -463,6 +502,10 @@ bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     }
                     ik_candidate.update();
 
+                    if(!ik_candidate.satisfiesBounds(joint_model_group_)) continue;
+                    if(p_scene->isStateColliding(ik_candidate,planning_group_)) continue;
+                    if(p_scene->isStateConstrained(ik_candidate,constraints)) continue;
+
 
                     double cost = dq_cost(reference_state, ik_candidate, joint_model_group_);
                     if (cost<best_cost){
@@ -476,12 +519,12 @@ bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                 if(!found){
                     return false;
                 }
-                std::cout<<"sampling candidates max cost:  "<<highest_cost<<"best cost: "<<best_cost<<std::endl;
+            std::cout<<"sampling candidates max cost:  "<<highest_cost<<"best cost: "<<best_cost<<std::endl;
 
-                state = best;
-                return true;
+            state = best;
+            return true;
 
-                }
+            }
 
 
  std::optional<ProfileViewSolution> NBVPlanner::solveViewConstraints(
@@ -496,7 +539,8 @@ bool NBVPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
             if(!sampleConstraint(candidate.view_constraints,
                     state,
                     seed_state,
-                    p_scene)){
+                    p_scene,
+                    request)){
                     std::cout<<"sampling failed"<<std::endl;
                     return std::nullopt;
                 }

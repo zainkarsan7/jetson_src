@@ -13,6 +13,7 @@
 #include <moveit/planning_scene/planning_scene.h>
 #include "moveit/kinematic_constraints/kinematic_constraint.h"
 #include "moveit/kinematic_constraints/utils.h"
+#include "moveit_msgs/msg/constraints.hpp"
 #include <moveit/constraint_samplers/constraint_sampler_manager.h>
 #include <moveit/constraint_samplers/default_constraint_samplers.h>
 
@@ -53,10 +54,12 @@ private:
     bool sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
         moveit::core::RobotState& state,
         const moveit::core::RobotState& reference_state,
-        const planning_scene::PlanningSceneConstPtr& p_scene
+        const planning_scene::PlanningSceneConstPtr& p_scene,
+        const ProfileInspectionRequest& request
         )const;
 
-    std::optional<ProfileViewSolution> solveViewConstraints(const moveit::core::RobotState& seed_state,
+    std::optional<ProfileViewSolution> solveViewConstraints(
+        const moveit::core::RobotState& seed_state,
             const ProfileViewCandidate& candidate,
             const ProfileInspectionRequest& request,
             const planning_scene::PlanningSceneConstPtr& p_scene

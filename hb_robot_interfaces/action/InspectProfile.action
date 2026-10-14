@@ -1,0 +1,45 @@
+# Goal
+uint32 max_views
+uint32 samples_per_view
+float64 depth_range
+float64 camera_standoff
+
+---
+# Result
+bool success
+
+uint8 SUCCESS=0
+uint8 INSUFFICIENT_GEOMETRY=1
+uint8 MOTION_FAILED=2
+uint8 NO_REACHABLE_VIEW=3
+uint8 ACQUISITION_FAILED=4
+uint8 PLANNING_FAILED=5
+uint8 CANCELLED=6
+
+uint8 result_code
+string message
+
+uint8 scene_id
+uint32 viewpoints_captured
+string profile_name
+geometry_msgs/PoseStamped profile_pose
+float64 rms_error
+float64 inlier_fraction
+
+---
+# Feedback
+uint32 current_viewpoint
+uint32 total_viewpoints
+geometry_msgs/Pose current_pose
+
+uint8 ACQUIRING=0
+uint8 FITTING=1
+uint8 SELECTING_VIEW=2
+uint8 PLANNING=3
+uint8 MOVING=4
+uint8 SETTLING=5
+
+uint8 phase
+uint8 viewpoints_captured
+float64 current_rms
+string message

@@ -34,7 +34,7 @@ namespace hb_robot_skills::motion{
         Eigen::Vector3d target_world = Eigen::Vector3d::Zero();
         
         double cam_dist = 0.5;
-        double angular_range = 0.3;
+        
 
         double min_information_gain = 0.05;
         double max_motion_cost = 3.0;
@@ -42,7 +42,7 @@ namespace hb_robot_skills::motion{
         double pos_tol{0.05};
         double ang_tol{0.1};
 
-        std::size_t num_viewpoints{25};
+        std::size_t num_samples{25};
 
         std::size_t num_candidates{12};
         double ik_timeout{0.02};
