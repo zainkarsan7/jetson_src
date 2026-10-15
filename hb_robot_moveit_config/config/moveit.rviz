@@ -8,7 +8,11 @@ Panels:
         - /MotionPlanning1/Scene Geometry1
         - /TF1
         - /AzureKinect1/Topic1
+        - /DepthCloud1
         - /DepthCloud1/Auto Size1
+        - /PointCloud21
+        - /PointCloud21/Status1
+        - /PointCloud21/Topic1
         - /MarkerArray2/Namespaces1
         - /Marker1/Topic1
         - /MarkerArray4
@@ -617,11 +621,11 @@ Visualization Manager:
       Style: Points
       Topic:
         Depth: 5
-        Durability Policy: Volatile
+        Durability Policy: Transient Local
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /perception/section_cloud
+        Value: /profile_inspection/scene_cloud
       Use Fixed Frame: true
       Use rainbow: true
       Value: false
@@ -743,25 +747,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.936384916305542
+      Distance: 0.6055009961128235
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.5785884261131287
-        Y: 1.4324500560760498
-        Z: -0.014444079250097275
+        X: -0.1588715761899948
+        Y: 1.6393378973007202
+        Z: 0.27514225244522095
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.9852028489112854
+      Pitch: 1.5397963523864746
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.958195209503174
+      Yaw: 5.956375598907471
     Saved: ~
 Window Geometry:
   AzureKinect:

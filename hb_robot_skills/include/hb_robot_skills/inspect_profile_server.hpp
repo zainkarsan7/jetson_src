@@ -36,6 +36,7 @@
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
+#include <std_msgs/msg/float64.hpp>
 
 namespace hb_robot_skills{
 
@@ -143,6 +144,9 @@ class InspectProfileServer: public rclcpp::Node{
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_marker_pub_;
         rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr camera_pose_pub_;
+        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr rms_pub_;
+        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr inlier_pub_;
+        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr coverage_pub_;
     
         std::string planning_group_;
         std::string camera_link_;

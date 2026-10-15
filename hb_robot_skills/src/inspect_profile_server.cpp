@@ -77,12 +77,23 @@ namespace hb_robot_skills{
 
         coverage_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>
         ("/profile_inspection/coverage",qos);
+
         profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>
         ("/profile_inspection/estimate",qos);
 
         camera_pose_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
         "/profile_inspection/camera_poses",
         qos);
+    
+        rms_pub_ = create_publisher<std_msgs::msg::Float64>
+        ("/profile_inspection/metrics/rms_mm",10);
+        
+        inlier_pub_ = create_publisher<std_msgs::msg::Float64>
+        ("/profile_inspection/metrics/inlier_fraction",10);
+
+        coverage_pub_ = create_publisher<std_msgs::msg::Float64>(
+        "/profile_inspection/metrics/coverage",
+        10);
     
 
 
@@ -708,6 +719,19 @@ void InspectProfileServer::execute(
                 estimate->match.inlier_fraction,
                 estimate->coverage);
 
+            std_msgs::msg::Float64 rms_msg;
+            rms_msg.data = estimate->match.rms_dist * 1000.0f;
+            rms_pub_->publish(rms_msg);
+
+            std_msgs::msg::Float64 inlier_msg;
+            inlier_msg.data = estimate->match.inlier_fraction;
+            inlier_pub_->publish(inlier_msg);
+
+            std_msgs::msg::Float64 coverage_msg;
+            coverage_msg.data = estimate->coverage;
+            coverage_pub_->publish(coverage_msg);
+
+
             if (estimate->sufficient)
             {
                 result->success = true;
@@ -762,6 +786,9 @@ void InspectProfileServer::execute(
         request.target_world =
             estimate->world_from_member.translation();
 
+
+        
+
          const auto current_state =
             move_group_->getCurrentState(2.0);
 
@@ -776,13 +803,18 @@ void InspectProfileServer::execute(
         current_state->update();
 
         request.current_camera_pose = current_state->getGlobalLinkTransform(camera_link_);
+        const Eigen::Isometry3d inspection_reference_pose = current_state->getGlobalLinkTransform(camera_link_);
 
+        
+        request.reference_camera_pose= inspection_reference_pose;
 
 
         const auto candidates =
     nbv_planner_->debugCandidates(
         request,
         estimate->match);
+
+        
 
         for (std::size_t i = 0; i < candidates.size(); ++i)
         {

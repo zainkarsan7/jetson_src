@@ -118,7 +118,7 @@ AxisValidation validateAxis(
                 const float dist = centroid.head<3>().norm();
                 /// augment the distance metric here:
                 float size_metric = static_cast<float>(input->points.size())/static_cast<float>(ind.indices.size());
-                float cluster_score = dist + 0.1 * size_metric;
+                float cluster_score = dist + 0.01 * size_metric;
                 // if (dist<best_distance){
                 //     best_distance = dist;
                 //     best_ = &ind;

@@ -314,7 +314,7 @@ NBVPlanner::debugCandidates(
     )const{
 
         std::vector<ProfileViewCandidate> result;
-        const Eigen::Vector3d camera_axis = request.current_camera_pose.linear().col(2).normalized();
+        const Eigen::Vector3d camera_axis = request.reference_camera_pose.linear().col(2).normalized();
         const Eigen::Vector3d member_axis = request.world_from_member.linear().col(2).normalized();
 
         const Eigen::Vector3d x = request.world_from_member.linear().col(0).normalized();
@@ -322,7 +322,7 @@ NBVPlanner::debugCandidates(
 
         /// based on camera position
 
-        Eigen::Vector3d radial = request.current_camera_pose.translation()-request.target_world ;
+        Eigen::Vector3d radial = request.reference_camera_pose.translation()-request.target_world ;
         radial -= radial.dot(member_axis) * member_axis;
 
         if (radial.norm()<1e-6){
@@ -427,7 +427,9 @@ double NBVPlanner::predictedCoverageGain(
             continue;
         }
         soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
-        const double score = 10.0 * soln->candidate.predicted_gain -0.15*soln->candidate.motion_cost;
+        soln->candidate.total_score = 10 * soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
+        
+        const double score = soln->candidate.predicted_gain; // -0.15*soln->candidate.motion_cost;
         if(score>best_score){
             best_score = score;
             best = std::move(soln);
