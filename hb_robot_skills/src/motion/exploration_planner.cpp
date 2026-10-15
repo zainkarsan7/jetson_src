@@ -314,13 +314,13 @@ NBVPlanner::debugCandidates(
     )const{
 
         std::vector<ProfileViewCandidate> result;
-        const Eigen::Vector3d axis = request.world_from_member.linear().col(2).normalized();
-        const Eigen::Vector3d x = request.world_from_member.linear().col(0).normalized();
-        const Eigen::Vector3d y = request.world_from_member.linear().col(1).normalized();
+        const Eigen::Vector3d axis = request.current_camera_pose.linear().col(2).normalized();
+        const Eigen::Vector3d x = request.current_camera_pose.linear().col(0).normalized();
+        const Eigen::Vector3d y = request.current_camera_pose.linear().col(1).normalized();
 
         /// based on camera position
 
-        Eigen::Vector3d radial = request.current_camera_position - request.target_world;
+        Eigen::Vector3d radial = request.current_camera_pose.translation() - request.target_world;
         radial -= radial.dot(axis) * axis;
 
         if (radial.norm()<1e-6){
@@ -329,8 +329,6 @@ NBVPlanner::debugCandidates(
         radial.normalize();
 
         const Eigen::Vector3d tangent = axis.cross(radial).normalized();
-
-
 
         constexpr std::array<double,8> angles{
             0.0,-M_PI/12.0,M_PI/12.0,-M_PI /6.0, M_PI/6.0, -M_PI/3.0, M_PI/3.0

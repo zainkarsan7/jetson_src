@@ -32,7 +32,7 @@ namespace hb_robot_skills::motion{
 
         Eigen::Isometry3d world_from_member = Eigen::Isometry3d::Identity();
         Eigen::Vector3d target_world = Eigen::Vector3d::Zero();
-        Eigen::Vector3d current_camera_position = Eigen::Vector3d::Zero();
+        Eigen::Isometry3d current_camera_pose= Eigen::Isometry3d::Identity();
         double cam_dist = 0.5;
         
 

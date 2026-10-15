@@ -611,6 +611,7 @@ InspectProfileServer::makeProfileInspectionRequest(
     request.pos_tol = 0.075;
     request.ang_tol = 0.25;
     request.num_candidates = 8;
+
     return request;
 }
 
@@ -758,6 +759,22 @@ void InspectProfileServer::execute(
         request.target_world =
             estimate->world_from_member.translation();
 
+         const auto current_state =
+            move_group_->getCurrentState(2.0);
+
+        if (!current_state)
+        {
+            fail(
+                InspectProfile::Result::PLANNING_FAILED,
+                "Cannot obtain current robot state");
+            return;
+        }
+
+        current_state->update();
+
+        request.current_camera_pose = current_state->getGlobalLinkTransform(camera_link_);
+
+
 
         const auto candidates =
     nbv_planner_->debugCandidates(
@@ -822,10 +839,10 @@ void InspectProfileServer::execute(
             return;
         }
 
-         publishCameraPose(
-            next_view->candidate.nominal_cam_pose,
-            "nbv_nominal",
-            0);
+        //  publishCameraPose(
+        //     next_view->candidate.nominal_cam_pose,
+        //     "nbv_nominal",
+        //     0);
 
         publishCameraPose(
             next_view->candidate.actual_cam_pose,
