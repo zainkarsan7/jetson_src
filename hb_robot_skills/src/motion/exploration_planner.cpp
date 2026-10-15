@@ -314,23 +314,25 @@ NBVPlanner::debugCandidates(
     )const{
 
         std::vector<ProfileViewCandidate> result;
-        const Eigen::Vector3d axis = request.current_camera_pose.linear().col(2).normalized();
-        const Eigen::Vector3d x = request.current_camera_pose.linear().col(0).normalized();
-        const Eigen::Vector3d y = request.current_camera_pose.linear().col(1).normalized();
+        const Eigen::Vector3d camera_axis = request.current_camera_pose.linear().col(2).normalized();
+        const Eigen::Vector3d member_axis = request.world_from_member.linear().col(2).normalized();
+
+        const Eigen::Vector3d x = request.world_from_member.linear().col(0).normalized();
+        const Eigen::Vector3d y = request.world_from_member.linear().col(1).normalized();
 
         /// based on camera position
 
-        Eigen::Vector3d radial = request.current_camera_pose.translation() - request.target_world;
-        radial -= radial.dot(axis) * axis;
+        Eigen::Vector3d radial = request.current_camera_pose.translation()-request.target_world ;
+        radial -= radial.dot(member_axis) * member_axis;
 
         if (radial.norm()<1e-6){
             return {};
         }
         radial.normalize();
 
-        const Eigen::Vector3d tangent = axis.cross(radial).normalized();
+        const Eigen::Vector3d tangent = member_axis.cross(radial).normalized();
 
-        constexpr std::array<double,8> angles{
+        constexpr std::array<double,7> angles{
             0.0,-M_PI/12.0,M_PI/12.0,-M_PI /6.0, M_PI/6.0, -M_PI/3.0, M_PI/3.0
         };
 
@@ -339,7 +341,9 @@ NBVPlanner::debugCandidates(
             const Eigen::Vector3d camera_position = request.target_world + request.cam_dist*direction;
             //x axis here
             const Eigen::Vector3d forward = (request.target_world - camera_position).normalized();
-            const Eigen::Vector3d desired_up = axis;
+            Eigen::Vector3d desired_up = camera_axis - camera_axis.dot(forward)*forward;
+            if(desired_up.norm()<1e-6) continue;
+            desired_up.normalize();
             Eigen::Vector3d left = desired_up.cross(forward);
             // Eigen::Vector3d right = axis.cross(forward);
             if(left.norm() < 1e-6){
@@ -365,44 +369,16 @@ NBVPlanner::debugCandidates(
     }
 
 
-    std::optional<ProfileViewSolution> NBVPlanner::plan(
-    const moveit::core::RobotState& start_state,
+double NBVPlanner::predictedCoverageGain(
     const ProfileInspectionRequest& request,
-    const hb_perception::ProfileObservationModel& observed_profile,
-    const planning_scene::PlanningSceneConstPtr& p_scene
-)const{
+    const Eigen::Isometry3d& camera_pose,
+    const hb_perception::ProfileObservationModel& observation)const{
 
-    const auto candidates = generateCandidates(request,observed_profile.match());
-    std::optional<ProfileViewSolution> best;
-    double best_score = -std::numeric_limits<double>::infinity();
-
-    for (const auto& cand : candidates){
-        auto soln = solveViewConstraints(start_state,cand,request,p_scene);
-        if(!soln){
-            std::cerr<<"solution not found"<<std::endl;
-            continue;
-        }
-        soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
-        const double score = 5.0 * soln->candidate.predicted_gain -0.15*soln->candidate.motion_cost;
-        if(score>best_score){
-            best_score = score;
-            best = std::move(soln);
-        }
-    }
-    return best;
-
-}
-
-double NBVPlanner::predictedInformationGain(
-        const ProfileInspectionRequest& request,
-        const ProfileViewSolution& solution,
-        const hb_perception::ProfileObservationModel& observation
-    )const{
         double gain = 0.0;
 
         const auto& samples = observation.coverage();
         if (samples.empty()) return gain;
-        const Eigen::Vector3d& camera = solution.candidate.actual_cam_pose.translation();
+        const Eigen::Vector3d& camera = camera_pose.translation();
         for (const auto& sample: samples){
 
             const Eigen::Vector2f p_sample = observation.match().transform* sample.position;
@@ -427,6 +403,48 @@ double NBVPlanner::predictedInformationGain(
 
         }
         return gain/static_cast<double>(samples.size());
+
+    }
+
+
+
+
+    std::optional<ProfileViewSolution> NBVPlanner::plan(
+    const moveit::core::RobotState& start_state,
+    const ProfileInspectionRequest& request,
+    const hb_perception::ProfileObservationModel& observed_profile,
+    const planning_scene::PlanningSceneConstPtr& p_scene
+)const{
+
+    const auto candidates = generateCandidates(request,observed_profile.match());
+    std::optional<ProfileViewSolution> best;
+    double best_score = -std::numeric_limits<double>::infinity();
+
+    for (const auto& cand : candidates){
+        auto soln = solveViewConstraints(start_state,cand,request,p_scene);
+        if(!soln){
+            std::cerr<<"solution not found"<<std::endl;
+            continue;
+        }
+        soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
+        const double score = 10.0 * soln->candidate.predicted_gain -0.15*soln->candidate.motion_cost;
+        if(score>best_score){
+            best_score = score;
+            best = std::move(soln);
+        }
+    }
+    return best;
+
+}
+
+double NBVPlanner::predictedInformationGain(
+        const ProfileInspectionRequest& request,
+        const ProfileViewSolution& solution,
+        const hb_perception::ProfileObservationModel& observation
+    )const{
+
+        return predictedCoverageGain(request,solution.candidate.nominal_cam_pose,observation);
+        
 
     }
 

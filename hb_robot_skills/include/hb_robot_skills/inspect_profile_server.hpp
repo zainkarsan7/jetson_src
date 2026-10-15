@@ -99,7 +99,9 @@ class InspectProfileServer: public rclcpp::Node{
         void publishCameraPose(
             const Eigen::Isometry3d& pose,
             const std::string& ns,
-            int id_base);
+            int id_base,
+            std::optional<double> predicted_gain = std::nullopt
+        );
 
 
         struct ProfileEstimate{

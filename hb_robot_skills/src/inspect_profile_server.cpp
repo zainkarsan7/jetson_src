@@ -4,6 +4,9 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <optional>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <chrono>
@@ -783,24 +786,19 @@ void InspectProfileServer::execute(
 
         for (std::size_t i = 0; i < candidates.size(); ++i)
         {
+
+
+            const double gain = nbv_planner_->predictedCoverageGain( request, candidates[i].nominal_cam_pose,observation_model_);
+
             publishCameraPose(
                 candidates[i].nominal_cam_pose,
                 "nbv_candidates",
-                static_cast<int>(100 + 3 * i));
+                static_cast<int>(100 + 4 * i),
+                gain
+                );
         }
 
-        const auto current_state =
-            move_group_->getCurrentState(2.0);
-
-        if (!current_state)
-        {
-            fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "Cannot obtain current robot state");
-            return;
-        }
-
-        current_state->update();
+        
 
         std::optional<motion::ProfileViewSolution> next_view;
 
@@ -839,15 +837,15 @@ void InspectProfileServer::execute(
             return;
         }
 
-        //  publishCameraPose(
-        //     next_view->candidate.nominal_cam_pose,
-        //     "nbv_nominal",
-        //     0);
+        
 
         publishCameraPose(
             next_view->candidate.actual_cam_pose,
             "nbv_ik_solution",
-            10);
+            10,
+            next_view->candidate.predicted_gain
+        
+        );
 
         auto trajectory = planToState(
             *current_state,
@@ -956,7 +954,9 @@ void InspectProfileServer::execute(
 void InspectProfileServer::publishCameraPose(
     const Eigen::Isometry3d& pose,
     const std::string& ns,
-    int id_base)
+    int id_base,
+    std::optional<double> predicted_gain
+)
 {
     visualization_msgs::msg::MarkerArray array;
 
@@ -1010,6 +1010,34 @@ void InspectProfileServer::publishCameraPose(
 
         array.markers.push_back(std::move(marker));
     }
+
+    if(predicted_gain){
+        visualization_msgs::msg::Marker label;
+
+        label.header.frame_id = move_group_->getRobotModel()->getModelFrame();
+        label.header.stamp = now();
+        label.ns = ns;
+        label.pose.orientation.w=1.0;
+        label.id = id_base + 3;
+        label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        label.action = visualization_msgs::msg::Marker::ADD;
+        label.pose.position.x= pose.translation().x();
+        label.pose.position.y= pose.translation().y();
+        label.pose.position.z= pose.translation().z()+0.1;
+        
+        label.scale.z = 0.045;
+
+        label.color.r = 1.0f;
+        label.color.g = 1.0f;
+        label.color.b = 1.0f;
+        label.color.a = 1.0f;
+        std::ostringstream ss;
+        ss <<std::fixed<<std::setprecision(3)<<"Gain: "<<*predicted_gain;
+        label.text =ss.str();
+        
+        array.markers.push_back(std::move(label));
+    }
+
     RCLCPP_INFO(
     get_logger(),
     "Publishing camera pose '%s' in frame '%s' "

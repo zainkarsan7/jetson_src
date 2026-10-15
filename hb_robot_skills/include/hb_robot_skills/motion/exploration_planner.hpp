@@ -37,6 +37,12 @@ NBVPlanner(moveit::core::RobotModelConstPtr robot_model,
 std::string planning_group,
 std::string camera_link);
 
+
+double predictedCoverageGain(
+    const ProfileInspectionRequest& request,
+    const Eigen::Isometry3d& camera_pose,
+    const hb_perception::ProfileObservationModel& observation)const;
+
 std::optional<ProfileViewSolution> plan(
     const moveit::core::RobotState& start_state,
     const ProfileInspectionRequest& request,
