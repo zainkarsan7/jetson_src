@@ -137,7 +137,7 @@ ros2 action send_goal /inspect_scene hb_robot_interfaces/action/InspectScene \
   depth_range: 1.5
 }" --feedback
 
-ros2 service call /approve_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
+ros2 service call /approve_profile_motion hb_robot_interfaces/srv/ApproveMotion "{approve: true}"
 
 
 ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{standoff: 0.0, ang_tol: 0.1, pos_tol: 0.05, execute: false}" --feedback
