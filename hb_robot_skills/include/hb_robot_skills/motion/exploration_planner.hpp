@@ -75,8 +75,9 @@ private:
     )const;
 
     double predictedInformationGain(
+        const ProfileInspectionRequest& request,
         const ProfileViewSolution& solution,
-        const hb_perception::ProfileMatch& profile_estimate
+        const hb_perception::ProfileObservationModel& observation
     )const;
 
     moveit::core::RobotModelConstPtr robot_model_;

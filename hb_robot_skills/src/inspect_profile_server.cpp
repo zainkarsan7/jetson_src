@@ -508,9 +508,9 @@ InspectProfileServer::estimateProfile()
         (estimate.section.frame * section_from_profile)
             .cast<double>();
     estimate.sufficient =
-        best.rms_dist < 0.008f &&
-        best.inlier_fraction > 0.65f &&
-        estimate.coverage > 0.50f;
+        best.rms_dist < 0.005f &&
+        best.inlier_fraction > 0.85f &&
+        estimate.coverage > 0.65f;
 
     return estimate;
 }
@@ -608,8 +608,8 @@ InspectProfileServer::makeProfileInspectionRequest(
 {
     motion::ProfileInspectionRequest request;
     request.cam_dist = goal.camera_standoff;
-    request.pos_tol = 0.03;
-    request.ang_tol = 0.15;
+    request.pos_tol = 0.075;
+    request.ang_tol = 0.25;
     request.num_candidates = 8;
     return request;
 }

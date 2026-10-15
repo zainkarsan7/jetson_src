@@ -32,15 +32,15 @@ namespace hb_robot_skills::motion{
 
         Eigen::Isometry3d world_from_member = Eigen::Isometry3d::Identity();
         Eigen::Vector3d target_world = Eigen::Vector3d::Zero();
-        
+        Eigen::Vector3d current_camera_position = Eigen::Vector3d::Zero();
         double cam_dist = 0.5;
         
 
         double min_information_gain = 0.05;
         double max_motion_cost = 3.0;
 
-        double pos_tol{0.05};
-        double ang_tol{0.1};
+        double pos_tol{0.1};
+        double ang_tol{0.3};
 
         std::size_t num_samples{25};
 

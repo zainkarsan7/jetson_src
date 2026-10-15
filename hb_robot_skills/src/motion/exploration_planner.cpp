@@ -318,13 +318,27 @@ NBVPlanner::debugCandidates(
         const Eigen::Vector3d x = request.world_from_member.linear().col(0).normalized();
         const Eigen::Vector3d y = request.world_from_member.linear().col(1).normalized();
 
+        /// based on camera position
+
+        Eigen::Vector3d radial = request.current_camera_position - request.target_world;
+        radial -= radial.dot(axis) * axis;
+
+        if (radial.norm()<1e-6){
+            return {};
+        }
+        radial.normalize();
+
+        const Eigen::Vector3d tangent = axis.cross(radial).normalized();
+
+
+
         constexpr std::array<double,8> angles{
-            0.0,M_PI/4.0,M_PI/2.0,M_PI * 0.75, M_PI, M_PI*1.25, M_PI * 1.5, M_PI * 1.75
+            0.0,-M_PI/12.0,M_PI/12.0,-M_PI /6.0, M_PI/6.0, -M_PI/3.0, M_PI/3.0
         };
 
         for (double theta: angles){
-            const Eigen::Vector3d radial = std::cos(theta)*x + std::sin(theta)*y;
-            const Eigen::Vector3d camera_position = request.target_world + request.cam_dist*radial;
+            const Eigen::Vector3d direction = std::cos(theta)*radial + std::sin(theta)*tangent;
+            const Eigen::Vector3d camera_position = request.target_world + request.cam_dist*direction;
             //x axis here
             const Eigen::Vector3d forward = (request.target_world - camera_position).normalized();
             const Eigen::Vector3d desired_up = axis;
@@ -370,8 +384,8 @@ NBVPlanner::debugCandidates(
             std::cerr<<"solution not found"<<std::endl;
             continue;
         }
-        soln->candidate.predicted_gain = predictedInformationGain(*soln,observed_profile.match());
-        const double score = -  soln->candidate.motion_cost;
+        soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
+        const double score = 5.0 * soln->candidate.predicted_gain -0.15*soln->candidate.motion_cost;
         if(score>best_score){
             best_score = score;
             best = std::move(soln);
@@ -382,13 +396,40 @@ NBVPlanner::debugCandidates(
 }
 
 double NBVPlanner::predictedInformationGain(
+        const ProfileInspectionRequest& request,
         const ProfileViewSolution& solution,
-        const hb_perception::ProfileMatch& profile_estimate
+        const hb_perception::ProfileObservationModel& observation
     )const{
+        double gain = 0.0;
+
+        const auto& samples = observation.coverage();
+        if (samples.empty()) return gain;
+        const Eigen::Vector3d& camera = solution.candidate.actual_cam_pose.translation();
+        for (const auto& sample: samples){
+
+            const Eigen::Vector2f p_sample = observation.match().transform* sample.position;
+            const Eigen::Vector3d p_local(sample.position.x(),
+        sample.position.y(),0.0);
+            const Eigen::Vector3d p_world = request.world_from_member * p_local;
+            Eigen::Vector3d n_local(sample.normal.x(),sample.normal.y(),0.0);
+            Eigen::Vector3d n_world = request.world_from_member.linear() * n_local;
+            if(n_world.norm() <1e-8){
+                continue;
+            }
+            n_world.normalize();
+
+            Eigen::Vector3d toward_cam = camera - p_world;
+
+            if(toward_cam.norm() < 1e-8) continue;
+            toward_cam.normalize();
+            const double facing = std::max(0.0,n_world.dot(toward_cam));
+            const double missing = 1.0 - std::clamp(static_cast<double>(sample.support),0.0,1.0);
+            gain += missing * facing;
 
 
+        }
+        return gain/static_cast<double>(samples.size());
 
-        return solution.candidate.motion_cost;
     }
 
 

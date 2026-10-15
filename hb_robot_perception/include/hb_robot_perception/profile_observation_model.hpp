@@ -48,6 +48,7 @@ class ProfileObservationModel{
             }
             float coverageFraction() const;
 
+            
             const ProfileMatch& match() const{
                 return current_match_;
             }
