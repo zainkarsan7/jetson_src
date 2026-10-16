@@ -51,11 +51,11 @@ namespace crane_hardware
     hw_wheel_pos_.assign(4,0.0);
     
 
-    steps_per_unit_ = {{JointIndex::SWIVEL, 1000.0},
-                        {JointIndex::LEFT, 10000.0},
-                        {JointIndex::RIGHT, 10000.0},
-                        {JointIndex::G0, 50.0},
-                        {JointIndex::G1, 50.0}
+    steps_per_unit_ = {{JointIndex::SWIVEL, 4750.0},
+                        {JointIndex::LEFT, 4160.0},
+                        {JointIndex::RIGHT, 4160.0},
+                        {JointIndex::G0, 5730.0},
+                        {JointIndex::G1, 5730.0}
                     };
 
     if(info_.hardware_parameters.count("swivel_steps_per_unit")){

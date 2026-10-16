@@ -14,7 +14,7 @@
     <arg name="enable_accel" value="true"/>
     <arg name="unite_imu_method" value="2"/>
     <arg name="align_depth.enable" value="true"/>
-    <arg name="pointcloud.enable" value="true"/>
+    <arg name="pointcloud.enable" value="false"/>
     </include>
 
     <node pkg="crane_estimation" exec="chassis_estimator" name="chassis_pose_publisher"/>
