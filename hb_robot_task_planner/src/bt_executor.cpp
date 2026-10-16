@@ -21,7 +21,7 @@ class CutProfileNode: public BT::StatefulActionNode{
         const rclcpp::Node::SharedPtr& node): BT::StatefulActionNode(name,config), node_(node)
     {
 
-        client_ = rclcpp_action::create_client<CutProfile>(node_,"cut_profile");
+        client_ = rclcpp_action::create_client<CutProfile>(node_,"/cut_profile");
 
     }
 
@@ -34,26 +34,44 @@ class CutProfileNode: public BT::StatefulActionNode{
     }
 
     BT::NodeStatus onStart() override{
-        if(!client_->action_server_is_ready()){
-            RCLCPP_ERROR(node_->get_logger(),"server not ready/unavail");
+
+        start_time_ = std::chrono::steady_clock::now();
+        goal_sent_ = false;
+        goal_handle_.reset();
+        goal_future_ = {};
+        return BT::NodeStatus::RUNNING;
+    }
+    BT::NodeStatus onRunning() override{
+
+        if(!goal_sent_){
+            if(!client_->action_server_is_ready()){
+                const auto elapsed = std::chrono::steady_clock::now() - start_time_;
+                if(elapsed>server_timeout_){
+                    RCLCPP_ERROR(node_->get_logger(),"server timedout waiting");
             return BT::NodeStatus::FAILURE;
+                }
+            
+            return BT::NodeStatus::RUNNING;
         }
 
-        CutProfile::Goal goal;
-        if(!getInput("standoff",goal.standoff)||
-        !getInput("ang_tol",goal.ang_tol)||
-        !getInput("pos_tol",goal.pos_tol)    
-    ){
-        throw BT::RuntimeError("cutprofile input missing");
-    }
-    goal.execute = false;
-    goal_future_ = client_->async_send_goal(goal);
-    result_future_ = {};
-    goal_handle_.reset();
-    return BT::NodeStatus::RUNNING;
-    }
+        
+        
+            CutProfile::Goal goal;
+            if(!getInput("standoff",goal.standoff)||
+            !getInput("ang_tol",goal.ang_tol)||
+            !getInput("pos_tol",goal.pos_tol)    
+                ){
+                    throw BT::RuntimeError("cutprofile input missing");
+                }
+        goal.execute = false;
+        RCLCPP_INFO(node_->get_logger(),"sending a goal");
 
-    BT::NodeStatus onRunning() override{
+        goal_future_ = client_->async_send_goal(goal);
+        goal_sent_ = true;
+        
+        return BT::NodeStatus::RUNNING;
+        }
+
 
         if(!goal_handle_){
             if(goal_future_.wait_for(0s)!= std::future_status::ready){
@@ -99,6 +117,9 @@ class CutProfileNode: public BT::StatefulActionNode{
 
 
     private:
+        bool goal_sent_ = false;
+        std::chrono::steady_clock::time_point start_time_;
+        static constexpr auto server_timeout_ = std::chrono::seconds(10);
         rclcpp::Node::SharedPtr node_;
         rclcpp_action::Client<CutProfile>::SharedPtr client_;
 
