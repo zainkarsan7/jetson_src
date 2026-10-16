@@ -469,38 +469,41 @@ namespace hb_robot_skills{
         std::vector<motion::ExecutableCut> executable_cuts_;
 
 
-        for (const auto& segment : plan.segments){
-            
-            RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
+            for (const auto& segment : plan.segments){
+                
+                RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
 
-            auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
-            if(!transit_in_traj){
-                RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
-                continue;
-            }
-            auto actual_appr = getFinalState(*transit_in_traj);
-            // lin motion leadin cut retract       
-            auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
-            // return back to arbitrary start
-            if(!cut_smp){
-                RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
-                continue;
-            }
-            auto actual_retr = getFinalState(cut_smp->retract);
+                auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
+                if(!transit_in_traj){
+                    RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
+                    executable_cuts_.clear();
+                    break;
+                }
+                auto actual_appr = getFinalState(*transit_in_traj);
+                // lin motion leadin cut retract       
+                auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
+                // return back to arbitrary start
+                if(!cut_smp){
+                    RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
+                    executable_cuts_.clear();
+                    break;
+                }
+                auto actual_retr = getFinalState(cut_smp->retract);
 
-            auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
+                auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
 
-            if(!transit_out_traj){
-                RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
-                continue;
-            }
+                if(!transit_out_traj){
+                    RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
+                    executable_cuts_.clear();
+                    break;
+                }
 
-            motion::ExecutableCut ex_cut_;
-            ex_cut_.name = segment.name;
-            ex_cut_.transit_in = *transit_in_traj;
-            ex_cut_.transit_out = *transit_out_traj;
-            ex_cut_.process = *cut_smp;
-            executable_cuts_.push_back(ex_cut_);
+                motion::ExecutableCut ex_cut_;
+                ex_cut_.name = segment.name;
+                ex_cut_.transit_in = *transit_in_traj;
+                ex_cut_.transit_out = *transit_out_traj;
+                ex_cut_.process = *cut_smp;
+                executable_cuts_.push_back(ex_cut_);
 
             }
 
