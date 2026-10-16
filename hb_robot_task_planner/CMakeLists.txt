@@ -12,6 +12,25 @@ find_package(rclcpp_action REQUIRED)
 find_package(behaviortree_cpp_v3 REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
 
+include_directories()
+
+add_executable(bt_executor
+src/bt_executor.cpp)
+ament_target_dependencies(bt_executor
+  rclcpp
+  rclcpp_action
+  behaviortree_cpp_v3
+  hb_robot_interfaces
+
+)
+
+install(TARGETS bt_executor
+DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY behavior_trees
+DESTINATION share/${PROJECT_NAME})
+
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights

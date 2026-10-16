@@ -56,7 +56,7 @@ namespace hb_robot_skills{
 
 
 
-        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("perception/profile_estimate",
+        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("/profile_inspection/estimate",
         estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
         std::placeholders::_1));
 

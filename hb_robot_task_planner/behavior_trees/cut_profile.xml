@@ -1,0 +1,10 @@
+<root main_tree_to_execute="MainTree">
+    <BehaviorTree ID="MainTree">
+    <Sequence name="CutProfileDryRun">
+    <CutProfile 
+        standoff = "0.05"
+        ang_tol = "0.3"
+        pos_tol = "0.01"/>
+    </Sequence>
+    </BehaviorTree>
+</root>

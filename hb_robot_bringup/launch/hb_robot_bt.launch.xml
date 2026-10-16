@@ -1,0 +1,12 @@
+<?xml version = "1.0"?>
+<launch>
+    <node  pkg="hb_robot_task_planner"
+    exec = "bt_executor"
+    name="bt_executor"
+    output="screen"
+    >
+    <!-- <param name="color_format" value="jpeg"/> -->
+    <param name="tree_file" value="$(find-pkg-share hb_robot_task_planner)/behavior_trees/cut_profile.xml"/>
+    
+    </node>
+</launch>
