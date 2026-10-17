@@ -11,6 +11,7 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <sensor_msgs/image_encodings.hpp>
 
 namespace hb_perception{
@@ -34,11 +35,22 @@ namespace hb_perception{
         if (!cam_cloud){
             std::cout<<"failed to get observation to cloud"<<std::endl;
         }
+
+
+
         pcl::transformPointCloud(*cam_cloud,transformed_cloud_,T_scene_cam.matrix().cast<float>());
+        
+        PointCloud filtered;
+        pcl::StatisticalOutlierRemoval<PointT> sor;
+        sor.setInputCloud(std::make_shared<PointCloud>(transformed_cloud_));
+        sor.setMeanK(20);
+        sor.setStddevMulThresh(1.0);
+        sor.filter(filtered);
+        
         PointCloud voxel_downsampled_;
-        std::cout<< "PointCloud before filtering: "<< transformed_cloud_.points.size()<< " data points"<<std::endl;
+        std::cout<< "PointCloud before filtering: "<< filtered.points.size()<< " data points"<<std::endl;
         pcl::VoxelGrid<PointT> vox;
-        vox.setInputCloud(std::make_shared<PointCloud>(transformed_cloud_));
+        vox.setInputCloud(std::make_shared<PointCloud>(filtered));
         vox.setLeafSize(0.005f,0.005f,0.005f);
         vox.filter(voxel_downsampled_);
 

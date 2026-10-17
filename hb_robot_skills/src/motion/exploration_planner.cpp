@@ -381,9 +381,11 @@ double NBVPlanner::predictedCoverageGain(
         const Eigen::Vector3d& camera = camera_pose.translation();
         for (const auto& sample: samples){
 
-            const Eigen::Vector2f p_sample = observation.match().transform* sample.position;
+            // const Eigen::Vector2f p_sample = observation.match().transform* sample.position;
+
             const Eigen::Vector3d p_local(sample.position.x(),
         sample.position.y(),0.0);
+        
             const Eigen::Vector3d p_world = request.world_from_member * p_local;
             Eigen::Vector3d n_local(sample.normal.x(),sample.normal.y(),0.0);
             Eigen::Vector3d n_world = request.world_from_member.linear() * n_local;
@@ -397,6 +399,12 @@ double NBVPlanner::predictedCoverageGain(
             if(toward_cam.norm() < 1e-8) continue;
             toward_cam.normalize();
             const double facing = std::max(0.0,n_world.dot(toward_cam));
+
+
+            // const double incidence = n_world.dot(toward_cam);
+
+
+
             const double missing = 1.0 - std::clamp(static_cast<double>(sample.support),0.0,1.0);
             gain += missing * facing;
 
@@ -428,8 +436,8 @@ double NBVPlanner::predictedCoverageGain(
         }
         soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
         soln->candidate.total_score = 10 * soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
-        
-        const double score = soln->candidate.predicted_gain; // -0.15*soln->candidate.motion_cost;
+        std::cout<<"candidate gain: "<<soln->candidate.predicted_gain<<" motion cost: "<<soln->candidate.motion_cost<<" total score: "<< soln->candidate.total_score<<std::endl;
+        const double score = soln->candidate.total_score;//.predicted_gain; // -0.15*soln->candidate.motion_cost;
         if(score>best_score){
             best_score = score;
             best = std::move(soln);

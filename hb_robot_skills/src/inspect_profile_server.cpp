@@ -640,7 +640,7 @@ void InspectProfileServer::execute(
     constexpr float rms_target = 0.01;
     constexpr float inlier_fraction_target=  0.8;
     constexpr float coverage_target = 0.65;
-
+    const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectProfile::Result>();
 
@@ -702,6 +702,21 @@ void InspectProfileServer::execute(
         goal_handle->canceled(result);
         return true;
     };
+
+
+    auto publish_trajectory= [&](moveit::core::RobotState& current_state,moveit::planning_interface::MoveGroupInterface::Plan& trajectory){
+        moveit_msgs::msg::DisplayTrajectory display_msg;
+        display_msg.model_id = move_group_->getRobotModel()->getName();
+        moveit::core::robotStateToRobotStateMsg(
+            current_state,
+            display_msg.trajectory_start
+        );
+        display_msg.trajectory.push_back(
+            trajectory.trajectory_
+        );
+        display_traj_pub_->publish(display_msg);
+    };
+        
 
     // An NBV target requires at least a provisional member axis.
     std::optional<ProfileEstimate> estimate;
@@ -904,16 +919,17 @@ void InspectProfileServer::execute(
             return;
         }
 
-        moveit_msgs::msg::DisplayTrajectory display_msg;
-        display_msg.model_id = move_group_->getRobotModel()->getName();
-        moveit::core::robotStateToRobotStateMsg(
-            *current_state,
-            display_msg.trajectory_start
-        );
-        display_msg.trajectory.push_back(
-            trajectory->trajectory_
-        );
-        display_traj_pub_->publish(display_msg);
+        publish_trajectory(*current_state,*trajectory);
+        // moveit_msgs::msg::DisplayTrajectory display_msg;
+        // display_msg.model_id = move_group_->getRobotModel()->getName();
+        // moveit::core::robotStateToRobotStateMsg(
+        //     *current_state,
+        //     display_msg.trajectory_start
+        // );
+        // display_msg.trajectory.push_back(
+        //     trajectory->trajectory_
+        // );
+        // display_traj_pub_->publish(display_msg);
 
         if (skip_motion_)
         {
@@ -990,6 +1006,42 @@ void InspectProfileServer::execute(
         // Next loop iteration acquires a fresh observation
         // and refits against the accumulated scene.
     }
+
+    // ADD RETURN HOME ROUTINE
+        moveit::core::RobotState home_state(move_group_->getRobotModel());
+        const auto current_state =
+            move_group_->getCurrentState(2.0);
+
+        if (!current_state)
+        {
+            fail(
+                InspectProfile::Result::PLANNING_FAILED,
+                "Cannot obtain current robot state");
+            return;
+        }
+
+        current_state->update();
+        if(!home_state.setToDefaultValues(planning_group_,"inspection_home")){
+            fail(
+                InspectProfile::Result::PLANNING_FAILED,
+                "Cannot get inspection home");
+            return;
+
+        }
+        const auto& joint_names = jmg->getVariableNames();
+        for (const auto jn: joint_names){
+            RCLCPP_INFO(get_logger(), "home state %s: %.2f",jn,home_state.getVariablePosition(jn));
+        }
+
+        auto home_plan = planToState(*current_state,home_state);
+        publish_trajectory(*current_state,*home_plan);
+        auto exec_home_plan = move_group_->execute(*home_plan);
+        if(!static_cast<bool>(exec_home_plan)){
+                fail(
+                InspectProfile::Result::PLANNING_FAILED,
+                "Cannot move to inspection home");
+                return;
+            }
 
     if(estimate){
         result->success= true;
