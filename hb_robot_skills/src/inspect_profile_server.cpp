@@ -914,11 +914,9 @@ void InspectProfileServer::execute(
         request.target_world =
             estimate->world_from_member.translation();
 
+        const auto view_start_state = move_group_->getCurrentState(2.0);
 
-        
-
-
-        if (!current_state)
+        if (!view_start_state)
         {
             fail(
                 InspectProfile::Result::PLANNING_FAILED,
@@ -926,9 +924,9 @@ void InspectProfileServer::execute(
             return;
         }
 
-        current_state->update();
+        view_start_state->update();
 
-        request.current_camera_pose = current_state->getGlobalLinkTransform(camera_link_);
+        request.current_camera_pose = view_start_state->getGlobalLinkTransform(camera_link_);
          
         request.reference_camera_pose= inspection_reference_pose;
 
@@ -978,7 +976,7 @@ void InspectProfileServer::execute(
             
             
             next_view = nbv_planner_->plan(
-                *current_state,
+                *view_start_state,
                 request,
                observation_model_,
                scene_snapshot
@@ -1004,7 +1002,7 @@ void InspectProfileServer::execute(
         );
 
         auto trajectory = planToState(
-            *current_state,
+            *view_start_state,
             next_view->robot_state);
 
         if (!trajectory)
@@ -1015,11 +1013,11 @@ void InspectProfileServer::execute(
             return;
         }
 
-        publish_trajectory(*current_state,*trajectory);
+        publish_trajectory(*view_start_state,*trajectory);
         // moveit_msgs::msg::DisplayTrajectory display_msg;
         // display_msg.model_id = move_group_->getRobotModel()->getName();
         // moveit::core::robotStateToRobotStateMsg(
-        //     *current_state,
+        //     *view_start_state,
         //     display_msg.trajectory_start
         // );
         // display_msg.trajectory.push_back(
@@ -1027,64 +1025,18 @@ void InspectProfileServer::execute(
         // );
         // display_traj_pub_->publish(display_msg);
 
-        if (skip_motion_)
-        {
-            // Do not acquire again and call it a new viewpoint.
-            // Dry-run ends after showing the first proposed move.
-            fail(
-                InspectProfile::Result::INSUFFICIENT_GEOMETRY,
-                "Dry-run: viewpoint planned but not executed");
+        const auto view_outcome = executeApprovedPlan(
+            *view_start_state,
+            *trajectory,
+            goal_handle,
+            "inspecting profile view"
+        );
+        if(view_outcome == MotionOutcome::CANCELED){
+            canceled();
             return;
         }
-
-        if (require_plan_approval_)
-        {
-            {
-                std::lock_guard<std::mutex> approval_lock(
-                    approval_mutex_);
-                motion_approved_ = false;
-            }
-
-            RCLCPP_INFO(
-                get_logger(),
-                "Awaiting approval for inspection move %u",
-                view + 1);
-
-            while (rclcpp::ok())
-            {
-                if (canceled())
-                    return;
-
-                std::unique_lock<std::mutex> approval_lock(
-                    approval_mutex_);
-
-                if (approval_cv_.wait_for(
-                        approval_lock,
-                        100ms,
-                        [this]()
-                        {
-                            return motion_approved_;
-                        }))
-                {
-                    break;
-                }
-            }
-
-            if (!rclcpp::ok())
-                return;
-        }
-
-        if (canceled())
-            return;
-
-        const auto execution_result =
-            move_group_->execute(*trajectory);
-
-        if (!static_cast<bool>(execution_result))
-        {
-            fail(
-                InspectProfile::Result::MOTION_FAILED,
-                "Inspection camera motion failed");
+        if(view_outcome!=MotionOutcome::SUCCESS){
+            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt get to view");
             return;
         }
 
@@ -1105,10 +1057,9 @@ void InspectProfileServer::execute(
 
     // ADD RETURN HOME ROUTINE
         moveit::core::RobotState home_state(move_group_->getRobotModel());
-        const auto current_state =
-            move_group_->getCurrentState(2.0);
-
-        if (!current_state)
+        
+        const auto home_start_state = move_group_->getCurrentState(2.0);
+        if (!home_start_state)
         {
             fail(
                 InspectProfile::Result::PLANNING_FAILED,
@@ -1116,7 +1067,7 @@ void InspectProfileServer::execute(
             return;
         }
 
-        current_state->update();
+        home_start_state->update();
 
         const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
 
@@ -1134,16 +1085,15 @@ void InspectProfileServer::execute(
             RCLCPP_INFO(get_logger(), "home state %s: %.2f",jn,home_state.getVariablePosition(jn));
         }
 
-        auto home_plan = planToState(*current_state,home_state);
+        auto home_plan = planToState(*home_start_state,home_state);
 
         if(!home_plan){
             fail(InspectProfile::Result::PLANNING_FAILED, "couldnt plan home");
             return;
         }
         
-        publish_trajectory(*current_state,*home_plan);
         const auto home_outcome = executeApprovedPlan(
-            *current_state,
+            *home_start_state,
             *home_plan,
             goal_handle,
             "return to inspection home"
