@@ -40,6 +40,9 @@
 
 namespace hb_robot_skills{
 
+
+
+
 class InspectProfileServer: public rclcpp::Node{
     public:
 
@@ -51,6 +54,21 @@ class InspectProfileServer: public rclcpp::Node{
         void initialize();
 
     private:
+
+        enum class MotionOutcome{
+                SUCCESS,
+                REJECTED,
+                CANCELED,
+                FAILED
+            };
+
+        MotionOutcome executeApprovedPlan(
+            const moveit::core::RobotState& start_state,
+            const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+            const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
+            const std::string& description
+        );
+
 
     ///APPROVAL STUFF
         rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
@@ -155,6 +173,7 @@ class InspectProfileServer: public rclcpp::Node{
         std::mutex execution_mutex_;
         bool skip_motion_{true};
         bool require_plan_approval_{false};
+        bool motion_rejected_{false};
 
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
         std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;

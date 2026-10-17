@@ -165,6 +165,89 @@ void InspectProfileServer::handleAccepted(
         }).detach();
 }
 
+
+            InspectProfileServer::MotionOutcome
+InspectProfileServer::executeApprovedPlan(
+    const moveit::core::RobotState& start_state,
+    const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+    const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
+    const std::string& description)
+{
+    if (goal_handle->is_canceling())
+        return MotionOutcome::CANCELED;
+
+    moveit_msgs::msg::DisplayTrajectory display_msg;
+
+    display_msg.model_id =
+        move_group_->getRobotModel()->getName();
+
+    moveit::core::robotStateToRobotStateMsg(
+        start_state,
+        display_msg.trajectory_start);
+
+    display_msg.trajectory.push_back(plan.trajectory_);
+    display_traj_pub_->publish(display_msg);
+
+    if (skip_motion_)
+    {
+        RCLCPP_INFO(
+            get_logger(),
+            "Dry-run: planned %s; not executing",
+            description.c_str());
+
+        return MotionOutcome::REJECTED;
+    }
+
+    if (require_plan_approval_)
+    {
+        {
+            std::lock_guard<std::mutex> lock(approval_mutex_);
+            motion_approved_ = false;
+            motion_rejected_ = false;
+        }
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Awaiting approval: %s",
+            description.c_str());
+
+        std::unique_lock<std::mutex> lock(approval_mutex_);
+
+        approval_cv_.wait(lock, [&]()
+        {
+            return motion_approved_ ||
+                   motion_rejected_ ||
+                   goal_handle->is_canceling() ||
+                   !rclcpp::ok();
+        });
+
+        if (goal_handle->is_canceling())
+            return MotionOutcome::CANCELED;
+
+        if (!rclcpp::ok())
+            return MotionOutcome::FAILED;
+
+        if (motion_rejected_)
+            return MotionOutcome::REJECTED;
+    }
+
+    if (goal_handle->is_canceling())
+        return MotionOutcome::CANCELED;
+
+    const auto execution_result = move_group_->execute(plan);
+
+    if (goal_handle->is_canceling())
+        return MotionOutcome::CANCELED;
+
+    if (!static_cast<bool>(execution_result))
+        return MotionOutcome::FAILED;
+
+    return MotionOutcome::SUCCESS;
+
+
+
+        }
+
 void InspectProfileServer::handleApproval(
     const std::shared_ptr<
         hb_robot_interfaces::srv::ApproveMotion::Request> request,
@@ -174,6 +257,7 @@ void InspectProfileServer::handleApproval(
     {
         std::lock_guard<std::mutex> lock(approval_mutex_);
         motion_approved_ = request->approve;
+        motion_rejected_ = !request->approve;
     }
 
     response->accepted = true;
@@ -640,7 +724,6 @@ void InspectProfileServer::execute(
     constexpr float rms_target = 0.01;
     constexpr float inlier_fraction_target=  0.8;
     constexpr float coverage_target = 0.65;
-    const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectProfile::Result>();
 
@@ -720,6 +803,23 @@ void InspectProfileServer::execute(
 
     // An NBV target requires at least a provisional member axis.
     std::optional<ProfileEstimate> estimate;
+
+    const auto current_state =
+    move_group_->getCurrentState(2.0);
+
+    if (!current_state)
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            "Cannot obtain current robot state");
+        return;
+    }
+
+    current_state->update();
+
+    const Eigen::Isometry3d inspection_reference_pose = current_state->getGlobalLinkTransform(camera_link_);
+
+
 
     for (uint32_t view = 0; view < goal->max_views; ++view)
     {
@@ -817,8 +917,6 @@ void InspectProfileServer::execute(
 
         
 
-         const auto current_state =
-            move_group_->getCurrentState(2.0);
 
         if (!current_state)
         {
@@ -831,9 +929,7 @@ void InspectProfileServer::execute(
         current_state->update();
 
         request.current_camera_pose = current_state->getGlobalLinkTransform(camera_link_);
-        const Eigen::Isometry3d inspection_reference_pose = current_state->getGlobalLinkTransform(camera_link_);
-
-        
+         
         request.reference_camera_pose= inspection_reference_pose;
 
 
@@ -1021,6 +1117,11 @@ void InspectProfileServer::execute(
         }
 
         current_state->update();
+
+        const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
+
+
+
         if(!home_state.setToDefaultValues(planning_group_,"inspection_home")){
             fail(
                 InspectProfile::Result::PLANNING_FAILED,
@@ -1034,15 +1135,28 @@ void InspectProfileServer::execute(
         }
 
         auto home_plan = planToState(*current_state,home_state);
-        publish_trajectory(*current_state,*home_plan);
-        auto exec_home_plan = move_group_->execute(*home_plan);
-        if(!static_cast<bool>(exec_home_plan)){
-                fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "Cannot move to inspection home");
-                return;
-            }
 
+        if(!home_plan){
+            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt plan home");
+            return;
+        }
+        
+        publish_trajectory(*current_state,*home_plan);
+        const auto home_outcome = executeApprovedPlan(
+            *current_state,
+            *home_plan,
+            goal_handle,
+            "return to inspection home"
+        );
+        if(home_outcome == MotionOutcome::CANCELED){
+            canceled();
+            return;
+        }
+        if(home_outcome!=MotionOutcome::SUCCESS){
+            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt get home");
+            return;
+        }
+       
     if(estimate){
         result->success= true;
         goal_handle->succeed(result);
