@@ -731,9 +731,9 @@ void InspectProfileServer::execute(
             coverage_msg.data = estimate->coverage;
             coverage_pub_->publish(coverage_msg);
 
-
-            if (estimate->sufficient)
-            {
+                // remove the suffcienty requirement, just return the result 
+            // if (estimate->sufficient)
+            // {
                 result->success = true;
                 result->result_code =
                     InspectProfile::Result::SUCCESS;
@@ -743,6 +743,9 @@ void InspectProfileServer::execute(
 
                 result->rms_error =
                     estimate->match.rms_dist;
+
+                 result->coverage =
+                    estimate->coverage;
 
                 result->inlier_fraction =
                     estimate->match.inlier_fraction;
@@ -756,11 +759,11 @@ void InspectProfileServer::execute(
                     tf2::toMsg(estimate->world_from_member);
 
                 result->message =
-                    "Profile inspection sufficient";
+                    "Profile inspection completed";
 
                 goal_handle->succeed(result);
                 return;
-            }
+            // }
         }
 
         if (view + 1 >= goal->max_views)

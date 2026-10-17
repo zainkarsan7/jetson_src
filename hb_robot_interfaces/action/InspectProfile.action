@@ -25,6 +25,7 @@ string profile_name
 geometry_msgs/PoseStamped profile_pose
 float64 rms_error
 float64 inlier_fraction
+float64 coverage
 
 ---
 # Feedback

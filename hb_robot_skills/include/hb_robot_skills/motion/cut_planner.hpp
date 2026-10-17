@@ -102,6 +102,15 @@ struct CutSegment{
 
 };
 
+struct CutProcessParams{
+
+    double ignition_dwell_s = 0.5;
+    double post_flow_s = 0.5;
+    double cut_vel_scale = 0.05;
+    bool require_torch_ready = true;
+
+};
+
 
 struct SegmentMotionPlan{
 
@@ -115,6 +124,14 @@ struct ExecutableCut{
     moveit::planning_interface::MoveGroupInterface::Plan transit_in;
     SegmentMotionPlan process;
     moveit::planning_interface::MoveGroupInterface::Plan transit_out;
+    CutProcessParams parameters;
+};
+
+struct ExecutablePlan{
+    std::string plan_id;
+    std::string estimate_id;
+
+    std::vector<ExecutableCut> cuts;
 };
 
 struct CollisionDebugEvent{

@@ -577,53 +577,53 @@ namespace hb_robot_skills{
 
             // cutting actions happen below now that cuts are planned
         if(skip_motion_){
-            result->success = false;
+            result->success = true;
             result->message= "skipping motion, dry run planned not executed";
-            goal_handle->abort(result);
+            goal_handle->succeed(result);
             return;
 
         }
 
 
-        if(require_plan_approval_){
-            {
-                std::lock_guard<std::mutex> approval_lock(
-                    approval_mutex_);
-                motion_approved_ = false;
-            }
+        // if(require_plan_approval_){
+        //     {
+        //         std::lock_guard<std::mutex> approval_lock(
+        //             approval_mutex_);
+        //         motion_approved_ = false;
+        //     }
 
-            RCLCPP_INFO(
-                get_logger(),
-                "Awaiting approval for cutting");
+        //     RCLCPP_INFO(
+        //         get_logger(),
+        //         "Awaiting approval for cutting");
 
-            while (rclcpp::ok())
-            {
-                if (canceled())
-                    return;
+        //     while (rclcpp::ok())
+        //     {
+        //         if (canceled())
+        //             return;
 
-                std::unique_lock<std::mutex> approval_lock(
-                    approval_mutex_);
+        //         std::unique_lock<std::mutex> approval_lock(
+        //             approval_mutex_);
 
-                if (approval_cv_.wait_for(
-                        approval_lock,
-                        100ms,
-                        [this]()
-                        {
-                            return motion_approved_;
-                        }))
-                {
-                    break;
-                }
-            }
-            if (!rclcpp::ok())
-                return;
-        }
+        //         if (approval_cv_.wait_for(
+        //                 approval_lock,
+        //                 100ms,
+        //                 [this]()
+        //                 {
+        //                     return motion_approved_;
+        //                 }))
+        //         {
+        //             break;
+        //         }
+        //     }
+        //     if (!rclcpp::ok())
+        //         return;
+        // }
 
-        if (canceled())
-            return;
+        // if (canceled())
+        //     return;
 
-        const auto execution_result =
-            move_group_->execute(*trajectory);
+        // const auto execution_result =
+        //     move_group_->execute(*trajectory);
 
 
         if(!goal->execute){
@@ -635,9 +635,10 @@ namespace hb_robot_skills{
 
         
 
-        result->success = true;
-        result->message = "cut approved, exec not implemented yet";
-        goal_handle->succeed(result);
+        result->success = false;
+        result->message = "cut exec not implemented yet";
+        goal_handle->abort(result);
+        return;
 
 
     }
