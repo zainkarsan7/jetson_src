@@ -1,0 +1,1 @@
+#include "hb_robot_task_planner/nodes/inspect_profile_node.hpp"

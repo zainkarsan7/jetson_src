@@ -115,6 +115,9 @@ namespace hb_robot_skills{
         rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
         mutable std::mutex approval_mutex_;
         std::condition_variable approval_cv_;
+        std::mutex execution_mutex_;
+        bool require_plan_approval_{true};
+        bool skip_motion_{true};
         bool motion_approved_{false};
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;

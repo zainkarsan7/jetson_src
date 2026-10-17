@@ -29,8 +29,17 @@ namespace hb_robot_skills{
         }
         get_parameter("planning_time",planning_time_);
 
+
+        if(!has_parameter("require_plan_approval")){
+            require_plan_approval_ = declare_parameter<bool>("require_plan_approval",true);
+        }
+        get_parameter("require_plan_approval",require_plan_approval_);
+
+
+
+
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
-            "approve_motion",
+            "approve_cut_motion",
             std::bind(&CutProfileServer::handleApproval,this,
                 std::placeholders::_1,std::placeholders::_2)
         );  
@@ -385,18 +394,40 @@ namespace hb_robot_skills{
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
 
         //approval machienry 
-        {
-        std::lock_guard<std::mutex> lock(approval_mutex_);
-       
-            motion_approved_ = false;
-        }
-
+        
+        std::lock_guard<std::mutex> execution_lock(execution_mutex_);      
 
         //un pack / get the goal
         auto const goal = goal_handle->get_goal();
 
         //make empty result
         auto result = std::make_shared<CutProfile::Result>();
+
+        {
+        std::lock_guard<std::mutex> approval_lock(
+            approval_mutex_);
+            motion_approved_ = false;
+        }
+
+        // handy lamba expressions 
+
+        auto fail = [&](uint8_t code, const std::string& message)
+        {
+            result->success = false;
+            result->message = message;
+            goal_handle->abort(result);
+        };
+
+        auto canceled = [&]()
+        {
+            if (!goal_handle->is_canceling())
+                return false;
+
+            move_group_->stop();
+            result->message = "Cutting Motion cancelled";
+            goal_handle->canceled(result);
+            return true;
+        };
 
         publishFeedback(goal_handle,"acquiring estimate");
 
@@ -544,6 +575,56 @@ namespace hb_robot_skills{
         publishVisualization(plan,estimate.header.frame_id);
         publishFeedback(goal_handle,"visualizing, cut plan ready");
 
+            // cutting actions happen below now that cuts are planned
+        if(skip_motion_){
+            result->success = false;
+            result->message= "skipping motion, dry run planned not executed";
+            goal_handle->abort(result);
+            return;
+
+        }
+
+
+        if(require_plan_approval_){
+            {
+                std::lock_guard<std::mutex> approval_lock(
+                    approval_mutex_);
+                motion_approved_ = false;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "Awaiting approval for cutting");
+
+            while (rclcpp::ok())
+            {
+                if (canceled())
+                    return;
+
+                std::unique_lock<std::mutex> approval_lock(
+                    approval_mutex_);
+
+                if (approval_cv_.wait_for(
+                        approval_lock,
+                        100ms,
+                        [this]()
+                        {
+                            return motion_approved_;
+                        }))
+                {
+                    break;
+                }
+            }
+            if (!rclcpp::ok())
+                return;
+        }
+
+        if (canceled())
+            return;
+
+        const auto execution_result =
+            move_group_->execute(*trajectory);
+
 
         if(!goal->execute){
             result->success = true;
@@ -552,28 +633,7 @@ namespace hb_robot_skills{
             return;
         }
 
-        motion_approved_ = true;
-        if(motion_approved_){
-        RCLCPP_INFO(get_logger(),"skip motion is true, no motion executed");
-        }
-        else{
-            RCLCPP_INFO(get_logger(),"skip motion is false, awaiting approval");
-            while(rclcpp::ok()){
-                if (goal_handle->is_canceling()){
-                    result->message = "cancelled";
-                    goal_handle->canceled(result);
-                    return;
-                }
-                std::unique_lock<std::mutex> approval_lock(
-                    approval_mutex_
-                );
-                if(approval_cv_.wait_for(approval_lock, std::chrono::milliseconds(100),
-            [this](){return motion_approved_;})){break;}
-
-            }
-            RCLCPP_INFO(get_logger(),"motion_approved");
-            publishFeedback(goal_handle, "motion approved");
-        }
+        
 
         result->success = true;
         result->message = "cut approved, exec not implemented yet";
@@ -1264,11 +1324,13 @@ void CutProfileServer::publishCollisionDebug(
 void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
         std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
             
-            {std::lock_guard<std::mutex> lock(approval_mutex_);
-            motion_approved_ = request->approve;}
+            {
+                std::lock_guard<std::mutex> lock(approval_mutex_);
+            motion_approved_ = request->approve;
+        }
             response->accepted = true;
             if(request->approve){
-                response->message = "motion approved";
+                response->message = request->approve ? "motion approved" : "motion denied";
                 approval_cv_.notify_all();
             }
             else{
