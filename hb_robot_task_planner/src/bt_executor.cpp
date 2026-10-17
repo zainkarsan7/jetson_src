@@ -276,9 +276,9 @@ class ProfileValidNode: public BT::ConditionNode{
             BT::InputPort<float>("coverage"),
             BT::InputPort<float>("inlier_fraction"),
             BT::InputPort<float>("rms_error"),   
-            BT::InputPort<float>("rms_max",0.01),
-            BT::InputPort<float>("inlier_min",0.8),
-            BT::InputPort<float>("coverage_min",0.65)
+            BT::InputPort<float>("rms_max"),
+            BT::InputPort<float>("inlier_min"),
+            BT::InputPort<float>("coverage_min")
 
         };
     }

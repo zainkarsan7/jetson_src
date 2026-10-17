@@ -629,11 +629,17 @@ InspectProfileServer::makeProfileInspectionRequest(
     return request;
 }
 
+
+
 void InspectProfileServer::execute(
     const std::shared_ptr<GoalHandleInspectProfile> goal_handle)
 {
     std::lock_guard<std::mutex> execution_lock(
         execution_mutex_);
+
+    constexpr float rms_target = 0.01;
+    constexpr float inlier_fraction_target=  0.8;
+    constexpr float coverage_target = 0.65;
 
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectProfile::Result>();
@@ -649,6 +655,32 @@ void InspectProfileServer::execute(
             approval_mutex_);
         motion_approved_ = false;
     }
+    auto fillInspectionResult = [&](const std::optional<ProfileEstimate>& estimate, InspectProfile::Result::SharedPtr result){
+        
+        result->profile_name =
+            estimate->match.profile.name;
+
+        result->rms_error =
+            estimate->match.rms_dist;
+
+            result->coverage =
+            estimate->coverage;
+
+        result->inlier_fraction =
+            estimate->match.inlier_fraction;
+
+        result->profile_pose.header.frame_id =
+            scene_frame_;
+
+        result->profile_pose.header.stamp = now();
+
+        result->profile_pose.pose =
+            tf2::toMsg(estimate->world_from_member);
+
+        result->message =
+            "Profile inspection completed";
+    
+    };
 
     auto fail = [&](uint8_t code, const std::string& message)
     {
@@ -731,39 +763,17 @@ void InspectProfileServer::execute(
             coverage_msg.data = estimate->coverage;
             coverage_pub_->publish(coverage_msg);
 
+
+            fillInspectionResult(estimate, result);
                 // remove the suffcienty requirement, just return the result 
             // if (estimate->sufficient)
-            // {
-                result->success = true;
-                result->result_code =
-                    InspectProfile::Result::SUCCESS;
+            const bool quality_met = estimate && estimate->match.rms_dist < rms_target &&
+            estimate->coverage > coverage_target &&
+            estimate->match.inlier_fraction > inlier_fraction_target;
+            if(quality_met){
+                break;
+            }
 
-                result->profile_name =
-                    estimate->match.profile.name;
-
-                result->rms_error =
-                    estimate->match.rms_dist;
-
-                 result->coverage =
-                    estimate->coverage;
-
-                result->inlier_fraction =
-                    estimate->match.inlier_fraction;
-
-                result->profile_pose.header.frame_id =
-                    scene_frame_;
-
-                result->profile_pose.header.stamp = now();
-
-                result->profile_pose.pose =
-                    tf2::toMsg(estimate->world_from_member);
-
-                result->message =
-                    "Profile inspection completed";
-
-                goal_handle->succeed(result);
-                return;
-            // }
         }
 
         if (view + 1 >= goal->max_views)
@@ -981,9 +991,18 @@ void InspectProfileServer::execute(
         // and refits against the accumulated scene.
     }
 
-    fail(
+    if(estimate){
+        result->success= true;
+        goal_handle->succeed(result);
+        result->result_code =
+            InspectProfile::Result::SUCCESS;
+            }
+    else{
+ fail(
         InspectProfile::Result::INSUFFICIENT_GEOMETRY,
         "Inspection budget exhausted without sufficient geometry");
+    }
+   
 }
 
 void InspectProfileServer::publishCameraPose(

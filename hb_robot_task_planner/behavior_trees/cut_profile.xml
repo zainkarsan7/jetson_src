@@ -6,17 +6,17 @@
      samples_per_view = "3"
      depth_range = "0.75"   
      camera_standoff = "0.4"
-     rms_error = "{profile_rms}",
-     inlier_fraction = "{profile_inlier}",
+     rms_error = "{profile_rms}"
+     inlier_fraction = "{profile_inlier}"
      coverage = "{profile_coverage}"
      />
     
     <ProfileValid
-        rms = "{profile_rms}",
-        inlier = "{profile_inlier}",
-        coverage = "{profile_coverage}",
-        rms_max = "0.01",
-        inlier_min = "0.8",
+        rms_error = "{profile_rms}"
+        inlier_fraction = "{profile_inlier}"
+        coverage = "{profile_coverage}"
+        rms_max = "0.01"
+        inlier_min = "0.8"
         coverage_min = "0.65"
     />
 
