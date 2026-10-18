@@ -14,6 +14,12 @@ controller_manager:
     joint_position_controller:
       type: position_controllers/JointGroupPositionController
 
+    gimbal_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+    wheel_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
     crane_homing_controller:
       type: crane_controllers/CraneHomingController
 
@@ -37,11 +43,26 @@ joint_position_controller:
       - swivel_joint
       - LG_lin_joint
       - RG_lin_joint
+      - G0_joint
+      - G1_joint
 
 swivel_position_controller:
   ros__parameters:
     joints:
       - swivel_joint
+
+gimbal_position_controller:
+  ros__parameters:
+    joints:
+      - G0_joint
+      - G1_joint
+
+wheel_velocity_controller:
+  ros__parameters:
+    joints:
+      - G0_wheels
+      - G1_wheels
+
     
 pid_controller:
   ros__parameters: 
