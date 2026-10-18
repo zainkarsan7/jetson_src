@@ -18,7 +18,7 @@ controller_manager:
       type: position_controllers/JointGroupPositionController
 
     wheel_velocity_controller:
-      type: velocity_controllers/JointGroupVelocityController
+      type: crane_controllers/CraneWheelController
 
     crane_homing_controller:
       type: crane_controllers/CraneHomingController
@@ -35,8 +35,6 @@ crane_attitude_controller:
     marker_pose_topic: /Trolley/left_spreader_transform
     imu_topic: /Spreader_NS_RS/Spreader_RS/imu
     
-
-
 joint_position_controller:
   ros__parameters:
     joints:

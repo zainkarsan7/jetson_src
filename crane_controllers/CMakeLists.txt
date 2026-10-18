@@ -32,6 +32,7 @@ find_package(crane_estimation REQUIRED)
 add_library(${PROJECT_NAME} SHARED
   src/crane_homing_controller.cpp
   src/crane_attitude_controller.cpp
+  src/crane_wheel_controller.cpp
   )
 
 target_include_directories(${PROJECT_NAME}

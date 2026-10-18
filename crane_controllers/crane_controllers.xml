@@ -20,4 +20,13 @@
     </description>
     </class>
 
+    <class 
+    name="crane_controllers/CraneWheelController"
+    type="crane_controllers::CraneWheelController"
+    base_class_type="controller_interface::ControllerInterface">
+    <description>
+    "Wheel Velocity Controller"
+    </description>
+    </class>
+
 </library>
