@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+
+
+<launch>
+    
+   
+    <executable cmd = "ros2 bag record --include-unpublished-topics -o hb_rob_bag_test_2
+    /tf
+    /tf_static
+    /joint_states
+    /robot_description
+    /robot_description_semantic
+    /display_planned_path
+    /monitored_planning_scene
+    /collision_object
+    /motion_plan_request
+    /scene_cloud
+    /profile_inspection/matches
+    /profile_inspection/coverage
+    /attached_collision_cloud
+    /cut_profile/cut_plan
+    /cut_profile/debug_collision
+    /cut_profile/debug_robot
+    /inspection_viewpoints
+    /profile_inspection/camera_poses
+    /profile_inspection/scene_cloud
+    /profile_inspection/metrics/coverage
+    /profile_inspection/metrics/inlier_fraction
+    /profile_inspection/metrics/rms_mm
+
+    
+    
+    
+    
+    "
+    output="screen" 
+    shell = "true"/>
+
+</launch>

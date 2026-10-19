@@ -16,6 +16,10 @@
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include <pcl/filters/voxel_grid.h>
+#include <moveit_msgs/msg/collision_object.hpp>
+#include <shape_msgs/msg/solid_primitive.hpp>
+
 
 
 namespace hb_robot_skills{ 
@@ -284,7 +288,80 @@ InspectProfileServer::planToState(
         return std::nullopt;
 
     return plan;
+
+    
 }
+
+bool InspectProfileServer::updateCuttingCollision(
+            const ProfileEstimate& estimate
+        ){
+
+            using CollisionObject = moveit_msgs::msg::CollisionObject;
+            using Primitive = shape_msgs::msg::SolidPrimitive;
+            using PointT = pcl::PointXYZRGB;
+            using PointCloud = pcl::PointCloud<PointT>;
+
+            if(!estimate.workpiece.cloud || !estimate.workpiece.cloud->points.empty() || estimate.section.cloud->points.empty()){
+                RCLCPP_ERROR(get_logger(),"emtpy wk piece or section cloud");
+                return false;
+            }
+
+        auto makeSphereObject = [&](const std::string id, const PointCloud& cloud, double rad){
+            moveit_msgs::msg::CollisionObject col_obj;
+            col_obj.header.frame_id=scene_frame_;
+            col_obj.id = id;
+            col_obj.operation = moveit_msgs::msg::CollisionObject::ADD;
+            
+            col_obj.primitives.reserve(cloud.size());
+            col_obj.primitive_poses.reserve(cloud.size());
+            for (const auto& p: cloud.points){
+                if(!std::isfinite(p.x)|| !std::isfinite(p.y) || !std::isfinite(p.z)){
+                    continue;
+                }
+                shape_msgs::msg::SolidPrimitive sphere;
+                sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+                sphere.dimensions = {rad};
+                geometry_msgs::msg::Pose pose;
+                pose.orientation.w = 1.0;
+                pose.position.x = p.x;
+                pose.position.y = p.y;
+                pose.position.z = p.z;
+                col_obj.primitives.push_back(sphere);
+                col_obj.primitive_poses.push_back(pose);
+            
+            }
+        return col_obj;
+        };
+
+        pcl::VoxelGrid<PointT> voxel;
+        voxel.setInputCloud(estimate.workpiece.cloud);
+        voxel.setLeafSize(0.02f,0.02f,0.02f);
+        PointCloud coarse_wkpiece_cloud;
+        voxel.filter(coarse_wkpiece_cloud);
+
+        auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.012);
+        auto fine_section_col = makeSphereObject("wk_section_collision",*estimate.section.cloud,0.003);
+        if(coarse_wkpiece_col.primitives.empty() || fine_section_col.primitives.empty()){
+            RCLCPP_ERROR(get_logger(),"emtpy collision objects");
+                return false;
+        }
+        CollisionObject remove_box;
+        remove_box.header.frame_id = scene_frame_;
+        remove_box.id = "inspection_workpiece";
+        remove_box.operation = CollisionObject::REMOVE;
+
+        const std::vector<CollisionObject> objects{remove_box,coarse_wkpiece_col,fine_section_col};
+        if(!planning_scene_interface_.applyCollisionObjects(objects)){
+            RCLCPP_ERROR(get_logger(),"couldnt update planning scene");
+                return false;
+        }
+
+
+        RCLCPP_INFO(get_logger(),"updated planning scene with coarse points %zu, and section points %zu", coarse_wkpiece_col.primitives.size(),
+        fine_section_col.primitives.size() );
+        return true;
+  
+        }
 bool InspectProfileServer::updateWorkpieceCollision(
     const hb_perception::WorkpieceModel& workpiece)
 {
@@ -886,6 +963,8 @@ void InspectProfileServer::execute(
             estimate->coverage > coverage_target &&
             estimate->match.inlier_fraction > inlier_fraction_target;
             if(quality_met){
+
+
                 break;
             }
 
@@ -1106,18 +1185,24 @@ void InspectProfileServer::execute(
             fail(InspectProfile::Result::PLANNING_FAILED, "couldnt get home");
             return;
         }
-       
-    if(estimate){
-        result->success= true;
-        goal_handle->succeed(result);
-        result->result_code =
-            InspectProfile::Result::SUCCESS;
-            }
-    else{
- fail(
+
+    if(!estimate){
+        fail(
         InspectProfile::Result::INSUFFICIENT_GEOMETRY,
         "Inspection budget exhausted without sufficient geometry");
     }
+
+    if(!updateCuttingCollision(*estimate)){
+        fail(InspectProfile::Result::PLANNING_FAILED, "couldnt update collision stuff");
+        return;
+    }
+    publishProfile(*estimate);
+
+    result->success= true;
+    goal_handle->succeed(result);
+    result->result_code =
+        InspectProfile::Result::SUCCESS;
+   
    
 }
 

@@ -2,7 +2,7 @@
     <BehaviorTree ID="MainTree">
     <Sequence name="InspectAndPlan">
     <InspectProfile
-     max_views = "3"     
+     max_views = "10"     
      samples_per_view = "3"
      depth_range = "0.75"   
      camera_standoff = "0.4"

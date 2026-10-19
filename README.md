@@ -146,6 +146,10 @@ ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{stand
 ros2 action send_goal /inspect_profile hb_robot_interfaces/action/InspectProfile "{max_views: 3, samples_per_view: 3, depth_range: .75, camera_standoff: 0.4}" --feedback
 
 
+
+ros2 bag convert \
+  -i hb_rob_bag_test_2 \
+  -o src/bag_convert_options.yaml
 ### CAMERA CALIBRATION
 
 <joint name="calibrated_camera_mount" type="fixed">

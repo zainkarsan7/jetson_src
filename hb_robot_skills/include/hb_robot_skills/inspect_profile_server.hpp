@@ -112,7 +112,10 @@ class InspectProfileServer: public rclcpp::Node{
 
         bool updateWorkpieceCollision(
             const hb_perception::WorkpieceModel& workpiece
+
         );
+
+        
 
 
         void publishCameraPose(
@@ -131,6 +134,9 @@ class InspectProfileServer: public rclcpp::Node{
             float coverage = 0.0f;
             bool sufficient = false;
         };
+        bool updateCuttingCollision(
+            const ProfileEstimate& estimate
+        );
 
         hb_perception::WorkpieceExtractor extractor_;
         hb_perception::ProfileMatcher matcher_;

@@ -437,7 +437,7 @@ double NBVPlanner::predictedCoverageGain(
         soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
         soln->candidate.total_score = 10 * soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
         std::cout<<"candidate gain: "<<soln->candidate.predicted_gain<<" motion cost: "<<soln->candidate.motion_cost<<" total score: "<< soln->candidate.total_score<<std::endl;
-        const double score = soln->candidate.total_score;//.predicted_gain; // -0.15*soln->candidate.motion_cost;
+        const double score = soln->candidate.predicted_gain; // -0.15*soln->candidate.motion_cost;
         if(score>best_score){
             best_score = score;
             best = std::move(soln);

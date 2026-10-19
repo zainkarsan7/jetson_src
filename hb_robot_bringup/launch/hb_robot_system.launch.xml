@@ -12,7 +12,9 @@
     <!-- MoveIt RViz -->
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/moveit_rviz.launch.py"/>
 
-   
-
+<!--    
+    <executable cmd = "ros2 bag record -a -o hb_rob_bag_test"
+    output="screen" 
+    shell = "true"/> -->
 
 </launch>
