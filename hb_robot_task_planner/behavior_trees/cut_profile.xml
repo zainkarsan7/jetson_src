@@ -16,15 +16,15 @@
         inlier_fraction = "{profile_inlier}"
         coverage = "{profile_coverage}"
         rms_max = "0.01"
-        inlier_min = "0.8"
-        coverage_min = "0.65"
+        inlier_min = "0.6"
+        coverage_min = "0.6"
     />
 
 
     <CutProfile 
-        standoff = "0.05"
+        standoff = "0.01"
         ang_tol = "0.3"
-        pos_tol = "0.01"/>
+        pos_tol = "0.005"/>
     </Sequence>
     </BehaviorTree>
 </root>

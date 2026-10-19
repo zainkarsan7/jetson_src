@@ -301,7 +301,7 @@ bool InspectProfileServer::updateCuttingCollision(
             using PointT = pcl::PointXYZRGB;
             using PointCloud = pcl::PointCloud<PointT>;
 
-            if(!estimate.workpiece.cloud || !estimate.workpiece.cloud->points.empty() || estimate.section.cloud->points.empty()){
+            if(!estimate.workpiece.cloud ||estimate.workpiece.cloud->points.empty() || estimate.section.cloud->points.empty()){
                 RCLCPP_ERROR(get_logger(),"emtpy wk piece or section cloud");
                 return false;
             }
@@ -335,11 +335,11 @@ bool InspectProfileServer::updateCuttingCollision(
 
         pcl::VoxelGrid<PointT> voxel;
         voxel.setInputCloud(estimate.workpiece.cloud);
-        voxel.setLeafSize(0.02f,0.02f,0.02f);
+        voxel.setLeafSize(0.04f,0.04f,0.04f);
         PointCloud coarse_wkpiece_cloud;
         voxel.filter(coarse_wkpiece_cloud);
 
-        auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.012);
+        auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.003);
         auto fine_section_col = makeSphereObject("wk_section_collision",*estimate.section.cloud,0.003);
         if(coarse_wkpiece_col.primitives.empty() || fine_section_col.primitives.empty()){
             RCLCPP_ERROR(get_logger(),"emtpy collision objects");
@@ -563,6 +563,7 @@ bool InspectProfileServer::acquireSamples(
     if (!rgbd_acquisition_ || sample_count == 0)
         return false;
 
+    
     uint32_t integrated = 0;
 
     // Every acquisition must be newer than this boundary.
@@ -903,11 +904,22 @@ void InspectProfileServer::execute(
         if (canceled())
             return;
 
+        bool acquired_ = false;
+        constexpr int max_acquisition_batches = 10;
+        for (int attempt = 1; attempt <= max_acquisition_batches; attempt++){
+            if(canceled()){
+                return;
+            }
+            if(acquireSamples(goal->samples_per_view,goal->depth_range)){
+                acquired_ = true;
+                break;
+            }
+            RCLCPP_WARN(get_logger(), "attempt %zu / %d failed", attempt, max_acquisition_batches);
+        }
+
         // First iteration observes the current camera position.
         // Subsequent iterations arrive here after a completed move.
-        if (!acquireSamples(
-                goal->samples_per_view,
-                goal->depth_range))
+        if (!acquired_)
         {
             fail(
                 InspectProfile::Result::ACQUISITION_FAILED,
@@ -1190,18 +1202,20 @@ void InspectProfileServer::execute(
         fail(
         InspectProfile::Result::INSUFFICIENT_GEOMETRY,
         "Inspection budget exhausted without sufficient geometry");
+        return;
     }
-
+    publishProfile(*estimate);
     if(!updateCuttingCollision(*estimate)){
         fail(InspectProfile::Result::PLANNING_FAILED, "couldnt update collision stuff");
         return;
     }
-    publishProfile(*estimate);
+    
 
     result->success= true;
-    goal_handle->succeed(result);
     result->result_code =
         InspectProfile::Result::SUCCESS;
+    goal_handle->succeed(result);
+    
    
    
 }
