@@ -10,8 +10,8 @@
      inlier_fraction = "{profile_inlier}"
      coverage = "{profile_coverage}"
      rms_max = "0.01"
-     inlier_min = "0.4"
-     coverage_min = "0.3"
+     inlier_min = "0.3"
+     coverage_min = "0.2"
      />
     
     <ProfileValid
@@ -19,8 +19,8 @@
         inlier_fraction = "{profile_inlier}"
         coverage = "{profile_coverage}"
         rms_max = "0.01"
-        inlier_min = "0.4"
-        coverage_min = "0.3"
+        inlier_min = "0.3"
+        coverage_min = "0.2"
     />
 
 

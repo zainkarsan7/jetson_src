@@ -340,7 +340,7 @@ bool InspectProfileServer::updateCuttingCollision(
 
         pcl::VoxelGrid<PointT> voxel;
         voxel.setInputCloud(estimate.workpiece.cloud);
-        voxel.setLeafSize(0.04f,0.04f,0.04f);
+        voxel.setLeafSize(0.025f,0.025f,0.025f);
         PointCloud coarse_wkpiece_cloud;
         voxel.filter(coarse_wkpiece_cloud);
 

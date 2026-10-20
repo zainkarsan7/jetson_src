@@ -35,6 +35,11 @@ namespace hb_robot_skills{
         }
         get_parameter("require_plan_approval",require_plan_approval_);
 
+        if(!has_parameter("skip_cutting_motion")){
+            skip_motion_ = declare_parameter<bool>("skip_cutting_motion",true);
+        }
+        get_parameter("skip_cutting_motion",skip_motion_);
+
 
 
 
@@ -497,15 +502,27 @@ namespace hb_robot_skills{
         const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"});
         
 
+        const bool synced_psm  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+        if(!synced_psm){
+             RCLCPP_INFO(
+                get_logger(),
+                "couldnt synchoroniz psm with move group");
+            throw std::runtime_error("cuttin gplan sync failed");
+            
+        }
+        RCLCPP_INFO(
+                get_logger(),
+                "synchoronized epsm with move group");
+
 
         planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
-
-        const auto* world = p_scene->getWorld().get();
-
         if(!p_scene){
             RCLCPP_ERROR(get_logger(), "no cut planning scene");
             return;
         }
+        const auto* world = p_scene->getWorld().get();
+
+        
 
 
         for (const auto& id: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
