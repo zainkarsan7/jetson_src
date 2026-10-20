@@ -52,7 +52,7 @@ def generate_launch_description():
         # parameters = [moveit_config.robot_description,
         # moveit_config.robot_description_semantic,
         # moveit_config.robot_description_kinematics,
-        parameters = [moveit_config.to_dict(),{"skip_inspection_motion": False,
+        parameters = [moveit_config.to_dict(),{"skip_cutting_motion": False,
         "require_plan_approval": True },]
         ,
     )

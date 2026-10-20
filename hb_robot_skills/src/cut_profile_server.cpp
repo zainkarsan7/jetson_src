@@ -38,7 +38,7 @@ namespace hb_robot_skills{
         get_parameter("require_plan_approval",require_plan_approval_);
 
         if(!has_parameter("skip_cutting_motion")){
-            skip_motion_ = declare_parameter<bool>("skip_cutting_motion",true);
+            skip_motion_ = declare_parameter<bool>("skip_cutting_motion",false);
         }
         get_parameter("skip_cutting_motion",skip_motion_);
 
@@ -96,7 +96,7 @@ namespace hb_robot_skills{
             throw std::runtime_error("failed to create planning scene");
         }
         planning_scene_monitor_->startStateMonitor();
-        // planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
+        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
         planning_scene_monitor_->startWorldGeometryMonitor();
         const bool scene_recieved  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
         if(!scene_recieved){
@@ -140,6 +140,7 @@ namespace hb_robot_skills{
         RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
         RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
         RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+        RCLCPP_INFO(get_logger(),"Skipping Motion %s",skip_motion_?"yes":"no");
         
         RCLCPP_INFO(get_logger(),"CutProfileServer Initialized"); 
 
@@ -409,6 +410,122 @@ namespace hb_robot_skills{
         return combined_;
     }
 
+
+    CutProfileServer::MotionOutcome CutProfileServer::waitForPlanApproval(
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+            ){
+
+                if (!require_plan_approval_) {
+                        return MotionOutcome::SUCCESS;
+                    }
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Waiting for cutting plan approval"
+                );
+                publishFeedback(goal_handle, "awaiting plan approval");
+
+                std::unique_lock<std::mutex> lock(approval_mutex_);
+
+                approval_cv_.wait(lock, [&]() {
+                    return motion_approved_ ||
+                        motion_rejected_ ||
+                        goal_handle->is_canceling() ||
+                        !rclcpp::ok();
+                });
+
+                if (goal_handle->is_canceling()) {
+                    return MotionOutcome::CANCELED;
+                }
+
+                if (!rclcpp::ok()) {
+                    return MotionOutcome::FAILED;
+                }
+
+                if (motion_rejected_) {
+                    return MotionOutcome::REJECTED;
+                }
+
+                return MotionOutcome::SUCCESS;
+            }
+
+
+    CutProfileServer::MotionOutcome CutProfileServer::executeMotion(
+        const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+        const std::shared_ptr<GoalHandleCutProfile> goal_handle,
+        const std::string& description
+    ){
+
+        if(goal_handle->is_canceling()){
+            return MotionOutcome::CANCELED;
+        }
+        RCLCPP_INFO(
+        get_logger(),
+        "Executing: %s",
+        description.c_str()
+    );
+
+    publishFeedback(goal_handle, description);
+
+    const auto execution_result = move_group_->execute(plan);
+    if(goal_handle->is_canceling()){
+        return MotionOutcome::CANCELED;
+    }
+    if(!static_cast<bool>(execution_result)){
+        
+        RCLCPP_ERROR(
+            get_logger(),
+            "Motion execution failed: %s",
+            description.c_str()
+        );
+        return MotionOutcome::FAILED;
+    }
+    return MotionOutcome::SUCCESS;
+    }
+            
+
+    CutProfileServer::MotionOutcome CutProfileServer::executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
+                const std::shared_ptr<GoalHandleCutProfile>goal_handle){
+
+        for (const auto& cut: executable_plan_.cuts){
+            RCLCPP_INFO(
+            get_logger(),
+            "Starting cut: %s",
+            cut.name.c_str());
+
+            auto run = [&](const auto& plan, const std::string& phase){
+                return executeMotion(
+                    plan,goal_handle,cut.name+": " + phase
+                );
+            };
+
+
+            auto outcome = run(cut.transit_in,"transit in");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            outcome = run(cut.process.approach,"approach");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            outcome = run(cut.process.cut,"cut");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+
+            outcome = run(cut.process.retract,"retract");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            outcome = run(cut.transit_out,"transit out");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            return MotionOutcome::SUCCESS;
+
+         }
+        }
+
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
 
         //approval machienry 
@@ -499,6 +616,18 @@ namespace hb_robot_skills{
         clearCollisionDebug();
         const moveit::core::RobotState arbitrary_start_state = *current_state;
 
+        // 
+        auto check_psm =[](const planning_scene::PlanningScenePtr& scene_)->bool{
+            const auto* world = scene_->getWorld().get();
+            if(!scene_){
+                return false;
+            }
+
+            return    (!world->hasObject("inspection_workpiece") &&
+                world->hasObject("wk_workpiece_collision") &&
+                world->hasObject("wk_section_collision"));
+            };
+
         /// check the planning scene
         moveit::planning_interface::PlanningSceneInterface psi;
         const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"});
@@ -518,19 +647,55 @@ namespace hb_robot_skills{
                 fail(0, "Authoritative cutting scene is incomplete");
                 return;
             }
+        const bool request_psm_update = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+
+        if(!request_psm_update){
+             RCLCPP_INFO(
+                get_logger(),
+                "request update failed");
+           
+            
+        }
+        RCLCPP_INFO(
+                get_logger(),
+                "retrieved planning_scene");
+
+        planning_scene::PlanningScenePtr scene_snapshot;
 
         {
-            planning_scene_monitor::LockedPlanningSceneRW local_scene(
+            planning_scene_monitor::LockedPlanningSceneRO locked_scene(
                 planning_scene_monitor_
             );
-            if(!local_scene){
-                fail(0, "Could not lock local cutting scene");
+
+            if (!locked_scene) {
+                fail(0, "Could not lock local planning scene");
                 return;
             }
 
+            scene_snapshot = locked_scene->diff();
+            scene_snapshot->decoupleParent();
+        }
+        
+
+       if (check_psm(scene_snapshot)) {
+
+            RCLCPP_INFO(
+                get_logger(),
+                "Local planning scene is synchronized; "
+                "using snapshot directly"
+            );
+
+        } else {
+
+            RCLCPP_WARN(
+                get_logger(),
+                "Local planning scene is missing cutting geometry; "
+                "reconciling snapshot"
+            );
+
             for (const auto& obj: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
             
-                local_scene->getWorldNonConst()->removeObject(obj);
+                scene_snapshot->getWorldNonConst()->removeObject(obj);
 
             }
             for (const auto& obj: {"wk_workpiece_collision","wk_section_collision"}){
@@ -539,7 +704,7 @@ namespace hb_robot_skills{
                 object.operation =
                     moveit_msgs::msg::CollisionObject::ADD;
 
-                if (!local_scene->processCollisionObjectMsg(object))
+                if (!scene_snapshot->processCollisionObjectMsg(object))
                 {
                     RCLCPP_ERROR(
                         get_logger(),
@@ -552,67 +717,33 @@ namespace hb_robot_skills{
                 }
             }
             RCLCPP_INFO(
-        get_logger(),
-        "Local cutting geometry explicitly reconciled"
-    );
+                    get_logger(),
+                    "Cutting scene snapshot reconciled successfully"
+                );
 
 
-
-
-        }
-
-        // const bool synced_psm  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
-        // if(!synced_psm){
-        //      RCLCPP_INFO(
-        //         get_logger(),
-        //         "couldnt synchoroniz psm with move group");
-        //     throw std::runtime_error("cuttin gplan sync failed");
-            
-        // }
-        // RCLCPP_INFO(
-        //         get_logger(),
-        //         "synchoronized epsm with move group");
-
-
-        planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
-        if(!p_scene){
-            RCLCPP_ERROR(get_logger(), "no cut planning scene");
-            return;
-        }
-        const auto* world = p_scene->getWorld().get();
-
-        const bool ready =
-            !world->hasObject("inspection_workpiece") &&
-            world->hasObject("wk_workpiece_collision") &&
-            world->hasObject("wk_section_collision");
+        }        
+        const auto* world = scene_snapshot->getWorld().get();
 
         RCLCPP_INFO(
             get_logger(),
-            "LOCAL AFTER RECONCILIATION: box=%d coarse=%d section=%d",
+            "FINAL CUTTING SNAPSHOT: box=%d coarse=%d section=%d",
             world->hasObject("inspection_workpiece"),
             world->hasObject("wk_workpiece_collision"),
             world->hasObject("wk_section_collision")
         );
 
-        for (const auto& id: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
-            const auto it = objects.find(id);
-            RCLCPP_INFO(get_logger(),"[MOVE_GROUP_SCENE] %s, %s", id, it != objects.end() ? "present":"not there");
-            RCLCPP_INFO(get_logger(),"[LOCAL_CUT_SCENE] %s, %s", id, world->hasObject(id) ? "present":"not there");
+        if (!check_psm(scene_snapshot)) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Final cutting scene snapshot is invalid"
+            );
+
+            fail(0, "Cutting scene validation failed");
+            return;
         }
 
-        if (!ready)
-            {
-                fail(0, "Cutting scene validation failed");
-                return;
-            }
-
-        
-
-
-        // RCLCPP_INFO(get_logger(),"got world has wk_section_collision? %s", world->hasObject("wk_section_collision")? "Yep" : "nop");
-        
-
-        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
+        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,scene_snapshot);
         if(!plan_opt){
             result->success = false;
             result->message= "planner failed";
@@ -623,6 +754,11 @@ namespace hb_robot_skills{
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
         std::vector<motion::ExecutableCut> executable_cuts_;
+        motion::ExecutablePlan executable_plan_;
+        executable_plan_.plan_id = "cut_plan_001";
+        executable_plan_.estimate_id = estimate.profile_name;
+
+
 
 
             for (const auto& segment : plan.segments){
@@ -659,6 +795,7 @@ namespace hb_robot_skills{
                 ex_cut_.transit_in = *transit_in_traj;
                 ex_cut_.transit_out = *transit_out_traj;
                 ex_cut_.process = *cut_smp;
+                executable_plan_.cuts.push_back(std::move(ex_cut_));
                 executable_cuts_.push_back(ex_cut_);
 
             }
@@ -701,7 +838,7 @@ namespace hb_robot_skills{
         publishFeedback(goal_handle,"visualizing, cut plan ready");
 
             // cutting actions happen below now that cuts are planned
-        if(skip_motion_){
+        if(skip_motion_ ||  !goal->execute){
             result->success = true;
             result->message= "skipping motion, dry run planned not executed";
             goal_handle->succeed(result);
@@ -709,24 +846,49 @@ namespace hb_robot_skills{
 
         }
 
-
-
-        if(!goal->execute){
-            result->success = true;
-            result->message = "finished";
-            goal_handle->succeed(result);
+        if(canceled()){
             return;
         }
-
+        const auto approval = waitForPlanApproval(goal_handle);
+        if(approval != MotionOutcome::SUCCESS){
+            if(approval == MotionOutcome::CANCELED){
+                canceled();
+                return;
+            }
+            fail(
+                0,
+                approval == MotionOutcome::REJECTED
+            ? "Cutting plan rejected"
+            : "Cutting plan approval failed"
+            );
+            return;  
+        }
+        // maybe revalidate scene planning here
         
+        const auto execution_success = executeCuttingPlan(executable_plan_,goal_handle);
+        
+        switch (execution_success) {
+            case MotionOutcome::SUCCESS:
+                result->success = true;
+                result->message = "Cutting job completed";
+                goal_handle->succeed(result);
+                return;
 
-        result->success = false;
-        result->message = "cut exec not implemented yet";
-        goal_handle->abort(result);
-        return;
+            case MotionOutcome::CANCELED:
+                canceled();
+                return;
 
+            case MotionOutcome::REJECTED:
+                fail(0, "Cutting execution rejected");
+                return;
 
+            case MotionOutcome::FAILED:
+                fail(0, "Cutting execution failed");
+                return;
+        }
     }
+
+    
     void CutProfileServer::clearCollisionDebug()
 {
     visualization_msgs::msg::MarkerArray array;
@@ -1413,15 +1575,16 @@ void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces:
             {
                 std::lock_guard<std::mutex> lock(approval_mutex_);
             motion_approved_ = request->approve;
+            motion_rejected_ = !request->approve;
         }
+            approval_cv_.notify_all();
+
             response->accepted = true;
-            if(request->approve){
-                response->message = request->approve ? "motion approved" : "motion denied";
-                approval_cv_.notify_all();
-            }
-            else{
-                response->message = "motion not approved";
-            }
+
+            response->message =
+                request->approve
+                    ? "Cutting plan approved"
+                    : "Cutting plan rejected";
 
         }
 

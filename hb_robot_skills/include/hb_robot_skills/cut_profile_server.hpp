@@ -25,9 +25,34 @@ namespace hb_robot_skills{
             using CutProfile = hb_robot_interfaces::action::CutProfile;
             using GoalHandleCutProfile = rclcpp_action::ServerGoalHandle<CutProfile>;
 
+
+
+
+
             explicit CutProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
             void initialize();
             
+
+            enum class MotionOutcome{
+                            SUCCESS,
+                            REJECTED,
+                            CANCELED,
+                            FAILED
+                        };
+
+            MotionOutcome waitForPlanApproval(
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+            );
+
+
+            MotionOutcome executeMotion(
+                const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle,
+                const std::string& description
+            );
+            
+          
+
             rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID &uuid,
             std::shared_ptr<const CutProfile::Goal> goal);
 
@@ -36,7 +61,8 @@ namespace hb_robot_skills{
             void handleAccepted(const std::shared_ptr<GoalHandleCutProfile> goal_handle);
             void execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle);
 
-            
+            CutProfileServer::MotionOutcome executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
+                const std::shared_ptr<GoalHandleCutProfile>goal_handle);
 
             void abortGoal(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
             const std::string& message);
@@ -119,6 +145,8 @@ namespace hb_robot_skills{
         bool require_plan_approval_{true};
         bool skip_motion_{true};
         bool motion_approved_{false};
+
+        bool motion_rejected_{false};
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;
         rclcpp_action::Server<CutProfile>::SharedPtr action_server_;
