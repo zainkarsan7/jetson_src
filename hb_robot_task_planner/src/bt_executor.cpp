@@ -36,6 +36,9 @@ class InspectProfileNode: public BT::StatefulActionNode{
             BT::InputPort<uint32_t>("samples_per_view"),
             BT::InputPort<float>("depth_range"),
             BT::InputPort<float>("camera_standoff"),
+            BT::InputPort<float>("rms_target"),
+            BT::InputPort<float>("inlier_fraction_target"),
+            BT::InputPort<float>("coverage_target"),
 
             BT::OutputPort<float>("coverage"),
             BT::OutputPort<float>("rms_error"),

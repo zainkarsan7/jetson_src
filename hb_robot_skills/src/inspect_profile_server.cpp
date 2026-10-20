@@ -689,9 +689,9 @@ InspectProfileServer::estimateProfile()
         (estimate.section.frame * section_from_profile)
             .cast<double>();
     estimate.sufficient =
-        best.rms_dist < 0.005f &&
-        best.inlier_fraction > 0.85f &&
-        estimate.coverage > 0.65f;
+        best.rms_dist < rms_target_ &&
+        best.inlier_fraction > inlier_fraction_target_ &&
+        estimate.coverage > coverage_target_;
 
     return estimate;
 }

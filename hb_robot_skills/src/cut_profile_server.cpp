@@ -5,6 +5,8 @@
 #include <sstream>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/robot_state/conversions.h>
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <moveit/kinematic_constraints/kinematic_constraint.h>
@@ -94,7 +96,7 @@ namespace hb_robot_skills{
             throw std::runtime_error("failed to create planning scene");
         }
         planning_scene_monitor_->startStateMonitor();
-        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
+        // planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
         planning_scene_monitor_->startWorldGeometryMonitor();
         const bool scene_recieved  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
         if(!scene_recieved){
@@ -501,18 +503,75 @@ namespace hb_robot_skills{
         moveit::planning_interface::PlanningSceneInterface psi;
         const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"});
         
+        const bool authoritative_ready =
+            objects.count("inspection_workpiece") == 0 &&
+            objects.count("wk_workpiece_collision") == 1 &&
+            objects.count("wk_section_collision") == 1;
 
-        const bool synced_psm  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
-        if(!synced_psm){
-             RCLCPP_INFO(
-                get_logger(),
-                "couldnt synchoroniz psm with move group");
-            throw std::runtime_error("cuttin gplan sync failed");
+        if (!authoritative_ready)
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "move_group scene is not ready for cutting"
+                );
+
+                fail(0, "Authoritative cutting scene is incomplete");
+                return;
+            }
+
+        {
+            planning_scene_monitor::LockedPlanningSceneRW local_scene(
+                planning_scene_monitor_
+            );
+            if(!local_scene){
+                fail(0, "Could not lock local cutting scene");
+                return;
+            }
+
+            for (const auto& obj: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
             
+                local_scene->getWorldNonConst()->removeObject(obj);
+
+            }
+            for (const auto& obj: {"wk_workpiece_collision","wk_section_collision"}){
+                auto object = objects.at(obj);
+
+                object.operation =
+                    moveit_msgs::msg::CollisionObject::ADD;
+
+                if (!local_scene->processCollisionObjectMsg(object))
+                {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Failed to copy %s into local cutting scene",
+                        obj
+                    );
+
+                    fail(0, "Could not copy cutting collision geometry");
+                    return;
+                }
+            }
+            RCLCPP_INFO(
+        get_logger(),
+        "Local cutting geometry explicitly reconciled"
+    );
+
+
+
+
         }
-        RCLCPP_INFO(
-                get_logger(),
-                "synchoronized epsm with move group");
+
+        // const bool synced_psm  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+        // if(!synced_psm){
+        //      RCLCPP_INFO(
+        //         get_logger(),
+        //         "couldnt synchoroniz psm with move group");
+        //     throw std::runtime_error("cuttin gplan sync failed");
+            
+        // }
+        // RCLCPP_INFO(
+        //         get_logger(),
+        //         "synchoronized epsm with move group");
 
 
         planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
@@ -522,14 +581,32 @@ namespace hb_robot_skills{
         }
         const auto* world = p_scene->getWorld().get();
 
-        
+        const bool ready =
+            !world->hasObject("inspection_workpiece") &&
+            world->hasObject("wk_workpiece_collision") &&
+            world->hasObject("wk_section_collision");
 
+        RCLCPP_INFO(
+            get_logger(),
+            "LOCAL AFTER RECONCILIATION: box=%d coarse=%d section=%d",
+            world->hasObject("inspection_workpiece"),
+            world->hasObject("wk_workpiece_collision"),
+            world->hasObject("wk_section_collision")
+        );
 
         for (const auto& id: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
             const auto it = objects.find(id);
             RCLCPP_INFO(get_logger(),"[MOVE_GROUP_SCENE] %s, %s", id, it != objects.end() ? "present":"not there");
             RCLCPP_INFO(get_logger(),"[LOCAL_CUT_SCENE] %s, %s", id, world->hasObject(id) ? "present":"not there");
         }
+
+        if (!ready)
+            {
+                fail(0, "Cutting scene validation failed");
+                return;
+            }
+
+        
 
 
         // RCLCPP_INFO(get_logger(),"got world has wk_section_collision? %s", world->hasObject("wk_section_collision")? "Yep" : "nop");

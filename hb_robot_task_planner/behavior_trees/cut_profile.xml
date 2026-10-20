@@ -9,9 +9,9 @@
      rms_error = "{profile_rms}"
      inlier_fraction = "{profile_inlier}"
      coverage = "{profile_coverage}"
-     rms_max = "0.01"
-     inlier_min = "0.3"
-     coverage_min = "0.2"
+     rms_target = "0.01"
+     inlier_fraction_target = "0.3"
+     coverage_target = "0.2"
      />
     
     <ProfileValid
