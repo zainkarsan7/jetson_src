@@ -9,7 +9,7 @@
 #include <moveit/robot_trajectory/robot_trajectory.h>
 #include <moveit/kinematic_constraints/kinematic_constraint.h>
 #include <moveit/kinematic_constraints/utils.h>
-
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 
 using namespace std::chrono_literals;
 namespace hb_robot_skills{
@@ -90,7 +90,18 @@ namespace hb_robot_skills{
         }
         planning_scene_monitor_->startStateMonitor();
         planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
-
+        planning_scene_monitor_->startWorldGeometryMonitor();
+        const bool scene_recieved  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+        if(!scene_recieved){
+             RCLCPP_INFO(
+                get_logger(),
+                "couldnt synchoroniz psm with move group");
+            throw std::runtime_error("cuttin gplan sync failed");
+            
+        }
+        RCLCPP_INFO(
+                get_logger(),
+                "synchoronized epsm with move group");
         const auto robot_model =
                 move_group_->getRobotModel();
         
@@ -481,10 +492,30 @@ namespace hb_robot_skills{
         clearCollisionDebug();
         const moveit::core::RobotState arbitrary_start_state = *current_state;
 
+        /// check the planning scene
+        moveit::planning_interface::PlanningSceneInterface psi;
+        const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"});
+        
+
+
         planning_scene_monitor::LockedPlanningSceneRO p_scene(planning_scene_monitor_);
 
         const auto* world = p_scene->getWorld().get();
-        RCLCPP_INFO(get_logger(),"got world has wk_section_collision? %s", world->hasObject("wk_section_collision")? "Yep" : "nop");
+
+        if(!p_scene){
+            RCLCPP_ERROR(get_logger(), "no cut planning scene");
+            return;
+        }
+
+
+        for (const auto& id: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
+            const auto it = objects.find(id);
+            RCLCPP_INFO(get_logger(),"[MOVE_GROUP_SCENE] %s, %s", id, it != objects.end() ? "present":"not there");
+            RCLCPP_INFO(get_logger(),"[LOCAL_CUT_SCENE] %s, %s", id, world->hasObject(id) ? "present":"not there");
+        }
+
+
+        // RCLCPP_INFO(get_logger(),"got world has wk_section_collision? %s", world->hasObject("wk_section_collision")? "Yep" : "nop");
         
 
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,p_scene);
@@ -584,46 +615,6 @@ namespace hb_robot_skills{
 
         }
 
-
-        // if(require_plan_approval_){
-        //     {
-        //         std::lock_guard<std::mutex> approval_lock(
-        //             approval_mutex_);
-        //         motion_approved_ = false;
-        //     }
-
-        //     RCLCPP_INFO(
-        //         get_logger(),
-        //         "Awaiting approval for cutting");
-
-        //     while (rclcpp::ok())
-        //     {
-        //         if (canceled())
-        //             return;
-
-        //         std::unique_lock<std::mutex> approval_lock(
-        //             approval_mutex_);
-
-        //         if (approval_cv_.wait_for(
-        //                 approval_lock,
-        //                 100ms,
-        //                 [this]()
-        //                 {
-        //                     return motion_approved_;
-        //                 }))
-        //         {
-        //             break;
-        //         }
-        //     }
-        //     if (!rclcpp::ok())
-        //         return;
-        // }
-
-        // if (canceled())
-        //     return;
-
-        // const auto execution_result =
-        //     move_group_->execute(*trajectory);
 
 
         if(!goal->execute){

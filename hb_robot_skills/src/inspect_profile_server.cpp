@@ -44,6 +44,11 @@ namespace hb_robot_skills{
     camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
     scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
     acquisition_timeout_ = declare_parameter<double>("acquisition_timeout",2.0);
+
+    rms_target_ = declare_parameter<float>("rms_target",0.01);
+    inlier_fraction_target_ = declare_parameter<float>("inlier_fraction_target", 0.4);
+    coverage_target_ = declare_parameter<float>("coverage_target",0.4);
+    
     
 }
     void InspectProfileServer::initialize(){
@@ -799,9 +804,7 @@ void InspectProfileServer::execute(
     std::lock_guard<std::mutex> execution_lock(
         execution_mutex_);
 
-    constexpr float rms_target = 0.01;
-    constexpr float inlier_fraction_target=  0.8;
-    constexpr float coverage_target = 0.65;
+    
     const auto goal = goal_handle->get_goal();
     auto result = std::make_shared<InspectProfile::Result>();
 
@@ -971,9 +974,9 @@ void InspectProfileServer::execute(
             fillInspectionResult(estimate, result);
                 // remove the suffcienty requirement, just return the result 
             // if (estimate->sufficient)
-            const bool quality_met = estimate && estimate->match.rms_dist < rms_target &&
-            estimate->coverage > coverage_target &&
-            estimate->match.inlier_fraction > inlier_fraction_target;
+            const bool quality_met = estimate && estimate->match.rms_dist < rms_target_ &&
+            estimate->coverage > coverage_target_ &&
+            estimate->match.inlier_fraction > inlier_fraction_target_;
             if(quality_met){
 
 

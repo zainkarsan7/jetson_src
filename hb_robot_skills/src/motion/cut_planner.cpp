@@ -423,8 +423,15 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
 
                    
                     auto col_res = checkCol(candidate,p_scene);
+                    
+                    
+                    
+
 
                     if(col_res.collision){
+                        for(const auto& [pair,contacts]: col_res.contacts){
+                            std::cout<<"collidion between "<<pair.first<<" and " << pair.second<<std::endl;
+                        }
                         
                         if(!refineCollision(candidate,cand_pose,constraints,col_res,p_scene)){
                             std::cout<<"failed fixing sample: "<<i<<std::endl;

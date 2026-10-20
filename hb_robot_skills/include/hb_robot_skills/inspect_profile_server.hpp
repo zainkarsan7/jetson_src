@@ -190,6 +190,10 @@ class InspectProfileServer: public rclcpp::Node{
         std::string scene_frame_;
         double acquisition_timeout_;
 
+        float rms_target_ = 0.01;
+        float inlier_fraction_target_=  0.8;
+        float coverage_target_ = 0.65;
+
         // tf buffer stuff
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
