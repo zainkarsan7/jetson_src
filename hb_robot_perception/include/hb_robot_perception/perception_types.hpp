@@ -24,6 +24,7 @@ struct Observation{
 
 };
 
+
 struct SectionModel{
     PointCloud::Ptr cloud;
     float longitudinal_position = 0.0f;
