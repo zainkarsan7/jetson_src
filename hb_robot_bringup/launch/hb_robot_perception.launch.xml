@@ -8,6 +8,33 @@
         
     <include file="$(find-pkg-share hb_robot_bringup)/launch/kinect.launch.xml"/>
   
+
+    <node pkg="unitree_lidar_ros2"
+    exec="unitree_lidar_ros2_node"
+    name="hb_robot_lidar"
+    output="screen">
+    <param name="initialize_type" value="1"/>
+    <param name="work_mode" value="8"/>
+    <param name="use_system_timestamp" value="true"/>
+    <param name="range_min" value="0.0"/>
+    <param name="range_max" value="100.0"/>
+    <param name="cloud_scan_num" value="18"/>
+    <param name="serial_port" value="/dev/ttyACM0"/>
+    <param name="baudrate" value="4000000"/>
+    <param name="lidar_port" value="6101"/>
+    <param name="lidar_ip" value="192.168.1.62"/>
+    <param name="local_port" value="6201"/>
+    <param name="local_ip" value="192.168.1.2"/>
+
+    <param name="cloud_frame" value="unilidar_lidar"/>
+    <param name="cloud_topic" value="hb_robot_lidar/cloud"/>
+    <param name="imu_frame" value="unilidar_imu"/>
+    <param name="imu_topic" value="hb_robot_lidar/imu"/>
+
+    
+    </node>
+
+
     <!-- <node  pkg="hb_robot_perception"
     exec = "perception_node"
     name="perception_node"

@@ -14,19 +14,29 @@
   <child link="camera_base"/>
   <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
 </joint>
-<!-- <link name="unilidar_lidar"/> -->
-<!-- <link name="unilidar_imu_initial"/> -->
+<link name="unilidar_lidar"/>
+<link name="unilidar_imu"/>
 <!-- <joint name="mount_to_lidar" type="fixed">
     <parent link="robot_mount"/>
     <child link= "unilidar_lidar"/>
     <origin xyz="1 0 0" rpy="0 0 0"/>
 </joint> -->
 
-<!--<joint name="mount_to_imu" type="fixed">
+<joint name="mount_to_imu" type="fixed">
     <parent link="HB_carriage"/>
-    <child link= "unilidar_imu_initial"/>
-    <origin xyz="0 0 1.1" rpy="0 0 ${pi}"/>
-</joint> -->
+    <child link= "unilidar_lidar"/>
+    <origin xyz="-.1425 0 .544" rpy="${-pi/2} ${(pi/8) -(pi/2)} 0"/>
+</joint>
+
+<joint name="lidar_to_imu" type="fixed">
+    <parent link="unilidar_lidar"/>
+    <child link="unilidar_imu"/>
+
+    <origin xyz="-0.007698 -0.014655 0.006670"
+            rpy="0 0 0"/>
+</joint>
+
+
 
 </xacro:macro>
 </robot>
