@@ -42,7 +42,7 @@ class ImuStabilityMonitor{
             const std::function<bool()>& canceled = {}
         );
         
-        void addSample(const sensor_msgs::msg::Imu& msg );
+       
         ImuStabilityMetrics metrics() const;
         
         void reset();

@@ -807,6 +807,21 @@ namespace hb_robot_skills{
                 return;
             }
             const auto robot_model = move_group_->getRobotModel();
+
+            using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
+            moveit_msgs::msg::DisplayTrajectory display_msg;
+
+            display_msg.model_id = move_group_->getRobotModel()->getName();
+
+            auto appendPlan = [&](const Plan& plan, const std::string& name)->bool{
+              const auto & jt = plan.trajectory_.joint_trajectory;
+              if(jt.joint_names.empty() || jt.points.empty()){
+                RCLCPP_ERROR(get_logger(), "emtpy trajectory, %s", name.c_str());
+                return false;
+              }
+            };
+
+
             auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
             RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_cuts_.size());
             
@@ -822,7 +837,6 @@ namespace hb_robot_skills{
             // auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
             moveit_msgs::msg::RobotTrajectory combined_msg;
             full_trajectory->getRobotTrajectoryMsg(combined_msg);
-            moveit_msgs::msg::DisplayTrajectory display_msg;
             display_msg.model_id = move_group_->getRobotModel()->getName();
             moveit::core::robotStateToRobotStateMsg(full_trajectory->getFirstWayPoint(),
             display_msg.trajectory_start);

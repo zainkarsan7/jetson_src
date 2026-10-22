@@ -41,7 +41,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                     samples_.push_back(s);
                     const auto cutoff = s.recieved_at - config_.window;
                     while(!samples_.empty() && 
-                    samples_.front().recieved_at > cutoff
+                    samples_.front().recieved_at < cutoff
                 ){
                     samples_.pop_front();
                 }
@@ -134,16 +134,18 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                             day * day + 
                             daz * daz;
             
-            result_.ang_vel_rms_rad_s = std::sqrt(var_ang_vel/n);
-            result_.lin_acc_rms_m_s2 = std::sqrt(var_lin_acc/n);
-            result_.mean_ang_vel_rad_s = std::sqrt(norm_ang_vel);
-            result_.stable = 
-                    result_.ang_vel_rms_rad_s< config_.max_ang_vel_rms && 
-                     result_.lin_acc_rms_m_s2< config_.max_lin_acc_rms  &&
-                   result_.mean_ang_vel_rad_s< config_.max_mean_ang_vel;
-            return result_;
+            
+            
         }
+        result_.ang_vel_rms_rad_s = std::sqrt(var_ang_vel/n);
+        result_.lin_acc_rms_m_s2 = std::sqrt(var_lin_acc/n);
+        result_.mean_ang_vel_rad_s = std::sqrt(norm_ang_vel);
+        result_.stable = 
+                result_.ang_vel_rms_rad_s< config_.max_ang_vel_rms && 
+                result_.lin_acc_rms_m_s2< config_.max_lin_acc_rms  &&
+                result_.mean_ang_vel_rad_s< config_.max_mean_ang_vel;
 
+        return result_;
         
 
     }
@@ -179,7 +181,9 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             if(Clock::now() >=deadline){
                 return false;
             }
+            cv_.wait_for(lock,std::chrono::microseconds(25));
         }
+        return false;
 
     }
 
