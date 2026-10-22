@@ -10,8 +10,8 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             const std::string& imu_topic,
             ImuStabilityConfig config):
             config_(config){
-            
-            sub_ = node.create_subscription<sensor_msgs::msg::Imu>(imu_topic,10,
+            auto qos = rclcpp::SensorDataQoS();
+            sub_ = node.create_subscription<sensor_msgs::msg::Imu>(imu_topic,qos,
             [this](const sensor_msgs::msg::Imu::SharedPtr msg){
                 onImu(msg);
             });

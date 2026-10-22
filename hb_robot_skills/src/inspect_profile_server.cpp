@@ -79,7 +79,7 @@ namespace hb_robot_skills{
         
         imu_stability_monitor_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
             *this,
-            "/hb_robot_lidar/imu",
+            "/k4a/imu",
             config
         );
 

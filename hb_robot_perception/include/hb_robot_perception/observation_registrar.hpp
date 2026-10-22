@@ -52,6 +52,6 @@ namespace hb_perception{
         private:
 
             RegistrationConfig config_;
-    }
+    };
 
 }

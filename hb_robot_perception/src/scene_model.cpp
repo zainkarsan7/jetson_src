@@ -17,9 +17,10 @@
 
 namespace hb_perception{
 
-    SceneModel::SceneModel(): scene_cloud_(std::make_shared<PointCloud>()){
-        RegistrationConfig config;
-        registrar_(config);
+    SceneModel::SceneModel(): scene_cloud_(std::make_shared<PointCloud>()),
+    registrar_(RegistrationConfig{})
+    {
+        
     }
     
 
@@ -36,6 +37,7 @@ namespace hb_perception{
         auto cam_cloud = observationToCloud(ob,depth_range);
         if (!cam_cloud){
             std::cout<<"failed to get observation to cloud"<<std::endl;
+            return false;
         }
 
 
@@ -83,7 +85,7 @@ namespace hb_perception{
         PointCloud corrected_cloud = valid_cloud;
         {
             std::lock_guard<std::mutex> lock(scene_mutex);
-        *scene_cloud_+=valid_cloud;
+        
         
             if(scene_cloud_ && !scene_cloud_->empty()){
                 auto result = registrar_.registerCloud(valid_cloud,*scene_cloud_);
