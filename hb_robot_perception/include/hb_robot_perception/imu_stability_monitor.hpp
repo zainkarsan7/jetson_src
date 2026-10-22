@@ -11,7 +11,7 @@ namespace hb_perception{
 struct ImuStabilityConfig{
     double max_ang_vel_rms=0.01;
     double max_lin_acc_rms=0.1;
-    double max_mean_ang_vel=0.01;
+    double max_mean_ang_vel=0.03;
     std::size_t min_samples=20;
     std::chrono::milliseconds window{500};
     std::chrono::milliseconds max_sample_age{200};

@@ -19,9 +19,9 @@ namespace hb_perception{
     struct RegistrationConfig{
         double max_correspondence_m = 0.025;
         int max_iters = 40;
-        double max_translation_m = 0.02;
-        double max_rotation_rad = 0.035;
-        double max_fitness_m2 = 0.000025;
+        double max_translation_m = 1.02;
+        double max_rotation_rad = 1.035;
+        double max_fitness_m2 = 1.000025;
         std::size_t min_points = 100;
     };
     struct RegistrationResult{

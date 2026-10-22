@@ -89,11 +89,11 @@ namespace hb_perception{
         
             if(scene_cloud_ && !scene_cloud_->empty()){
                 auto result = registrar_.registerCloud(valid_cloud,*scene_cloud_);
-            
+                std::cout<<"Fitness: "<< result.fitness_m2<<" | translation: " <<result.translation_m<<" | rotation: " <<result.rotation_rad * 180.0/M_PI<<std::endl;
+             
                 if(!result.accepted){
                     std::cout<<"Registration Result Failed"<<std::endl;
-                    std::cout<<"Fitness: "<< result.fitness_m2<<" | translation: " <<result.translation_m<<" | rotation: " <<result.rotation_rad * 180.0/M_PI<<std::endl;
-                    return false;
+                           return false;
                 }
                 pcl::transformPointCloud(valid_cloud,corrected_cloud, result.correction);
             }
