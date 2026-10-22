@@ -164,7 +164,12 @@ namespace hb_robot_skills{
 
     rclcpp_action::CancelResponse CutProfileServer::handleCancel(const std::shared_ptr<GoalHandleCutProfile> ){
         RCLCPP_INFO(get_logger(),"cancel requested");
-    
+        if(move_group_){
+            move_group_->stop();
+
+        }
+        approval_cv_.notify_all();
+
         return rclcpp_action::CancelResponse::ACCEPT;
     }
 
@@ -521,9 +526,10 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
-            return MotionOutcome::SUCCESS;
+            
 
          }
+         return MotionOutcome::SUCCESS;
         }
 
     void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
@@ -542,6 +548,7 @@ namespace hb_robot_skills{
         std::lock_guard<std::mutex> approval_lock(
             approval_mutex_);
             motion_approved_ = false;
+            motion_rejected_ = false;
         }
 
         // handy lamba expressions 
@@ -753,7 +760,6 @@ namespace hb_robot_skills{
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
-        std::vector<motion::ExecutableCut> executable_cuts_;
         motion::ExecutablePlan executable_plan_;
         executable_plan_.plan_id = "cut_plan_001";
         executable_plan_.estimate_id = estimate.profile_name;
@@ -768,7 +774,7 @@ namespace hb_robot_skills{
                 auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
                 if(!transit_in_traj){
                     RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
-                    executable_cuts_.clear();
+                    executable_plan_.cuts.clear();
                     break;
                 }
                 auto actual_appr = getFinalState(*transit_in_traj);
@@ -777,7 +783,7 @@ namespace hb_robot_skills{
                 // return back to arbitrary start
                 if(!cut_smp){
                     RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
-                    executable_cuts_.clear();
+                    executable_plan_.cuts.clear();
                     break;
                 }
                 auto actual_retr = getFinalState(cut_smp->retract);
@@ -786,7 +792,7 @@ namespace hb_robot_skills{
 
                 if(!transit_out_traj){
                     RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
-                    executable_cuts_.clear();
+                    executable_plan_.cuts.clear();
                     break;
                 }
 
@@ -796,11 +802,10 @@ namespace hb_robot_skills{
                 ex_cut_.transit_out = *transit_out_traj;
                 ex_cut_.process = *cut_smp;
                 executable_plan_.cuts.push_back(std::move(ex_cut_));
-                executable_cuts_.push_back(ex_cut_);
 
             }
 
-            if(executable_cuts_.empty()){
+            if(executable_plan_.cuts.empty()){
                 result->success = false;
                 result->message= "planner failed";
                 goal_handle->abort(result);
@@ -819,34 +824,45 @@ namespace hb_robot_skills{
                 RCLCPP_ERROR(get_logger(), "emtpy trajectory, %s", name.c_str());
                 return false;
               }
+
+              RCLCPP_INFO(get_logger(),"%s: start joints = %zu, traj joint= %zu, points = %zu",
+            name.c_str(),plan.start_state_.joint_state.name.size(),jt.joint_names.size(),jt.points.size());
+            display_msg.trajectory.push_back(plan.trajectory_);
+            return true;
             };
 
+            if(executable_plan_.cuts.empty()){
+                fail(0,"no executable cuts");
+                return;
 
-            auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
-            RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_cuts_.size());
-            
-            for (const auto& e_cut: executable_cuts_){
-                auto in_ = CutProfileServer::planToTrajectory(e_cut.transit_in);
-                auto cut_ = collateSegmentTrajectory(e_cut.process);
-                auto out_ = CutProfileServer::planToTrajectory(e_cut.transit_out);
-                full_trajectory->append(*in_,0.0);
-                full_trajectory->append(*cut_,0.0);
-                full_trajectory->append(*out_,0.0);
             }
 
-            // auto combined_trajectory = CutProfileServer::planToTrajectory(*test_traj);
-            moveit_msgs::msg::RobotTrajectory combined_msg;
-            full_trajectory->getRobotTrajectoryMsg(combined_msg);
-            display_msg.model_id = move_group_->getRobotModel()->getName();
-            moveit::core::robotStateToRobotStateMsg(full_trajectory->getFirstWayPoint(),
-            display_msg.trajectory_start);
-            display_msg.trajectory.push_back(combined_msg);
+            const auto& first_plan = executable_plan_.cuts.front().transit_in;
+            display_msg.trajectory_start = first_plan.start_state_;
+            if(display_msg.trajectory_start.joint_state.name.empty()){
+                 moveit::core::robotStateToRobotStateMsg(arbitrary_start_state,
+                    display_msg.trajectory_start);
+            }
+            bool valid = true;
+            // auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
+            RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_plan_.cuts.size());
+           
+            for (const auto& cut: executable_plan_.cuts){
+                valid&= appendPlan(cut.transit_in, cut.name + "/transit_in");
+                valid&= appendPlan(cut.process.approach, cut.name + "/approach");
+                valid&= appendPlan(cut.process.cut, cut.name + "/cut");
+                valid&= appendPlan(cut.process.retract, cut.name + "/retract");
+                valid&= appendPlan(cut.transit_out, cut.name + "/transit_out");
+            }
+            if(!valid){
+                fail(0,"empty trajectories found");
+                return;
+            }
             display_traj_pub_->publish(display_msg);
-            std::cout<<"published trajectory"<<std::endl;
-       
-
-
+            RCLCPP_INFO(get_logger(), "published %zu cutting traj", display_msg.trajectory.size());
+            
         
+       
 
         publishVisualization(plan,estimate.header.frame_id);
         publishFeedback(goal_handle,"visualizing, cut plan ready");
