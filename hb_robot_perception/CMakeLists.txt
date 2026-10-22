@@ -17,7 +17,7 @@ find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters segmentation search kdtree features)
+find_package(PCL REQUIRED COMPONENTS common filters segmentation search kdtree features registration)
 find_package(pcl_conversions REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
@@ -35,6 +35,7 @@ add_library(hb_perception
   src/profile_library.cpp
   src/profile_observation_model.cpp
   src/imu_stability_monitor.cpp
+  src/observation_registrar.cpp
 )
 
 target_include_directories(hb_perception
@@ -65,6 +66,7 @@ pcl_segmentation
 pcl_search
 pcl_kdtree
 pcl_features
+pcl_registration
 )  
 
 add_executable(perception_node

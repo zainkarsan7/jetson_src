@@ -2,6 +2,7 @@
 
 #include "hb_robot_perception/observation_buffer.hpp"
 #include "hb_robot_perception/perception_types.hpp"
+#include "hb_robot_perception/observation_registrar.hpp"
 #include <mutex>
 #include <vector>
 #include <optional>
@@ -52,6 +53,8 @@ namespace hb_perception{
             mutable std::mutex scene_mutex;
             PointCloud::Ptr scene_cloud_;
             ObservationBuffer observation_buffer_;
+            ObservationRegistrar registrar_;
+
             
     };
 

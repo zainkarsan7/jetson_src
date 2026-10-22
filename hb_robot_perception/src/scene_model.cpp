@@ -13,11 +13,13 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <sensor_msgs/image_encodings.hpp>
+#include "hb_robot_perception/observation_registrar.hpp"
 
 namespace hb_perception{
 
     SceneModel::SceneModel(): scene_cloud_(std::make_shared<PointCloud>()){
-
+        RegistrationConfig config;
+        registrar_(config);
     }
     
 
@@ -39,6 +41,8 @@ namespace hb_perception{
 
 
         pcl::transformPointCloud(*cam_cloud,transformed_cloud_,T_scene_cam.matrix().cast<float>());
+        
+        //
         
         PointCloud filtered;
         pcl::StatisticalOutlierRemoval<PointT> sor;
@@ -76,10 +80,24 @@ namespace hb_perception{
         valid_cloud.width = static_cast<uint32_t>(valid_cloud.points.size());
         valid_cloud.height = 1;
         valid_cloud.is_dense = true;
-
-        {std::lock_guard<std::mutex> lock(scene_mutex);
+        PointCloud corrected_cloud = valid_cloud;
+        {
+            std::lock_guard<std::mutex> lock(scene_mutex);
         *scene_cloud_+=valid_cloud;
-        }
+        
+            if(scene_cloud_ && !scene_cloud_->empty()){
+                auto result = registrar_.registerCloud(valid_cloud,*scene_cloud_);
+            
+                if(!result.accepted){
+                    std::cout<<"Registration Result Failed"<<std::endl;
+                    std::cout<<"Fitness: "<< result.fitness_m2<<" | translation: " <<result.translation_m<<" | rotation: " <<result.rotation_rad * 180.0/M_PI<<std::endl;
+                    return false;
+                }
+                pcl::transformPointCloud(valid_cloud,corrected_cloud, result.correction);
+            }
+            *scene_cloud_+=corrected_cloud;
+    }
+
         observation_buffer_.addObservation(ob);
         return true;
     }
