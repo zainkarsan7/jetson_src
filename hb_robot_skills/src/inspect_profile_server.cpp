@@ -73,7 +73,16 @@ namespace hb_robot_skills{
         rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
         tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
     RCLCPP_INFO(get_logger(),"Acquisition Initialized");
-    
+
+
+        hb_perception::ImuStabilityConfig config;
+        
+        imu_stability_monitor_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
+            *this,
+            "/hb_robot_lidar/imu",
+            config
+        );
+
         const auto qos = rclcpp::QoS(1).transient_local().reliable();
 
         display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
@@ -558,6 +567,8 @@ bool InspectProfileServer::waitForStability()
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(stability_timeout_)));
 
+    
+
     return rclcpp::ok();
 }
 
@@ -819,6 +830,8 @@ void InspectProfileServer::execute(
             approval_mutex_);
         motion_approved_ = false;
     }
+
+
     auto fillInspectionResult = [&](const std::optional<ProfileEstimate>& estimate, InspectProfile::Result::SharedPtr result){
         
         result->profile_name =
@@ -906,6 +919,52 @@ void InspectProfileServer::execute(
     {
         if (canceled())
             return;
+
+
+        imu_stability_monitor_->reset();
+        const bool stable = imu_stability_monitor_->waitForStable(
+        std::chrono::seconds(10),
+        [&](){
+            return goal_handle->is_canceling();
+            }
+        );
+        if(!stable){
+            if(canceled()){
+                return;
+            }
+            const auto metrics = imu_stability_monitor_->metrics();
+            const auto config = imu_stability_monitor_->config();
+
+
+            RCLCPP_ERROR(
+                get_logger(),
+                "IMU stability timeout at viewpoint %u/%u after %.2f s\n"
+                "  Gyro RMS:       %.5f rad/s  (limit %.5f)\n"
+                "  Accel RMS:      %.5f m/s^2  (limit %.5f)\n"
+                "  Mean gyro:      %.5f rad/s  (limit %.5f)\n"
+                "  Samples:        %zu         (minimum %zu)\n"
+                "  Stable:         %s",
+                view + 1,
+                goal->max_views,
+                stability_timeout_,
+                metrics.ang_vel_rms_rad_s,
+                config.max_ang_vel_rms,
+                metrics.lin_acc_rms_m_s2,
+                config.max_lin_acc_rms,
+                metrics.mean_ang_vel_rad_s,
+                config.max_mean_ang_vel,
+                metrics.samples,
+                config.min_samples,
+                metrics.stable ? "yes" : "no"
+            );
+
+            fail(
+                InspectProfile::Result::ACQUISITION_FAILED,
+                "IMU stability timeout before RGB-D acquisition"
+            );
+            return;
+        }
+
 
         bool acquired_ = false;
         constexpr int max_acquisition_batches = 10;
@@ -1137,13 +1196,13 @@ void InspectProfileServer::execute(
         if (canceled())
             return;
 
-        if (!waitForStability())
-        {
-            fail(
-                InspectProfile::Result::MOTION_FAILED,
-                "Camera did not settle");
-            return;
-        }
+        // if (!waitForStability())
+        // {
+        //     fail(
+        //         InspectProfile::Result::MOTION_FAILED,
+        //         "Camera did not settle");
+        //     return;
+        // }
 
         // Next loop iteration acquires a fresh observation
         // and refits against the accumulated scene.

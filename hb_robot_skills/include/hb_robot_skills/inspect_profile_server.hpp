@@ -24,7 +24,7 @@
 #include "hb_robot_perception/profile_matcher.hpp"
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/profile_observation_model.hpp"
-
+#include "hb_robot_perception/imu_stability_monitor.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_profile.hpp>
@@ -182,6 +182,7 @@ class InspectProfileServer: public rclcpp::Node{
         bool motion_rejected_{false};
 
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
+        std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_stability_monitor_;
         std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
         // configure acquisition stuff
         std::string rgb_topic_;

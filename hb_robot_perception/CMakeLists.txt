@@ -34,6 +34,7 @@ add_library(hb_perception
   src/profile_matcher.cpp
   src/profile_library.cpp
   src/profile_observation_model.cpp
+  src/imu_stability_monitor.cpp
 )
 
 target_include_directories(hb_perception
