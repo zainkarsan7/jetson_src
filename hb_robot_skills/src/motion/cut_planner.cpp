@@ -589,6 +589,7 @@ std::optional<CutPlan> CutPlanner::plan(
     std::vector<CutSegment> web_segments;
 
     for (const auto& feature : profile.cut_features){
+        
         const float length = (feature.end - feature.start).norm();
         if(length < 1e-5f){
             continue;
@@ -620,6 +621,9 @@ std::optional<CutPlan> CutPlanner::plan(
         }
 
         for (auto& flange: flange_segments){
+            // if (flange.name != "top_flange"){
+            // continue;
+            // }
             if(!solveSegmentConstraints(flange,current_state,p_scene)){
                 std::cerr<<"failed flange planning "<<flange.name<<std::endl;
                 return std::nullopt;
@@ -627,7 +631,7 @@ std::optional<CutPlan> CutPlanner::plan(
             plan.segments.push_back(flange);
         }
 
-        plan.segments.push_back(*best_web_segment);
+        // plan.segments.push_back(*best_web_segment);
        
   
         if (plan.segments.empty()){

@@ -4,6 +4,7 @@
 # You can always specify higher scaling factors (<= 1.0) in your motion requests.  # Increase the values below to 1.0 to always move at maximum speed.
 default_velocity_scaling_factor: 0.1
 default_acceleration_scaling_factor: 0.1
+max_jerk: 5.0
 
 # Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
 # Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
@@ -13,28 +14,34 @@ joint_limits:
     max_velocity: 3.1415926535897931
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0
   ur10e_shoulder_lift_joint:
     has_velocity_limits: true
     max_velocity: 2.0943951023931953
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0
   ur10e_shoulder_pan_joint:
     has_velocity_limits: true
     max_velocity: 2.0943951023931953
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0
   ur10e_wrist_1_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0
   ur10e_wrist_2_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0
   ur10e_wrist_3_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
     has_acceleration_limits: false
     max_acceleration: 0
+    max_jerk: 5.0

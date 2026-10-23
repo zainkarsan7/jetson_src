@@ -15,6 +15,7 @@
 #include <moveit/robot_state/conversions.h>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
+
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include <pcl/filters/voxel_grid.h>
 #include <moveit_msgs/msg/collision_object.hpp>
@@ -404,7 +405,7 @@ bool InspectProfileServer::updateCuttingCollision(
         return true;
   
         }
-        
+
 bool InspectProfileServer::updateWorkpieceCollision(
     const hb_perception::WorkpieceModel& workpiece)
 {

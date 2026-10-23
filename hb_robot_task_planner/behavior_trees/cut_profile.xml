@@ -27,7 +27,9 @@
     <CutProfile 
         standoff = "0.01"
         ang_tol = "0.3"
-        pos_tol = "0.01"/>
+        pos_tol = "0.01"
+        execute = "true"
+        />
     </Sequence>
     </BehaviorTree>
 </root>

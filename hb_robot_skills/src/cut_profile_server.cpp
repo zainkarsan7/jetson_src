@@ -12,6 +12,8 @@
 #include <moveit/kinematic_constraints/kinematic_constraint.h>
 #include <moveit/kinematic_constraints/utils.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/trajectory_processing/ruckig_traj_smoothing.h>
+
 
 using namespace std::chrono_literals;
 namespace hb_robot_skills{
@@ -346,20 +348,37 @@ namespace hb_robot_skills{
             const moveit::core::RobotState& start_state,
             const moveit::core::RobotState& target_state
     ){
+
+        using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
+
+
         move_group_->clearPoseTargets();
         move_group_->clearPathConstraints();
-        move_group_->setPlanningPipelineId("ompl");
-        move_group_->setPlannerId("RRTConnectkConfigDefault");
         move_group_->setPlanningTime(planning_time_);
         move_group_->setMaxVelocityScalingFactor(0.1);
         move_group_->setMaxAccelerationScalingFactor(0.1);
         move_group_->setStartState(start_state);
         move_group_->setJointValueTarget(target_state);
+
+
+        move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+        move_group_->setPlannerId("PTP");
+
+        Plan ptp_plan;
+        if(move_group_->plan(ptp_plan)==moveit::core::MoveItErrorCode::SUCCESS){
+            RCLCPP_INFO(get_logger(),"ptp worked with pilz");
+            return ptp_plan;
+        }
+        RCLCPP_INFO(get_logger(),"pilz ptp failed, try omply");
+        move_group_->setPlanningPipelineId("ompl");
+        move_group_->setPlannerId("RRTConnectkConfigDefault");
+        
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         if(!static_cast<bool>(move_group_->plan(plan))){
             RCLCPP_ERROR(get_logger(), "failed to plan joint motion");
             return std::nullopt;
         }
+        
         return plan;
     }
 
@@ -770,11 +789,16 @@ namespace hb_robot_skills{
                 RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
 
                 auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
+
+
                 if(!transit_in_traj){
                     RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
                     executable_plan_.cuts.clear();
                     break;
                 }
+
+
+
                 auto actual_appr = getFinalState(*transit_in_traj);
                 // lin motion leadin cut retract       
                 auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);

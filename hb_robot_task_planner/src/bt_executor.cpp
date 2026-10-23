@@ -168,7 +168,8 @@ class CutProfileNode: public BT::StatefulActionNode{
         return{
             BT::InputPort<double>("standoff"),
             BT::InputPort<double>("ang_tol"),
-            BT::InputPort<double>("pos_tol")
+            BT::InputPort<double>("pos_tol"),
+            BT::InputPort<bool>("execute")
         };
     }
 
@@ -198,11 +199,12 @@ class CutProfileNode: public BT::StatefulActionNode{
             CutProfile::Goal goal;
             if(!getInput("standoff",goal.standoff)||
             !getInput("ang_tol",goal.ang_tol)||
-            !getInput("pos_tol",goal.pos_tol)    
+            !getInput("pos_tol",goal.pos_tol) || 
+            !getInput("execute",goal.execute)    
                 ){
                     throw BT::RuntimeError("cutprofile input missing");
                 }
-        goal.execute = false;
+        
         RCLCPP_INFO(node_->get_logger(),"sending a goal");
 
         goal_future_ = client_->async_send_goal(goal);
