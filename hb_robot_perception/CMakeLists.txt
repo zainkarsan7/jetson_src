@@ -19,6 +19,8 @@ find_package(message_filters REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters segmentation search kdtree features registration)
 find_package(pcl_conversions REQUIRED)
+find_package(CGAL REQUIRED)
+find_package(shape_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
 find_package(moveit_msgs REQUIRED)
@@ -36,6 +38,7 @@ add_library(hb_perception
   src/profile_observation_model.cpp
   src/imu_stability_monitor.cpp
   src/observation_registrar.cpp
+  src/profile_mesh_builder.cpp
 )
 
 target_include_directories(hb_perception
@@ -57,9 +60,11 @@ ament_target_dependencies(hb_perception
   cv_bridge
   visualization_msgs
   hb_robot_interfaces
+  shape_msgs
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
+CGAL::CGAL
 pcl_common
 pcl_filters
 pcl_segmentation
@@ -145,6 +150,7 @@ ament_export_dependencies(
   PCL
   pcl_conversions
   cv_bridge
+  shape_msgs
 )
 
 if(BUILD_TESTING)

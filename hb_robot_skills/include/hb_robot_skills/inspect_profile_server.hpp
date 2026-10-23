@@ -25,6 +25,8 @@
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/profile_observation_model.hpp"
 #include "hb_robot_perception/imu_stability_monitor.hpp"
+#include "hb_robot_perception/profile_mesh_builder.hpp"
+
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
 #include <hb_robot_interfaces/action/inspect_profile.hpp>
@@ -142,6 +144,7 @@ class InspectProfileServer: public rclcpp::Node{
         hb_perception::ProfileMatcher matcher_;
         hb_perception::ProfileObservationModel observation_model_;
         std::vector<hb_perception::ProfileModel> profiles_;
+        hb_perception::ProfileMeshBuilder mesh_builder_;
 
         std::optional<ProfileEstimate> estimateProfile();
         void publishProfile(const ProfileEstimate& estimate);

@@ -631,18 +631,17 @@ namespace hb_robot_skills{
             }
 
             return    (!world->hasObject("inspection_workpiece") &&
-                world->hasObject("wk_workpiece_collision") &&
-                world->hasObject("wk_section_collision"));
+                world->hasObject("wk_workpiece_collision"));
             };
 
         /// check the planning scene
         moveit::planning_interface::PlanningSceneInterface psi;
-        const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"});
+        const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision"});
         
         const bool authoritative_ready =
             objects.count("inspection_workpiece") == 0 &&
-            objects.count("wk_workpiece_collision") == 1 &&
-            objects.count("wk_section_collision") == 1;
+            objects.count("wk_workpiece_collision") == 1
+            ;
 
         if (!authoritative_ready)
             {
@@ -700,13 +699,13 @@ namespace hb_robot_skills{
                 "reconciling snapshot"
             );
 
-            for (const auto& obj: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
+            // for (const auto& obj: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
             
-                scene_snapshot->getWorldNonConst()->removeObject(obj);
+                scene_snapshot->getWorldNonConst()->removeObject("inspection_workpiece");
 
-            }
-            for (const auto& obj: {"wk_workpiece_collision","wk_section_collision"}){
-                auto object = objects.at(obj);
+            // }
+            // for (const auto& obj: {"wk_workpiece_collision","wk_section_collision"}){
+                auto object = objects.at("wk_workpiece_collision");
 
                 object.operation =
                     moveit_msgs::msg::CollisionObject::ADD;
@@ -715,8 +714,7 @@ namespace hb_robot_skills{
                 {
                     RCLCPP_ERROR(
                         get_logger(),
-                        "Failed to copy %s into local cutting scene",
-                        obj
+                        "Failed to copy wk_workpiece_collision into local cutting scene"
                     );
 
                     fail(0, "Could not copy cutting collision geometry");
@@ -729,7 +727,7 @@ namespace hb_robot_skills{
                 );
 
 
-        }        
+        // }        
         const auto* world = scene_snapshot->getWorld().get();
 
         RCLCPP_INFO(

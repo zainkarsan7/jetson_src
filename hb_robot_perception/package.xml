@@ -14,6 +14,8 @@
   <depend>sensor_msgs</depend>
   <depend>message_filters</depend>
   <depend>eigen</depend>
+  <depend>shape_msgs</depend>
+  <depend>libcgal-dev</depend>
   <depend>tf2_eigen</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>

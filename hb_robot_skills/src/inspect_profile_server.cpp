@@ -346,33 +346,57 @@ bool InspectProfileServer::updateCuttingCollision(
             }
         return col_obj;
         };
+        // get z_min z_max from inspection workpiece
+        CollisionObject inspection_box;
+        inspection_box.header.frame_id = scene_frame_;
+        inspection_box.id = "inspection_workpiece";
+        shape_msgs::msg::SolidPrimitive box = inspection_box.primitives.front();
+        auto mesh = mesh_builder_.extrude(estimate.match.profile,
+            static_cast<double>(-box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0),
+            static_cast<double>(box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0) );
 
-        pcl::VoxelGrid<PointT> voxel;
-        voxel.setInputCloud(estimate.workpiece.cloud);
-        voxel.setLeafSize(0.025f,0.025f,0.025f);
-        PointCloud coarse_wkpiece_cloud;
-        voxel.filter(coarse_wkpiece_cloud);
-
-        auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.003);
-        auto fine_section_col = makeSphereObject("wk_section_collision",*estimate.section.cloud,0.003);
-        if(coarse_wkpiece_col.primitives.empty() || fine_section_col.primitives.empty()){
-            RCLCPP_ERROR(get_logger(),"emtpy collision objects");
-                return false;
+        if(!mesh){
+            RCLCPP_ERROR(get_logger(),"coudlnt make mesh");
+            return false;
         }
+
+        moveit_msgs::msg::CollisionObject profile_mesh_col;
+        profile_mesh_col.header.frame_id = scene_frame_;
+        profile_mesh_col.id = "wk_workpiece_collision";
+        profile_mesh_col.operation = moveit_msgs::msg::CollisionObject::ADD;
+        profile_mesh_col.meshes.push_back(std::move(*mesh));
+        profile_mesh_col.mesh_poses.push_back(tf2::toMsg(estimate.world_from_member));
+        
+
+        
+        
+        // pcl::VoxelGrid<PointT> voxel;
+        // voxel.setInputCloud(estimate.workpiece.cloud);
+        // voxel.setLeafSize(0.025f,0.025f,0.025f);
+        // PointCloud coarse_wkpiece_cloud;
+        // voxel.filter(coarse_wkpiece_cloud);
+
+
+        // auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.003);
+        // auto fine_section_col = makeSphereObject("wk_section_collision",*estimate.section.cloud,0.003);
+        // if(coarse_wkpiece_col.primitives.empty() || fine_section_col.primitives.empty()){
+        //     RCLCPP_ERROR(get_logger(),"emtpy collision objects");
+        //         return false;
+        // }
         CollisionObject remove_box;
         remove_box.header.frame_id = scene_frame_;
         remove_box.id = "inspection_workpiece";
         remove_box.operation = CollisionObject::REMOVE;
 
-        const std::vector<CollisionObject> objects{remove_box,coarse_wkpiece_col,fine_section_col};
+        const std::vector<CollisionObject> objects{remove_box,profile_mesh_col};
         if(!planning_scene_interface_.applyCollisionObjects(objects)){
             RCLCPP_ERROR(get_logger(),"couldnt update planning scene");
                 return false;
         }
+        RCLCPP_INFO(get_logger(),"updated planning scene with profile extrusion");
 
-
-        RCLCPP_INFO(get_logger(),"updated planning scene with coarse points %zu, and section points %zu", coarse_wkpiece_col.primitives.size(),
-        fine_section_col.primitives.size() );
+        // RCLCPP_INFO(get_logger(),"updated planning scene with coarse points %zu, and section points %zu", coarse_wkpiece_col.primitives.size(),
+        // fine_section_col.primitives.size() );
         return true;
   
         }
