@@ -44,16 +44,17 @@ namespace hb_perception{
         )const{
 
             if(!std::isfinite(z_min) || !std::isfinite(z_max)|| 
-            z_max < z_min || profile.boundary.size()<3
+            z_max <= z_min || profile.boundary.size()<3
         ){
                 return std::nullopt;
             }
             Polygon2 polygon;
-            std::vector<LineSegment2D> lines;
-            lines.reserve(profile.boundary.size());
+            
+            for(const auto& prim: profile.boundary){
 
-            for(const auto& l : lines){
-                polygon.push_back(Point2(l.a.x(),l.a.y()));
+                const auto *l = std::get_if<LineSegment2D>(&prim);
+                if(!l) return std::nullopt;
+                polygon.push_back(Point2(l->a.x(),l->a.y()));
             }
             if(!polygon.is_simple() || polygon.orientation() == CGAL::COLLINEAR){
                 return std::nullopt;

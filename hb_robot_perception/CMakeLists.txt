@@ -149,6 +149,7 @@ ament_export_dependencies(
   message_filters
   PCL
   pcl_conversions
+  CGAL
   cv_bridge
   shape_msgs
 )

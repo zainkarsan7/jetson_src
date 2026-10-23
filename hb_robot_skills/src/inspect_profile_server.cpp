@@ -347,10 +347,14 @@ bool InspectProfileServer::updateCuttingCollision(
         return col_obj;
         };
         // get z_min z_max from inspection workpiece
-        CollisionObject inspection_box;
-        inspection_box.header.frame_id = scene_frame_;
-        inspection_box.id = "inspection_workpiece";
-        shape_msgs::msg::SolidPrimitive box = inspection_box.primitives.front();
+        const auto psm_objs = planning_scene_interface_.getObjects({"inspection_workpiece"});
+        const auto it = psm_objs.find("inspection_workpiece");
+        if(it == psm_objs.end() || it->second.primitives.empty()){
+            //collision object mesg is a std pair of string and primitive
+            RCLCPP_ERROR(get_logger(),"inspectionworkfpiece not found");
+            return false;}
+        const auto& inspection_box = it->second;
+        const auto& box = inspection_box.primitives.front();
         auto mesh = mesh_builder_.extrude(estimate.match.profile,
             static_cast<double>(-box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0),
             static_cast<double>(box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0) );
@@ -400,6 +404,7 @@ bool InspectProfileServer::updateCuttingCollision(
         return true;
   
         }
+        
 bool InspectProfileServer::updateWorkpieceCollision(
     const hb_perception::WorkpieceModel& workpiece)
 {
