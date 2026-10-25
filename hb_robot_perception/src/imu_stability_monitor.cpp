@@ -68,6 +68,9 @@ ImuStabilityMonitor::ImuStabilityMonitor(
 
         const Sample* first = nullptr;
 
+
+        double peak_omega = 0.0;
+        double peak_acc_deviation = 0.0;
         for(const auto& s :samples_){
             if(s.recieved_at < cutoff){
                 continue;
@@ -112,6 +115,8 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         double var_ang_vel = 0.0;
         double var_lin_acc = 0.0;                                    
 
+        
+        
         // covariance calc;
         for(const auto & s: samples_){
             if(s.recieved_at < cutoff){
@@ -133,6 +138,11 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             var_lin_acc += dax * dax + 
                             day * day + 
                             daz * daz;
+
+            const double omega = std::sqrt(s.wx*s.wx + s.wy * s.wy + s.wz*s.wz);
+            const double acc_deviation = std::sqrt(dax*dax + day*day + daz * daz );
+            peak_omega = std::max(peak_omega,omega);
+            peak_acc_deviation = std::max(peak_acc_deviation,acc_deviation);
             
             
             
@@ -140,6 +150,8 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         result_.ang_vel_rms_rad_s = std::sqrt(var_ang_vel/n);
         result_.lin_acc_rms_m_s2 = std::sqrt(var_lin_acc/n);
         result_.mean_ang_vel_rad_s = std::sqrt(norm_ang_vel);
+        result_.peak_acc_deviation_m_s2 = peak_acc_deviation;
+        result_.peak_ang_vel_rad_s = peak_omega;
         result_.stable = 
                 result_.ang_vel_rms_rad_s< config_.max_ang_vel_rms && 
                 result_.lin_acc_rms_m_s2< config_.max_lin_acc_rms  &&
@@ -181,7 +193,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             if(Clock::now() >=deadline){
                 return false;
             }
-            cv_.wait_for(lock,std::chrono::microseconds(25));
+            cv_.wait_for(lock,std::chrono::milliseconds(25));
         }
         return false;
 

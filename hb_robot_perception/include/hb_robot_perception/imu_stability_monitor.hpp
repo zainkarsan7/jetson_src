@@ -26,6 +26,17 @@ struct ImuStabilityMetrics{
     bool stable=false;
     std::size_t samples=0;
 
+    bool valid = false;
+    double sample_age_s;
+    double peak_ang_vel_rad_s = 0.0;
+    double peak_acc_deviation_m_s2 = 0.0;
+
+    double latest_ang_vel_rad_s = 0.0;
+    double latest_acc_deviation_m_s2 = 0.0;
+
+
+
+
 };
 
 class ImuStabilityMonitor{
@@ -72,5 +83,36 @@ class ImuStabilityMonitor{
 };
 
 
+enum class PlatformMotionState{
+
+    UNKNOWN,
+    STABLE,
+    DISTURBED,
+    LATCHED
+};
+
+struct PlatformSupervisorConfig{
+    double max_peak_acc_deviation_m_s2 = 0.0;
+    double max_peak_ang_vel_rad_s = 0.0;
+    double max_ang_vel_rms_rad_s= 0.0; 
+    double max_lin_acc_rms_m_s2 = 0.0;
+    std::chrono::milliseconds stable_dwell;
+    
+};
+
+class PlatformMotionSupervisor{
+    public:
+    explicit  PlatformMotionSupervisor(PlatformSupervisorConfig config);
+
+    PlatformMotionState update(const ImuStabilityMetrics& metrics);
+    bool executionPermitted();
+    bool disturbanceLatched();
+    void resetLatch();
+
+
+    private:
+        PlatformMotionState state_ = PlatformMotionState::UNKNOWN;
+        PlatformSupervisorConfig config_;
+};
 
 }

@@ -186,6 +186,7 @@ class InspectProfileServer: public rclcpp::Node{
 
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
         std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_stability_monitor_;
+        std::unique_ptr<hb_perception::PlatformMotionSupervisor> platform_motion_supervisor_;
         std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
         // configure acquisition stuff
         std::string rgb_topic_;

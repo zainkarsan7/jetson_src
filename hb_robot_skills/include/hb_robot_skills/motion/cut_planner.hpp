@@ -22,6 +22,8 @@
 
 namespace hb_robot_skills::motion{
 
+
+
 struct CutPathPoint{
 
     Eigen::Vector3f pos = Eigen::Vector3f::Zero();
