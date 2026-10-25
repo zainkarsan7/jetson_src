@@ -111,6 +111,18 @@ hb_perception
 )
 
 
+add_executable(platform_telemetry_node
+src/platform_telemetry_node.cpp)
+ament_target_dependencies(platform_telemetry_node
+rclcpp
+sensor_msgs
+geometry_msgs
+std_msgs
+hb_robot_interfaces
+)
+target_link_libraries(platform_telemetry_node
+hb_perception)
+
 
 install(
   TARGETS 
@@ -125,12 +137,18 @@ install(
   TARGETS 
   perception_node
   collision_publisher_node
+  platform_telemetry_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
   DIRECTORY include/
   DESTINATION include
+)
+
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 ament_export_targets(

@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CutTraj.msg"
   "msg/TaskState.msg"
   "msg/ProfileEstimate.msg"
+  "msg/PlatformImuMetrics.msg"
   "srv/GenerateExplorePath.srv"
   "srv/GenerateCutPath.srv"
   "srv/ApproveMotion.srv"
