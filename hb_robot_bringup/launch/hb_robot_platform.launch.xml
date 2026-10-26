@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+
+<launch>
+    <node pkg="hb_robot_perception"
+    exec="platform_telemetry_node"
+    name="platform_telemetry"
+    output="screen">
+    <param from="$(find-pkg-share hb_robot_perception)/config/platform_telemetry.yaml"/>
+    </node>
+
+</launch>

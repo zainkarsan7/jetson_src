@@ -631,7 +631,7 @@ std::optional<CutPlan> CutPlanner::plan(
             plan.segments.push_back(flange);
         }
 
-        // plan.segments.push_back(*best_web_segment);
+        plan.segments.push_back(*best_web_segment);
        
   
         if (plan.segments.empty()){

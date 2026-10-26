@@ -1,0 +1,13 @@
+platform_telemetry:
+  ros__parameters:
+    imu_topic: /hb_robot_lidar/imu
+    window_s: 0.5
+    max_age_s: 0.2
+    min_window_coverage: 0.9
+    filter_cutoff_hz: 12.0
+    max_gyro_rms: 0.02
+    max_accel_rms: 0.2
+    max_mean_gyro: 0.04
+    stable_dwell_s: 0.5
+    min_samples: 20
+    metrics_rate_hz: 10.0

@@ -1,0 +1,29 @@
+/tf_static:
+  durability: transient_local
+  reliability: reliable
+  history: keep_last
+  depth: 100
+
+/robot_description:
+  durability: transient_local
+  reliability: reliable
+  history: keep_last
+  depth: 1
+
+/robot_description_semantic:
+  durability: transient_local
+  reliability: reliable
+  history: keep_last
+  depth: 1
+
+/monitored_planning_scene:
+  durability: transient_local
+  reliability: reliable
+  history: keep_last
+  depth: 1
+
+/k4a/imu:
+  durability: volatile
+  reliability: best_effort
+  history: keep_last
+  depth: 100

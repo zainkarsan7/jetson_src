@@ -31,20 +31,20 @@ class PlatformTelemetryNode final : public rclcpp::Node{
     };
 
     public:
-        PlatformTelemetryNode(): Node("platform_telemetry_node"){
+        PlatformTelemetryNode(): Node("platform_telemetry"){
 
             const auto topic = declare_parameter<std::string>("imu_topic","/hb_robot_lidar/imu");
             window_s_ = declare_parameter<double>("window_s", 0.5);
-            max_age_s_ = declare_parameter<double>("max_age_s_", 0.2);
+            max_age_s_ = declare_parameter<double>("max_age_s", 0.2);
             min_coverage_ = declare_parameter<double>("min_window_coverage", 0.9);
             cutoff_hz_ = declare_parameter<double>("filter_cutoff_hz", 12.0);
             max_gyro_rms_ = declare_parameter<double>("max_gyro_rms", 0.02);
             max_accel_rms_ = declare_parameter<double>("max_accel_rms", 0.2);
             max_mean_gyro_ = declare_parameter<double>("max_mean_gyro", 0.04);
             stable_dwell_s_ = declare_parameter<double>("stable_dwell_s", 0.5);
-            min_samples_ = declare_parameter<int>("min_samples_", 20);
+            min_samples_ = declare_parameter<int>("min_samples", 20);
 
-            const auto rate = declare_parameter<double>("metrics_rate_hz",10);
+            const auto rate = declare_parameter<double>("metrics_rate_hz",10.0);
             if(window_s_ <= 0 || 
                 max_age_s_ <= 0 || 
                 min_samples_ <= 2 || 
@@ -80,7 +80,7 @@ class PlatformTelemetryNode final : public rclcpp::Node{
             out.z = v[2];
             return out;
         }
-        Imu onImu(Imu&msg){
+        void onImu(const Imu& msg){
             Sample s;
             s.receipt = Clock::now();
             s.stamp = rclcpp::Time(msg.header.stamp,get_clock()->get_clock_type());
@@ -146,90 +146,111 @@ class PlatformTelemetryNode final : public rclcpp::Node{
                 std::lock_guard<std::mutex>lock(mutex_);
                 samples.assign(samples_.begin(),samples_.end());
             }
+            bool below =false;
             Metrics m;
             m.header.stamp = this->now();
             m.sample_age = std::numeric_limits<double>::infinity();
             m.sample_count = static_cast < size_t> (samples.size());
             if(!samples.empty()){
                 m.header.stamp = samples.back().stamp;
-                m.sample_age = std::chrono::duration<double>(now - samples.back().receipt).count();
-                
+                m.sample_age = std::chrono::duration<double>(now - samples.back().receipt).count();   
             }
             if(samples.size() >= static_cast<size_t>(min_samples_) && 
-        m.sample_age <= max_age_s_ &&
-            std::chrono::duration<double>(samples.back().receipt - samples.front().receipt).count() >= min_coverage_ * window_s_){
-        m.valid = true;
-        std::array<double, 3> mw{}, ma{}, vw{}, va{};
-            //clacl mean
-        for(const auto& s: samples){
-            for (size_t k=0;k<3;k++){
-                mw[k] +=s.w[k];
-                ma[k] +=s.a[k];
+                m.sample_age <= max_age_s_ &&
+                std::chrono::duration<double>(samples.back().receipt - samples.front().receipt).count() >= min_coverage_ * window_s_)
+                {
+                m.valid = true;
+                std::array<double, 3> mw{}, ma{}, vw{}, va{};
+                    //clacl mean
+                for(const auto& s: samples){
+                    for (size_t k=0;k<3;k++){
+                        mw[k] +=s.w[k];
+                        ma[k] +=s.a[k];
+                        }
                 }
-        }
-        const double n = static_cast<double>(samples.size());
-        for (size_t k=0;k<3;k++){
-                mw[k]/=n;
-                ma[k]/=n;
+                const double n = static_cast<double>(samples.size());
+                for (size_t k=0;k<3;k++){
+                        mw[k]/=n;
+                        ma[k]/=n;
+                        }
+                    
+                //calc var
+                for (const auto&s :samples){
+                    std::array<double,3> da{};
+                    for (size_t k=0;k<3;k++){
+                        const double dw = s.w[k] -mw[k];
+
+                        vw[k] += dw* dw;
+
+                        da[k] += s.a[k] - ma[k];
+                        va[k] += da[k]*da[k];
+
+                    }
+                    m.gyro_peak_rad_s = std::max(m.gyro_peak_rad_s,norm(s.w));
+                    m.accel_deviation_peak_m_s2 = std::max(m.accel_deviation_peak_m_s2, norm(da));
+
                 }
-            
-        //calc var
-        for (const auto&s :samples){
-            std::array<double,3> da{};
-            for (size_t k=0;k<3;k++){
-                const double dw = s.w[k] -mw[k];
+                // these are for a sqrt norm
+                double sw = 0; double sa=0;
+                for(size_t k=0;k<3;k++){
+                    vw[k]/=n;
+                    va[k]/=n;
+                    sw += vw[k];
+                    sa += va[k];
+                    vw[k] = std::sqrt(vw[k]);
+                    va[k] = std::sqrt(va[k]);
 
-                vw[k] += dw* dw;
+                    }
+                m.gyro_mean_rad_s = vectorMsg(mw);
+                m.accel_mean_m_s2 = vectorMsg(ma);
+                m.gyro_stddev_rad_s = vectorMsg(vw);
+                m.accel_stddev_m_s2 = vectorMsg(va);
+                m.gyro_residual_rms_rad_s = std::sqrt(sw);
+                m.accel_residual_rms_m_s2 = std::sqrt(sa);
+                m.accel_mean_norm_m_s2 = norm(ma);
+                m.gyro_latest_rad_s = norm(samples.back().w);
+                std::array<double,3> latest_da{};
+                for(size_t k=0; k<3;k++){
+                    latest_da[k] = samples.back().a[k] - ma[k];
+                    }
+                m.accel_deviation_latest_m_s2 = norm(latest_da);
+                
 
-                da[k] += s.a[k] - ma[k];
-                va[k] += da[k]*da[k];
+                if(m.valid){
+                    below = m.gyro_residual_rms_rad_s < max_gyro_rms_ &&
+                m.accel_residual_rms_m_s2 < max_accel_rms_ &&
+                norm(mw) < max_mean_gyro_;
+                }
+                if(!m.valid ||!below){
+                    candidate_since_.reset();
+                    m.stable=false;
+                }
+                else{
+                    if(!candidate_since_) candidate_since_ = now;
+                    const double dwell = std::chrono::duration<double>(now- *candidate_since_).count();
+                    m.stable= dwell >=stable_dwell_s_;
+                }
 
+                
+                }
+                metrics_pub_->publish(m);
+                std_msgs::msg::UInt8 state;
+                //unknown = 0, stable = 1, settling = 2, disturbed = 3
+                if(!m.valid){
+                    state.data = 0;
+                }
+                else if(m.stable){
+                    state.data = 1;
+                }
+                else if(below){
+                    state.data = 2;
+                }
+                else{
+                    state.data=3;
+                }
+                state_pub_->publish(state);
             }
-            m.gyro_peak_rad_s = std::max(m.gyro_peak_rad_s,norm(s.w));
-            m.accel_deviation_peak_m_s2 = std::max(m.accel_deviation_peak_m_s2, norm(da));
 
-        }
-        // these are for a sqrt norm
-        double sw = 0; double sa=0;
-        for(size_t k=0;k<3;k++){
-            vw[k]/=n;
-            va[k]/=n;
-            sw += vw[k];
-            sa += va[k];
-            vw[k] = std::sqrt(vw[k]);
-            va[k] = std::sqrt(va[k]);
-
-            }
-        m.gyro_mean_rad_s = vectorMsg(mw);
-        m.accel_mean_m_s2 = vectorMsg(ma);
-        m.gyro_stddev_rad_s = vectorMsg(vw);
-        m.accel_stddev_m_s2 = vectorMsg(va);
-        m.gyro_residual_rms_rad_s = std::sqrt(sw);
-        m.accel_residual_rms_m_s2 = std::sqrt(sa);
-        m.accel_mean_norm_m_s2 = norm(ma);
-        m.gyro_latest_rad_s = norm(samples.back().w);
-        std::array<double,3> latest_da{};
-        for(size_t k=0; k<3;k++){
-            latest_da[k] = samples.back().a[k] - ma[k];
-            }
-            m.accel_deviation_latest_m_s2 = norm(latest_da);
-            const bool below = m.gyro_residual_rms_rad_s < max_gyro_rms_ &&
-            m.accel_residual_rms_m_s2 < max_accel_rms_ &&
-            norm(mw) < max_mean_gyro_;
-
-        if(below){
-            if(!candidate_since_) candidate_since_ = now;
-            m.stable = std::chrono::duration<double>(now- *candidate_since_).count() >=stable_dwell_s_;
-            else candidate_since_.reset();
-        }
-        else  candidate_since_.reset();
-
-        metrics_pub_->publish(m);
-        std_msgs::msg::UInt8 state;
-        //unknown = 0, stable = 1, disturbed = 2
-        state.data = !m.valid ? 0 : (m.stable? 1 : 2);
-        state_pub_->publish(state);
-        }
         double window_s_, max_age_s_, min_coverage_, cutoff_hz_, max_gyro_rms_, max_accel_rms_,max_mean_gyro_,stable_dwell_s_;
         int min_samples_;
         std::mutex mutex_;
@@ -253,11 +274,11 @@ int main(int argc, char** argv){
     try{
         rclcpp::spin(std::make_shared<hb_perception::PlatformTelemetryNode>());
     }catch(const std::exception& e){
-        RCLCPP_FATAL(rclcpp::get_logger(),"%s",e.what());
+        RCLCPP_FATAL(rclcpp::get_logger("platform_telemetry"),"%s",e.what());
         rclcpp::shutdown();
         return 1;
     }
-    rclcpp::shutdown()
+    rclcpp::shutdown();
     return 0;
 
 }

@@ -983,7 +983,7 @@ void InspectProfileServer::execute(
                 config.max_lin_acc_rms,
                 metrics.mean_ang_vel_rad_s,
                 config.max_mean_ang_vel,
-                metrics.samples,
+                metrics.samples_count,
                 config.min_samples,
                 metrics.stable ? "yes" : "no"
             );

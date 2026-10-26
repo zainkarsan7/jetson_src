@@ -225,8 +225,8 @@ namespace hb_robot_skills{
             motion::SegmentMotionPlan segment_motion_plan;
             move_group_->clearPoseTargets();
             move_group_->clearPathConstraints();
-            move_group_->setMaxVelocityScalingFactor(0.1);
-            move_group_->setMaxAccelerationScalingFactor(0.1);
+            move_group_->setMaxVelocityScalingFactor(0.2);
+            move_group_->setMaxAccelerationScalingFactor(0.2);
             move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
             move_group_->setPlannerId("LIN");
             // try the approach linear

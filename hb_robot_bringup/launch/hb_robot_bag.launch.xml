@@ -2,9 +2,11 @@
 
 
 <launch>
-    
-   
-    <executable cmd = "ros2 bag record --include-unpublished-topics -o hb_rob_bag_test_2
+    <executable cmd = "ros2 bag record 
+    --include-unpublished-topics 
+    --storage mcap
+    --qos-profile-overrides-path $(find-pkg-share hb_robot_bringup)/config/bag_params.yaml
+    -o hb_rob_bag_test_
     /tf
     /tf_static
     /joint_states
@@ -27,11 +29,11 @@
     /profile_inspection/metrics/coverage
     /profile_inspection/metrics/inlier_fraction
     /profile_inspection/metrics/rms_mm
-
-    
-    
-    
-    
+    /platform/imu/metrics
+    /platform/imu/filtered
+    /k4a/imu
+    /hb_robot_lidar/imu
+    /hb_robot_lidar/cloud   
     "
     output="screen" 
     shell = "true"/>

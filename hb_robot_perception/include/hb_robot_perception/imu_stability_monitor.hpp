@@ -87,6 +87,7 @@ enum class PlatformMotionState{
 
     UNKNOWN,
     STABLE,
+    SETTLING,
     DISTURBED,
     LATCHED
 };
