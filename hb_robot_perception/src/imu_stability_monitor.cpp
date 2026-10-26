@@ -85,10 +85,10 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             sum_ax += s.ax;
             sum_ay += s.ay;
             sum_az += s.az;
-            ++result_.samples;            
+            ++result_.samples_count;            
         }
 
-        if(result_.samples<config_.min_samples || !first){
+        if(result_.samples_count<config_.min_samples || !first){
             return result_;
         }
         // some span of time should be within threshold
@@ -96,7 +96,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         if(span < 0.9 * config_.window){
             return result_;
         }
-        const double n = static_cast<double>(result_.samples);
+        const double n = static_cast<double>(result_.samples_count);
         const double m_wx = sum_wx/n;
         const double m_wy = sum_wy/n;
         const double m_wz = sum_wz/n;

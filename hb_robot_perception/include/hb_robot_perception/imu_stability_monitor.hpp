@@ -24,7 +24,7 @@ struct ImuStabilityMetrics{
     double mean_ang_vel_rad_s=0.0;
     
     bool stable=false;
-    std::size_t samples=0;
+    std::size_t samples_count=0;
 
     bool valid = false;
     double sample_age_s;
