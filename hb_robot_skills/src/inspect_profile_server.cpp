@@ -365,12 +365,32 @@ bool InspectProfileServer::updateCuttingCollision(
             return false;
         }
 
+
+        // const Eigen::Vector3d section_z = estimate.section.frame.linear().col(2).cast<double>();
+        // const Eigen::Vector3d mesh_z = estimate.world_from_member.linear().col(2).cast<double>();
+
+        // RCLCPP_INFO(get_logger(), "section Z: %.4f,%.4f,%.4f | "
+        //             "mesh_z: %.4f,%.4f,%.4f", 
+        //             section_z.x(),section_z.y(),section_z.z(),
+        //             mesh_z.x(),mesh_z.y(),mesh_z.z());
+
+        // RCLCPP_INFO(get_logger(), "profile determinant is %.6f", 
+        // estimate.match.transform.linear().determinant());
+
         moveit_msgs::msg::CollisionObject profile_mesh_col;
         profile_mesh_col.header.frame_id = scene_frame_;
         profile_mesh_col.id = "wk_workpiece_collision";
         profile_mesh_col.operation = moveit_msgs::msg::CollisionObject::ADD;
         profile_mesh_col.meshes.push_back(std::move(*mesh));
-        profile_mesh_col.mesh_poses.push_back(tf2::toMsg(estimate.world_from_member));
+
+        
+
+        Eigen::Isometry3d test_pose  = matcher_.makeProfilePose(estimate.section,estimate.match).cast<double>();
+        
+        const Eigen::Matrix3d R_delta = test_pose.linear().transpose()* estimate.world_from_member.linear();
+        const double angle = Eigen::AngleAxisd(R_delta).angle();
+        RCLCPP_INFO(get_logger(), "error angle is %.4f", angle * 180.0/M_PI);
+        profile_mesh_col.mesh_poses.push_back(tf2::toMsg(test_pose));
         
 
         
@@ -726,9 +746,13 @@ InspectProfileServer::estimateProfile()
     section_from_profile.translation().head<2>() =
         best.transform.translation();
 
-    estimate.world_from_member =
-        (estimate.section.frame * section_from_profile)
-            .cast<double>();
+    // estimate.world_from_member = 
+    //     (estimate.section.frame * section_from_profile)
+    //         .cast<double>();
+    estimate.world_from_member = matcher_.makeProfilePose(
+        estimate.section,
+        estimate.match
+    ).cast<double>();
     estimate.sufficient =
         best.rms_dist < rms_target_ &&
         best.inlier_fraction > inlier_fraction_target_ &&

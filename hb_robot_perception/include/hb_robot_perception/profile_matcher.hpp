@@ -35,7 +35,12 @@ namespace hb_perception{
     const std::string& frame_id,
     std::size_t max_matches) const;
                 hb_robot_interfaces::msg::ProfileEstimate getProfileEstimateMsg(const std::string& planning_frame,const SectionModel& section, const ProfileMatch& match);
-        private:
+       
+       
+            Eigen::Isometry3f makeProfilePose(const SectionModel& section, const ProfileMatch& match);
+
+       
+                private:
 
           std::vector<Eigen::Isometry2f> canonicalTransforms(
         const SectionModel& section) const;
@@ -72,8 +77,6 @@ namespace hb_perception{
             sampleProfileBoundary(
                 const ProfileModel& profile,
                 float arc_resolution=0.002f);
-
-            Eigen::Isometry3f makeProfilePose(const SectionModel& section, const ProfileMatch& match);
 
             
 

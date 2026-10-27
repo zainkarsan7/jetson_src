@@ -406,7 +406,7 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
 
                     if(!ik_sampler->samplePose(cand_position, cand_orn, reference_state,1)){
                         
-                        std::cerr<<"sampler couldnt find pose"<<std::endl;
+                        // std::cerr<<"sampler couldnt find pose"<<std::endl;
                         continue;
                     } 
                     Eigen::Isometry3d cand_pose = Eigen::Isometry3d::Identity();
@@ -442,12 +442,12 @@ bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constrain
                     candidate.update();
                     
                     if(p_scene->isStateColliding(candidate,planning_group_)){
-                        std::cout<<"fixed sample "<<i<<" still in collision"<<std::endl;
+                        // std::cout<<"fixed sample "<<i<<" still in collision"<<std::endl;
                         continue;
                     }
-                    std::cout<<"fixed sample "<<i<<" is collision free"<<std::endl;
+                    // std::cout<<"fixed sample "<<i<<" is collision free"<<std::endl;
                     if(!constraintsSatisfied(candidate,constraints,p_scene)){
-                        std::cout<<"fixed sample "<<i<<" doesnt satisfy constraints"<<std::endl;
+                        // std::cout<<"fixed sample "<<i<<" doesnt satisfy constraints"<<std::endl;
                         continue;
                     }
                     double cost = CutPlanner::dq_cost(reference_state, candidate);
@@ -637,7 +637,7 @@ std::optional<CutPlan> CutPlanner::plan(
                 << '\n';
         }
 
-        
+
         switch(feature.type){
             case hb_perception::ProfileCutFeatureType::Flange:
                 flange_segments.push_back(std::move(candidate_cut));
