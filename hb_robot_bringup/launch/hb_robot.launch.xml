@@ -1,7 +1,7 @@
 <launch>
 
     <arg name="ur_type" default="ur10e"/>
-    <arg name="robot_ip" default="192.168.200.55"/>
+    <arg name="robot_ip" default="192.168.50.55"/>
     <arg name="tf_prefix" default="ur10e_"/>
     <arg name="description_package" default="hb_robot_control"/>
     <arg name="description_file" default="hb_robot_controlled.urdf.xacro"/>

@@ -3,7 +3,7 @@
 ### IP addresses 
 
 192.168.200.100 local HB_Jetson, 
-192.168.200.55 UR10e 
+192.168.50.55 UR10e 
 
 
 Going through moveit here, some sensors running, and the hb_robot description control and moveit config. 
