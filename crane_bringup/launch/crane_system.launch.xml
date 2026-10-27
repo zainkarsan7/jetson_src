@@ -8,4 +8,14 @@
     <arg name="device_token" value="fox_dt_VvLbtak7kgOLQe4MSftc6anRYhvL9mHf"/>
     </include>
 
+    <executable cmd="ros2 bag record -o crane_bag_test
+    /Spreader_NS_RS/Spreader_RS/accel/sample
+    /Spreader_NS_RS/Spreader_RS/gyro/sample
+    /Spreader_NS_RS/Spreader_RS/imu
+    /Trolley_Detection
+    /Trolley/hook_transform
+    /Trolley/left_spreader_transform
+    /Trolley/right_spreader_transform
+    /control_robot_description" output="screen" shell="true"/>
+
 </launch>
