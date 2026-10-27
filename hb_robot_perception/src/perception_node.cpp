@@ -88,7 +88,7 @@ class PerceptionDebugNode : public rclcpp::Node {
         }
         moveit_msgs::msg::CollisionObject col_obj;
         col_obj.header.frame_id=scene_frame_;
-        col_obj.id = "wk_section_collision";
+        col_obj.id = "wk_workpiece_collision";
         col_obj.operation = moveit_msgs::msg::CollisionObject::ADD;
         constexpr double rad = 0.003;
         col_obj.primitives.reserve(cloud.size());

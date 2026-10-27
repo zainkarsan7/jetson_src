@@ -24,6 +24,12 @@ namespace hb_robot_skills::motion{
 
 
 
+
+
+
+
+
+
 struct CutPathPoint{
 
     Eigen::Vector3f pos = Eigen::Vector3f::Zero();
@@ -50,12 +56,12 @@ static std::vector<RobotWorkpieceContact> extractWorkpieceContacts(
             const bool robot_first = 
             c.body_type_1 == collision_detection::BodyTypes::ROBOT_LINK &&
             c.body_type_2 == collision_detection::BodyTypes::WORLD_OBJECT &&
-            c.body_name_2 == "wk_section_collision";
+            c.body_name_2 == "wk_workpiece_collision";
             
             const bool robot_second = 
             c.body_type_2== collision_detection::BodyTypes::ROBOT_LINK &&
             c.body_type_1 == collision_detection::BodyTypes::WORLD_OBJECT &&
-            c.body_name_1 == "wk_section_collision";
+            c.body_name_1 == "wk_workpiece_collision";
 
             if(!robot_first && !robot_second){
                 continue;
@@ -103,6 +109,8 @@ struct CutSegment{
 
 
 };
+
+
 
 struct CutProcessParams{
 
