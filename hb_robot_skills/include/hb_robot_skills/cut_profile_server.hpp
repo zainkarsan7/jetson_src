@@ -5,8 +5,12 @@
 #include <moveit_msgs/msg/display_robot_state.hpp>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include "hb_robot_skills/motion/cut_graph_planner.hpp"
+#include "hb_robot_skills/motion/cut_process_trajectory_generator.hpp"
 #include "hb_robot_perception/profile_types.hpp"
 #include "hb_robot_skills/motion/cut_planner.hpp"
+#include "hb_robot_skills/motion/torch_controller.hpp"
+#include "hb_robot_skills/motion/cut_graph_planner.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
@@ -149,6 +153,9 @@ namespace hb_robot_skills{
         bool motion_rejected_{false};
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;
+
+        std::unique_ptr<motion::CutProcessTrajectoryGenerator> process_generator_;
+        std::unique_ptr<motion::CutGraphPlanner> cut_graph_planner_;
         rclcpp_action::Server<CutProfile>::SharedPtr action_server_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr visualization_pub_;
         mutable std::mutex estimate_mutex_;

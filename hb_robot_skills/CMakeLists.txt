@@ -28,6 +28,8 @@ find_package(tf2_eigen REQUIRED)
 include_directories(include)
 
 add_library(hb_motion
+  src/motion/cut_graph_planner.cpp
+  src/motion/cut_candidate_graph.cpp
   src/motion/cut_process_trajectory_generator.cpp
   src/motion/exploration_planner.cpp
   src/motion/trajectory_validator.cpp

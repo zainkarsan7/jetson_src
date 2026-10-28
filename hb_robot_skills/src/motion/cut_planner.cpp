@@ -600,42 +600,7 @@ std::optional<CutPlan> CutPlanner::plan(
         CutSegment candidate_cut = makeSegment(feature, world_from_profile,request);
         
         
-        ProcessGeneratorOptions options;
-        options.roll_samples = 12;
-        options.seeds_per_roll = 16;
-        options.max_translation_step_m = 0.003;
-        options.max_joint_step_rad = 0.20;
-        options.max_candidates = 32;
-
-        CutProcessTrajectoryGenerator generator(
-            robot_model_,
-            planning_group_,
-            plasma_link_,
-            options);
-
-        const auto result = generator.generate(
-            candidate_cut,
-            start_state,
-            p_scene);
-
-        std::cout
-            << "Segment: " << candidate_cut.name << '\n'
-            << "Attempts: " << result.stats.attempts << '\n'
-            << "IK failures: " << result.stats.ik_failures << '\n'
-            << "Collision failures: " << result.stats.collision_failures << '\n'
-            << "Joint jump failures: " << result.stats.joint_jump_failures << '\n'
-            << "Candidates: " << result.candidates.size()
-            << std::endl;
-
-        for (const auto& candidate : result.candidates)
-        {
-            std::cout
-                << "  roll=" << candidate.torch_roll_rad
-                << " backward=" << candidate.solved_backward
-                << " score=" << candidate.score
-                << " cut waypoints=" << candidate.cut.size()
-                << '\n';
-        }
+        
 
 
         switch(feature.type){

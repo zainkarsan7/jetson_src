@@ -16,6 +16,7 @@ find_package(moveit_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CutTraj.msg"
+  "msg/TorchStatus.msg"
   "msg/TaskState.msg"
   "msg/ProfileEstimate.msg"
   "msg/PlatformImuMetrics.msg"

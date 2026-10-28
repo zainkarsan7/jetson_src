@@ -118,6 +118,76 @@ namespace hb_robot_skills{
         move_group_->getRobotModel(),
         planning_group_,
         plasma_link_);
+
+
+        motion::ProcessGeneratorOptions options;
+        options.roll_samples = 12;
+        options.seeds_per_roll = 16;
+        options.max_translation_step_m = 0.003;
+        options.max_joint_step_rad = 0.20;
+        options.max_candidates = 32;
+
+        process_generator_ = std::make_unique<motion::CutProcessTrajectoryGenerator>
+        (   move_group_->getRobotModel(),
+            planning_group_,
+            plasma_link_,
+            options);
+
+        
+
+        cut_graph_planner_ = std::make_unique<motion::CutGraphPlanner>(
+            move_group_->getRobotModel(),
+            planning_group_,
+            [this](const moveit::core::RobotState& from, 
+            const moveit::core::RobotState& to
+        ){
+            return planToState(from,to);
+        },
+
+        [this](const motion::CutSegment& segment, 
+            const motion::ProcessCandidate& candidate
+        )->std::optional<motion::SegmentMotionPlan>{
+            
+            (void)segment;
+
+            if(candidate.approach.empty() ||
+            candidate.cut.empty()||
+            candidate.retract.empty()){
+                return std::nullopt;
+            }
+            
+            move_group_->clearPoseTargets();
+            move_group_->clearPathConstraints();
+            move_group_->setMaxVelocityScalingFactor(0.2);
+            move_group_->setMaxAccelerationScalingFactor(0.2);
+            move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+            move_group_->setPlannerId("LIN");
+
+            motion::SegmentMotionPlan result;
+
+            auto approach_ = makeLinPlan(*candidate.approach.front(),
+            *candidate.approach.back());
+            if(!approach_){
+                RCLCPP_ERROR(get_logger(),"failed on approach linear");
+                return std::nullopt;
+            }
+            result.approach = *approach_;
+            auto cut_ = makeLinPlan(getFinalState(result.approach),*candidate.cut.back());
+            if(!cut_){
+                RCLCPP_ERROR(get_logger(),"failed on start linear");
+                return std::nullopt;
+            }            
+            result.cut = *cut_;
+            auto retract_ = makeLinPlan(getFinalState(result.cut),*candidate.retract.back());
+            if(!retract_){
+                RCLCPP_ERROR(get_logger(),"failed on retract linear");
+                return std::nullopt;
+            }
+            result.retract = *retract_;           
+            return result;
+        },
+        motion::CutGraphPlanner::Options{}
+            );
         
 
         cut_planner_->setDebugVisCallback([this](const motion::CutSegment segment){
@@ -207,9 +277,11 @@ namespace hb_robot_skills{
         const moveit::core::RobotState& start_state,
         const   moveit::core::RobotState& goal_state){
                 move_group_->setStartState(start_state);
-                const Eigen::Isometry3d goal_tf = goal_state.getGlobalLinkTransform(plasma_link_);
-                geometry_msgs::msg::Pose goal_pose = tf2::toMsg(goal_tf);
-                move_group_->setPoseTarget(goal_pose, plasma_link_);
+                
+                move_group_->setJointValueTarget(goal_state);
+                // const Eigen::Isometry3d goal_tf = goal_state.getGlobalLinkTransform(plasma_link_);
+                // geometry_msgs::msg::Pose goal_pose = tf2::toMsg(goal_tf);
+                // move_group_->setPoseTarget(goal_pose, plasma_link_);
                 moveit::planning_interface::MoveGroupInterface::Plan plan;
                 const auto result = move_group_->plan(plan);
                 if(result!= moveit::core::MoveItErrorCode::SUCCESS){
@@ -343,6 +415,8 @@ namespace hb_robot_skills{
                 
 
             }
+
+   
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
             const moveit::core::RobotState& start_state,
@@ -781,58 +855,105 @@ namespace hb_robot_skills{
         executable_plan_.plan_id = "cut_plan_001";
         executable_plan_.estimate_id = estimate.profile_name;
 
+        std::vector<std::vector<motion::ProcessCandidate>> candidates_by_segment;
+        candidates_by_segment.reserve(plan.segments.size());
 
+        for (const auto& segment : plan.segments)
+            {
 
+                auto generated = process_generator_->generate(
+                    segment,
+                    arbitrary_start_state,
+                    scene_snapshot
+                );
 
-            for (const auto& segment : plan.segments){
-                
-                RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
-
-                auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
-
-
-                if(!transit_in_traj){
-                    RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
-                    executable_plan_.cuts.clear();
-                    break;
-                }
-
-
-
-                auto actual_appr = getFinalState(*transit_in_traj);
-                // lin motion leadin cut retract       
-                auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
-                // return back to arbitrary start
-                if(!cut_smp){
-                    RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
-                    executable_plan_.cuts.clear();
-                    break;
-                }
-                auto actual_retr = getFinalState(cut_smp->retract);
-
-                auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
-
-                if(!transit_out_traj){
-                    RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
-                    executable_plan_.cuts.clear();
-                    break;
-                }
-
-                motion::ExecutableCut ex_cut_;
-                ex_cut_.name = segment.name;
-                ex_cut_.transit_in = *transit_in_traj;
-                ex_cut_.transit_out = *transit_out_traj;
-                ex_cut_.process = *cut_smp;
-                executable_plan_.cuts.push_back(std::move(ex_cut_));
-
-            }
-
-            if(executable_plan_.cuts.empty()){
-                result->success = false;
-                result->message= "planner failed";
-                goal_handle->abort(result);
+               RCLCPP_INFO(get_logger(),"Segment: %s generated %zu candidates",
+               segment.name.c_str(), generated.candidates.size());
+               if(generated.candidates.empty()){
+                fail(0,"no process candidates generated");
                 return;
+               }
+               candidates_by_segment.push_back(std::move(generated.candidates));
+
             }
+
+
+        auto executable_opt = cut_graph_planner_->plan(
+           plan,
+           candidates_by_segment,
+           arbitrary_start_state,
+           "cut_plan_001" ,
+           estimate.profile_name
+        );
+        if(!executable_opt){
+            fail(0,"could not connect cutting operations");
+            return;
+        }
+        motion::ExecutablePlan executable_plan_ = std::move(*executable_opt);
+        const auto& stats = cut_graph_planner_->statistics();
+        RCLCPP_INFO(get_logger(),
+        "graph planning: tested %zu, process fail %zu",
+        "transit_in_fail: %zu, transit_out_fail: %zu, accepted: %zu",
+        stats.candidates_tested,
+        stats.process_failures,
+        stats.transit_in_failures,
+        stats.transit_out_failures,
+        stats.accepted_candidates);
+
+
+            // for (const auto& segment : plan.segments)
+            // {
+                
+            //     RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
+
+
+
+
+
+
+            //     auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
+
+
+            //     if(!transit_in_traj){
+            //         RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
+            //         executable_plan_.cuts.clear();
+            //         break;
+            //     }
+
+
+
+            //     auto actual_appr = getFinalState(*transit_in_traj);
+            //     // lin motion leadin cut retract       
+            //     auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
+            //     // return back to arbitrary start
+            //     if(!cut_smp){
+            //         RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
+            //         executable_plan_.cuts.clear();
+            //         break;
+            //     }
+            //     auto actual_retr = getFinalState(cut_smp->retract);
+
+            //     auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
+
+            //     if(!transit_out_traj){
+            //         RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
+            //         executable_plan_.cuts.clear();
+            //         break;
+            //     }
+
+            //     motion::ExecutableCut ex_cut_;
+            //     ex_cut_.name = segment.name;
+            //     ex_cut_.transit_in = *transit_in_traj;
+            //     ex_cut_.transit_out = *transit_out_traj;
+            //     ex_cut_.process = *cut_smp;
+            //     executable_plan_.cuts.push_back(std::move(ex_cut_));
+
+            // }
+
+            // if(executable_plan_.cuts.size() != plan.segments.size()){
+            //     fail(0,"incomplete exeuctable plan");
+            //     return;
+            // }
             const auto robot_model = move_group_->getRobotModel();
 
             using Plan = moveit::planning_interface::MoveGroupInterface::Plan;

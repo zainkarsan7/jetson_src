@@ -16,6 +16,33 @@
 
 namespace hb_robot_skills::motion
 {
+using CandidateId = std::size_t;
+using EdgeId = std::size_t;
+
+enum class EdgeStatus{
+    Unknown,
+    Valid,
+    FailedWithBudget,
+    Invalid
+};
+
+struct TransitEdge{
+
+    EdgeId id;
+    CandidateId from;
+    CandidateId to;
+
+    EdgeStatus status = EdgeStatus::Unknown;
+
+    double estimated_cost = 0.0;
+    double actual_cost = 0.0;
+    std::vector<moveit::core::RobotStatePtr> trajectory;
+    std::size_t attempts = 0;
+
+
+
+};
+
 
 struct ProcessGeneratorOptions
 {
@@ -53,8 +80,11 @@ struct ProcessGeneratorOptions
     bool enable_reverse_ik_search = true;
 };
 
+
 struct ProcessCandidate
 {
+
+    CandidateId id;
     std::string segment_name;
 
     double torch_roll_rad = 0.0;
