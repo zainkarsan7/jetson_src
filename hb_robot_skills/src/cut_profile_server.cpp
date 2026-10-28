@@ -840,7 +840,7 @@ namespace hb_robot_skills{
             fail(0, "Cutting scene validation failed");
             return;
         }
-
+        RCLCPP_INFO(get_logger(), "cut entering geo planner");
         const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,scene_snapshot);
         if(!plan_opt){
             result->success = false;
@@ -857,6 +857,8 @@ namespace hb_robot_skills{
         for (const auto& segment : plan.segments)
             {
 
+                RCLCPP_INFO(get_logger(), "Segment: %s generating candidates", segment.name.c_str());
+
                 auto generated = process_generator_->generate(
                     segment,
                     arbitrary_start_state,
@@ -872,6 +874,7 @@ namespace hb_robot_skills{
                candidates_by_segment.push_back(std::move(generated.candidates));
 
             }
+        RCLCPP_INFO(get_logger(), "starting cut graph planner");
 
 
         auto executable_opt = cut_graph_planner_->plan(
@@ -881,6 +884,8 @@ namespace hb_robot_skills{
            "cut_plan_001" ,
            estimate.profile_name
         );
+
+        RCLCPP_INFO(get_logger(), "returned  cut graph planner");
         if(!executable_opt){
             fail(0,"could not connect cutting operations");
             return;

@@ -47,15 +47,15 @@ struct TransitEdge{
 struct ProcessGeneratorOptions
 {
     // Uniform samples over the allowed local-Z torch rotation.
-    std::size_t roll_samples = 12;
+    std::size_t roll_samples = 4;
     double min_roll_rad = -3.141592653589793;
     double max_roll_rad =  3.141592653589793;
 
     // IK attempts per roll. The first uses the supplied reference.
-    std::size_t seeds_per_roll = 12;
+    std::size_t seeds_per_roll = 2;
 
     // Maximum Cartesian spacing between consecutive samples.
-    double max_translation_step_m = 0.005;
+    double max_translation_step_m = 0.01;
     double max_rotation_step_rad = 0.05;
 
     // Per-waypoint IK timeout.
@@ -73,11 +73,11 @@ struct ProcessGeneratorOptions
     // Reject solutions that are essentially the same.
     double duplicate_joint_distance = 0.15;
 
-    std::size_t max_candidates = 24;
+    std::size_t max_candidates = 8;
 
     // Diagnostic option: try solving the same path backward.
     // The returned candidate is still ordered approach->cut->retract.
-    bool enable_reverse_ik_search = true;
+    bool enable_reverse_ik_search = false;
 };
 
 

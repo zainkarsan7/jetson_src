@@ -44,6 +44,20 @@ class CutGraphPlanner{
             double transit_weight = 1.0;
         };
 
+        struct CandidateGraphEntry{
+            NodeId node_id;
+            std::size_t segment_index;
+            std::size_t candidate_index;
+
+        }
+
+        struct TransitEdgeInfo{
+            EdgeId edge_id;
+            std::size_t segment_index;
+            std::size_t candidate_index;
+            bool transit_in;
+        }
+
         struct Statistics{
             std::size_t candidates_tested = 0;
             std::size_t process_failures = 0;
@@ -105,7 +119,7 @@ class CutGraphPlanner{
 
         moveit::core::RobotModelConstPtr robot_model_;
         const moveit::core::JointModelGroup* joint_model_group_ = nullptr;
-
+        CutCandidateGraph cut_candidate_graph_;
         std::string planning_group_;
         TransitPlanner transit_planner_;
         ProcessPlanner process_planner_;

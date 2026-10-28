@@ -61,7 +61,7 @@ namespace hb_robot_skills::motion{
         // set the start cost to whatever cost the node has.
         cost[start] = nodes_[start].process_cost;
         for (NodeId u: order){
-            if(!std::isfinite(u)){
+            if(!std::isfinite(cost[u])){
                 continue;
             }
             for (const GraphEdge & e: edges_){
