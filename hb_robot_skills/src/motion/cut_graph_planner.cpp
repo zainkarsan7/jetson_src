@@ -190,7 +190,11 @@ namespace hb_robot_skills::motion{
         bool CutGraphPlanner::validateProcess(const ProcessCandidate& candidate, 
         const SegmentMotionPlan& process)const{
 
-            if(!candidate.entry || !candidate.exit){
+            if(!candidate.entry || !candidate.exit ||
+                candidate.cut.empty()||
+                !candidate.cut.front()||
+                !candidate.cut.back()            
+            ){
                 return false;
             }
             const auto approach_first = firstState(process.approach);
@@ -207,10 +211,7 @@ namespace hb_robot_skills::motion{
                 !cut_first||
                 !cut_last||
                 !retract_first||
-                !retract_last ||
-                !candidate.cut.front()||
-                !candidate.cut.back() ||
-                candidate.cut.empty()
+                !retract_last                 
             ){
                 return false;
             }
@@ -247,245 +248,232 @@ namespace hb_robot_skills::motion{
             const std::string& estimate_id
         ){
 
-
-            
-
             statistics_ = {};
-
-            if(cut_plan.segments.empty()){
-                return std::nullopt;
+            const std::size_t segment_count = cut_plan.segments.size();
+            if(segment_count ==0 || candidates_by_segment.size()!=segment_count){
+                                return std::nullopt;
             }
-            if(cut_plan.segments.size()!=candidates_by_segment.size()){
-                return std::nullopt;
-            }
-
+            //building the graph here:
             CutCandidateGraph graph;
-            std::vector<CandidateGraphEntry> candidate_nodes;
-            std::vector<TransitEdgeInfo> transit_edges;
+            std::unordered_map<EdgeId, TransitEdgeInfo> edge_lookup;
+            std::unordered_map<NodeId, CandidateGraphEntry> candidate_lookup;
 
-            
-            using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
-
-            std::vector<std::optional<Plan>> edge_plans(graph.edges().size());
-            std::vector<std::optional<SegmentMotionPlan>> process_plans(candidate_nodes.size());
-
-            std::unordered_map<NodeId, Plan> transit_cache;
-            std::unordered_map<EdgeId, SegmentMotionPlan> process_cache;
-            
-
-            std::unordered_map<NodeId, TransitEdgeInfo> edge_lookup;
-            std::unordered_map<EdgeId, CandidateGraphEntry> candidate_lookup;
-            
-            
-            
-            
-            
-            
+            // each cut as a home node before and after and adjsect cuts share a home node
             std::vector<NodeId> home_nodes;
-            home_nodes.reserve(cut_plan.segments.size()+1);
+            home_nodes.reserve(segment_count+1);
 
-            for (std::size_t i=0; i<cut_plan.segments.size(); i++){
+            for (std::size_t i=0; i<=segment_count; i++){
                 home_nodes.push_back(graph.addNode(i*2,0.0));
             }
+            for(std::size_t segment_index = 0; segment_index<segment_count;++segment_index){
 
-            ExecutablePlan result;
-            result.plan_id = plan_id;
-            result.estimate_id = estimate_id;
-
-            result.cuts.reserve(cut_plan.segments.size());
-
-            for(std::size_t segment_index = 0; segment_index<cut_plan.segments.size(); segment_index++){
-                const CutSegment& segment=cut_plan.segments[segment_index];
                 const auto& candidates = candidates_by_segment[segment_index];
-
-                if(candidates.empty()){
-                    return std::nullopt;
-                }
-                std::optional<PlannedCandidate> best;
-                const std::size_t count = std::min(candidates.size(),
-            options_.max_candidates_per_segment);
-
+                const std::size_t count = std::min(candidates.size(),options_.max_candidates_per_segment);
+                std::size_t added = 0;
                 for(std::size_t cand_ind = 0; cand_ind<count; cand_ind++){
                     const auto& candidate = candidates[cand_ind];
-                    if(!candidate.entry || !candidate.exit)continue;
-                    const NodeId candidate_node = graph.addNode(2*segment_index + 1,candidate.score);
-                    candidate_nodes.push_back({candidate_node,segment_index,cand_ind});
-                    const double in_estimate = home_state.distance(*candidate.entry,joint_model_group_);
-                    const double out_estimate = home_state.distance(*candidate.exit,joint_model_group_);
-                    const EdgeId in_edge = graph.addEdge(home_nodes[segment_index],candidate_node, in_estimate);
-                    const EdgeId out_edge = graph.addEdge(candidate_node,home_nodes[segment_index+1], out_estimate);
-                    transit_edges.push_back({
-                        in_edge,segment_index,cand_ind,true
+                    if(!candidate.entry || !candidate.exit || candidate.cut.empty())continue;
+
+                    const NodeId node_id = graph.addNode(2*segment_index + 1,options_.process_weight* candidate.score);
+                    candidate_lookup.emplace(node_id,CandidateGraphEntry{
+                        node_id,
+                        segment_index,cand_ind
                     });
-                    transit_edges.push_back({
-                        out_edge,segment_index+1, cand_ind, false
-                    });
+                    const double in_estimate = options_.transit_weight * home_state.distance(*candidate.entry,joint_model_group_);
+                    const double out_estimate =  options_.transit_weight * candidate.exit->distance(home_state, joint_model_group_);
 
-
-                
-
-
-
-                    auto planned = evaluateCandidate(segment, 
-                        candidate,
-                        home_state,
-                        cand_ind
-                    );
-
-
-
-
-                    if(!planned) continue;
-                    if(!best || planned->cost < best->cost){
-                        best = std::move(planned);
-                    }
-                   
-                }
-
-                for(const auto& entry: candidate_nodes){
-                candidate_lookup.emplace(entry.node_id,entry);
-                }
-
-                for(const auto& entry: transit_edges){
-                    edge_lookup.emplace(entry.edge_id,entry);
-                }
-
-
-
-                constexpr double unknown_penalty = 0.0;
-                constexpr double failed_penalty = 1e6;
-
-                while(true){
-
-                    GraphRoute route = graph.cheapestRoute(
-                        home_nodes.front(),
-                        home_nodes.back(),
-                        unknown_penalty,
-                        failed_penalty
-                    );
-
-                    if(route.nodes.empty()){
-                        return std::nullopt;
-                    }
-
-                    bool changed = false;
-
-                    for(NodeId node_id: route.nodes){
-                        const auto it = candidate_lookup.find(node_id);
+                    const EdgeId in_edge = graph.addEdge(home_nodes[segment_index],node_id, in_estimate);
+                    const EdgeId out_edge = graph.addEdge(node_id,home_nodes[segment_index+1], out_estimate);
                     
-                        if(it==candidate_lookup.end()){
-                            continue;
-                        }
+                    edge_lookup.emplace(in_edge, TransitEdgeInfo{
+                        in_edge,
+                        segment_index,
+                        cand_ind,
+                        true
+                    });
 
-                        if(process_cache.count(node_id)){
-                            continue;
-                        }
+                    edge_lookup.emplace(out_edge, TransitEdgeInfo{
+                        out_edge,
+                        segment_index,
+                        cand_ind,
+                        false
+                    });
+                    ++added;
+                }
+                if(added ==0){
+                    std::cout<<"failed to add any nodes/edges for segment"<<segment_index<<std::endl;
+                    return std::nullopt;
+                }
+            }
+            // now create caches 
+            using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
+            std::unordered_map<EdgeId, Plan> transit_cache;
+            std::unordered_map<NodeId, SegmentMotionPlan> process_cache;
 
-                        const auto& entry = it->second;
-                        const auto& segment = cut_plan.segments[segment_index];
-                        const auto& candidate = candidates_by_segment[entry.segment_index][entry.candidate_index];
-                        auto process = process_planner_(segment,candidate);
-                        if(!process || !validateProcess(candidate, *process)){
-                            for(const auto& edge: graph.edges()){
-                                if(edge.from == node_id || edge.to == node_id){
-                                    graph.edge(edge.id).status = TransitStatus::Invalid;
-                                }
+
+            const NodeId start_node = home_nodes.front();
+
+            const NodeId goal_node = home_nodes.back();
+
+            constexpr double unknown_penalty = 0.0;
+            constexpr double failed_penalty = 1e6;
+
+            GraphRoute selected_route;
+
+            // do lazy search validation here:
+            
+            while(true){
+
+                GraphRoute route = graph.cheapestRoute(
+                    start_node,
+                    goal_node,
+                    unknown_penalty,
+                    failed_penalty
+                );
+
+                if(route.nodes.empty()){
+                    return std::nullopt;
+                }
+
+                bool changed = false;
+                // now start planning the process nodes in the route:
+                for(NodeId node_id: route.nodes){
+                    const auto lookup_it = candidate_lookup.find(node_id);
+                
+                    if(lookup_it==candidate_lookup.end()){
+                        continue; // home node
+                    }
+
+                    if(process_cache.count(node_id)!=0){
+                        continue;//already planned and validated this node
+                    }
+
+                    //now do some rpcess call on this candidate
+                    const auto& info = lookup_it->second;
+                    const auto& segment = cut_plan.segments[info.segment_index];
+                    const auto& candidate = candidates_by_segment[info.segment_index][info.candidate_index];
+                    ++statistics_.candidates_tested;
+                    auto process = process_planner_(segment,candidate);
+                    if(!process || !validateProcess(candidate, *process)){
+                        ++statistics_.process_failures;
+                        //this node fails, so remove any connecting edges:
+                        for(const auto& e: graph.edges()){
+                            if(e.from == node_id || e.to == node_id){
+                                graph.edge(e.id).status = TransitStatus::Invalid;
                             }
-                            changed= true;
-                            break;
                         }
-                        graph.node(node_id).process_cost = options_.process_weight * 
-                        (trajectoryCost(process->approach)+ trajectoryCost(process->cut)+trajectoryCost(process->retract));
-                        process_cache.emplace(node_id,std::move(*process));
+
                         changed= true;
                         break;
                     }
-                    if(changed) continue;
-                    for(EdgeId edge_id : route.edges){
-                        auto& edge = graph.edge(edge_id);
-                        if(edge.status == TransitStatus::Valid){
-                            continue;
-                        }
-                        if(edge.status == TransitStatus::Invalid){
-                            continue;
-                        }
-                        const auto info_it = edge_lookup.find(edge_id);
-                        if(info_it == edge_lookup.end()){
-                            throw std::runtime_error("meta data for edge not there");
-                        }
-                        const auto& info = info_it->second;
-                        const auto& candidate = candidates_by_segment[info.segment_index][info.candidate_index];
-                        const auto& process = process_cache.at(info.transit_in ? edge.to : edge.from);
-                        const auto& actual_entry = firstState(process.approach);
-                        const auto& actual_exit = lastState(process.retract);
+                    const double actual_process_cost = options_.process_weight * 
+                    (trajectoryCost(process->approach)+ 
+                    trajectoryCost(process->cut)+
+                    trajectoryCost(process->retract));
+                    
+                    graph.node(node_id).process_cost = actual_process_cost;
+                    
+                    process_cache.emplace(node_id,std::move(*process));
+                    changed= true;
+                    break;
+                }
 
-                        if(!actual_entry || !actual_exit){
-                            edge.status = TransitStatus::Invalid;
-                            changed= true;
-                            break;
-                        }
-                        auto transit = info.transit_in ? 
-                        transit_planner_(home_state, *actual_entry) : 
-                        transit_planner_(*actual_exit, home_state);
-                        if(!transit){
-                            edge.status = TransitStatus::Invalid;
-                            changed=true;
-                            break;
-                        }
-                        const auto first  = firstState(*transit);
-                        const auto last = lastState(*transit);
-                        const bool connected = first && last && (
-                            info.transit_in? statesMatch(*first, home_state) && 
-                            statesMatch(*last, *actual_entry) : 
-                            statesMatch(*first, *actual_exit) && 
-                            statesMatch(*last, home_state)
-                    );
-                    if(!connected){
+                //the graph changed so recompute route
+                if(changed) continue;
+                std::cout<<"all graph nodes validated"<<std::endl;
+                //resolve the first unplanned transit edge, 
+                //by now all the process nodes must have been validated
+                for(EdgeId edge_id : route.edges){
+                    auto& edge = graph.edge(edge_id);
+
+                    if(edge.status == TransitStatus::Valid){
+                        continue;
+                    }
+                    if(edge.status == TransitStatus::Invalid){
+                        throw std::logic_error("one of the edges is invalid");
+                    }
+                    const auto info = edge_lookup.at(edge_id);
+                    const NodeId candidate_node = info.transit_in ? edge.to : edge.from;
+                    const auto& process = process_cache.at(candidate_node); // get the process node,
+                    // start computing transit in transit out 
+                    const auto& actual_entry = firstState(process.approach);
+                    const auto& actual_exit = lastState(process.retract);
+
+                    if(!actual_entry || !actual_exit){
+                        edge.status = TransitStatus::Invalid;
+                        changed= true;
+                        break;
+                    }
+                    // now do move group planning call:
+                    auto transit = info.transit_in ? 
+                    transit_planner_(home_state, *actual_entry) : 
+                    transit_planner_(*actual_exit, home_state);
+                    if(!transit){
+                        if(info.transit_in) ++statistics_.transit_in_failures;
+                        else ++statistics_.transit_out_failures;
                         edge.status = TransitStatus::Invalid;
                         changed=true;
                         break;
-                    }
-                    edge.actual_cost = trajectoryCost(*transit)*options_.transit_weight;
-                    edge.status = TransitStatus::Valid;
-                    transit_cache.emplace(edge_id, std::move(*transit));
-                    changed = true;
+                    } 
+                    
+                    
+                    const auto first  = firstState(*transit);
+                    const auto last = lastState(*transit);
+                    const bool connected = first && last && (
+                        info.transit_in? statesMatch(*first, home_state) && 
+                        statesMatch(*last, *actual_entry) : 
+                        statesMatch(*first, *actual_exit) && 
+                        statesMatch(*last, home_state)
+                );
+                if(!connected){
+                    if(info.transit_in) ++statistics_.transit_in_failures;
+                    else ++statistics_.transit_out_failures;
+                    edge.status = TransitStatus::Invalid;
+                    changed=true;
                     break;
-
-
-
-
-
-                    }
-                    if (changed) continue;
-
-
-                    break;
-
-                }        
-
-            }
-            const GraphRoute final_route = graph.cheapestRoute(home_nodes.front(),home_nodes.back(),0.0,1e6);
-            for (std::size_t i = 1; i+1 < final_route.nodes.size(); i++){
-                const NodeId node_id = final_route.nodes[i];
-                const auto it = candidate_lookup.find(node_id);
-                if(it==candidate_lookup.end()){
-                    continue;
                 }
-                const auto& entry = it->second;
+                edge.actual_cost = trajectoryCost(*transit)*options_.transit_weight;
+                edge.status = TransitStatus::Valid;
+                transit_cache.emplace(edge_id, std::move(*transit));
+                changed = true;
+                break;
+                }
+                if (changed) continue;
+                //no unresolved processes or transits now, 
+                std::cout<<"all edges transits, nodes processes resolved"<<std::endl;
+                selected_route = std::move(route);
+                break;
+            } 
+            // now assemble the executable plan from the route:                
+                
+            ExecutablePlan result;
+            result.plan_id = plan_id;
+            result.estimate_id = estimate_id;
+            result.cuts.reserve(segment_count);
+
+            for (std::size_t i = 1; i+1 < selected_route.nodes.size(); i++){
+                const NodeId node_id = selected_route.nodes[i];
+                const auto lookup_it = candidate_lookup.find(node_id);
+                if(lookup_it==candidate_lookup.end()){
+                    continue; //home node
+                }
+                const auto& info = lookup_it->second;
+                // a node always is between two edges: both home nodes
+                const EdgeId in_edge = selected_route.edges.at(i-1);
+                const EdgeId out_edge = selected_route.edges.at(i);
+
                 ExecutableCut cut;
-                cut.name = cut_plan.segments[entry.segment_index].name;
-                cut.transit_in = transit_cache.at(final_route.edges[i-1]);
+                cut.name = cut_plan.segments[info.segment_index].name;
+                cut.transit_in = transit_cache.at(in_edge);
                 cut.process = process_cache.at(node_id);
-                cut.transit_out = transit_cache.at(final_route.edges[i]);
+                cut.transit_out = transit_cache.at(out_edge);
                 result.cuts.push_back(cut);
+                ++statistics_.accepted_candidates;
 
             }
             if(result.cuts.size()!=cut_plan.segments.size()) return std::nullopt;
 
         return result;
-
-
-
         }
 
 

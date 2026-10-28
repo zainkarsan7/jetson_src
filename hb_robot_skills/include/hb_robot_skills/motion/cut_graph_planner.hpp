@@ -49,14 +49,14 @@ class CutGraphPlanner{
             std::size_t segment_index;
             std::size_t candidate_index;
 
-        }
+        };
 
         struct TransitEdgeInfo{
             EdgeId edge_id;
             std::size_t segment_index;
             std::size_t candidate_index;
             bool transit_in;
-        }
+        };
 
         struct Statistics{
             std::size_t candidates_tested = 0;
