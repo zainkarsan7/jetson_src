@@ -60,6 +60,7 @@ class CutCandidateGraph{
 
         GraphRoute cheapestRoute(NodeId start,NodeId goal, double unknown_edge_penalty=0.0,double failed_edge_penalty=1000.0)const;
         GraphEdge& edge(EdgeId id);
+        GraphNode& node(NodeId id);
         const GraphEdge& edge(EdgeId id)const;
         const GraphNode& node(NodeId id)const;
         const std::vector<GraphEdge>&edges() const;

@@ -135,6 +135,9 @@ namespace hb_robot_skills::motion{
         return nodes_.at(id);
     }
 
+    GraphNode& CutCandidateGraph::node(NodeId id){
+        return nodes_.at(id);
+    }
 
     const std::vector<GraphEdge>& CutCandidateGraph::edges() const{
         return edges_;

@@ -118,9 +118,9 @@ namespace hb_robot_skills::motion{
             result.cut.process = std::move(*process);
             result.cut.transit_out = std::move(*transit_out);
             const double process_cost = 
-            trajectoryCost(result.cut.process.approach)+
+            (trajectoryCost(result.cut.process.approach)+
             trajectoryCost(result.cut.process.cut)+
-            trajectoryCost(result.cut.process.retract);
+            trajectoryCost(result.cut.process.retract));
             const double transit_cost = 
             trajectoryCost(result.cut.transit_in) +
             trajectoryCost(result.cut.transit_out);
@@ -394,6 +394,8 @@ namespace hb_robot_skills::motion{
                             changed= true;
                             break;
                         }
+                        graph.node(node_id).process_cost = options_.process_weight * 
+                        (trajectoryCost(process->approach)+ trajectoryCost(process->cut)+trajectoryCost(process->retract));
                         process_cache.emplace(node_id,std::move(*process));
                         changed= true;
                         break;
@@ -443,7 +445,7 @@ namespace hb_robot_skills::motion{
                         changed=true;
                         break;
                     }
-                    edge.actual_cost = trajectoryCost(*transit);
+                    edge.actual_cost = trajectoryCost(*transit)*options_.transit_weight;
                     edge.status = TransitStatus::Valid;
                     transit_cache.emplace(edge_id, std::move(*transit));
                     changed = true;
@@ -459,20 +461,28 @@ namespace hb_robot_skills::motion{
 
                     break;
 
-                }
-
-
-
-
-
-                if(!best){
-                    return std::nullopt;
-                }
-                result.cuts.push_back(std::move(best->cut));
-          
+                }        
 
             }
-                  return result;
+            const GraphRoute final_route = graph.cheapestRoute(home_nodes.front(),home_nodes.back(),0.0,1e6);
+            for (std::size_t i = 1; i+1 < final_route.nodes.size(); i++){
+                const NodeId node_id = final_route.nodes[i];
+                const auto it = candidate_lookup.find(node_id);
+                if(it==candidate_lookup.end()){
+                    continue;
+                }
+                const auto& entry = it->second;
+                ExecutableCut cut;
+                cut.name = cut_plan.segments[entry.segment_index].name;
+                cut.transit_in = transit_cache.at(final_route.edges[i-1]);
+                cut.process = process_cache.at(node_id);
+                cut.transit_out = transit_cache.at(final_route.edges[i]);
+                result.cuts.push_back(cut);
+
+            }
+            if(result.cuts.size()!=cut_plan.segments.size()) return std::nullopt;
+
+        return result;
 
 
 
