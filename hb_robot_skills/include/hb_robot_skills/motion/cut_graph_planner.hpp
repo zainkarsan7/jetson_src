@@ -38,12 +38,10 @@ class CutGraphPlanner{
         using ProcessPlanner = std::function<std::optional<SegmentMotionPlan>(const CutSegment& segment, const ProcessCandidate& candidate)>;
 
         struct Options{
-
             std::size_t max_candidates_per_segment = 24;
             double boundary_tol = 1e-3;
             double process_weight = 1.0;
             double transit_weight = 1.0;
-
         };
 
         struct Statistics{
@@ -59,7 +57,7 @@ class CutGraphPlanner{
             std::string planning_group,
             TransitPlanner transit_planner,
             ProcessPlanner process_planner,
-            Options options = Options{}
+            Options options
         );
 
         std::optional<ExecutablePlan> plan(
@@ -99,7 +97,7 @@ class CutGraphPlanner{
 
         double trajectoryCost(const Plan& plan)const;
 
-        bool CutGraphPlanner::statesMatch(const moveit::core::RobotState& a,
+        bool statesMatch(const moveit::core::RobotState& a,
         const moveit::core::RobotState& b)const;
 
         bool validateProcess(const ProcessCandidate& candidate, 

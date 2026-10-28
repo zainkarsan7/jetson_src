@@ -851,10 +851,6 @@ namespace hb_robot_skills{
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
 
-        motion::ExecutablePlan executable_plan_;
-        executable_plan_.plan_id = "cut_plan_001";
-        executable_plan_.estimate_id = estimate.profile_name;
-
         std::vector<std::vector<motion::ProcessCandidate>> candidates_by_segment;
         candidates_by_segment.reserve(plan.segments.size());
 
