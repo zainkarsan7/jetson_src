@@ -44,9 +44,26 @@ namespace hb_robot_skills{
         }
         get_parameter("skip_cutting_motion",skip_motion_);
 
+        TorchIOConfig torch_config_;
+
+        if(!has_parameter("torch_output_pin")){
+            torch_config_.torch_output_pin = declare_parameter<int>("torch_output_pin",1);
+        }
+        torch_config_.torch_output_pin = get_parameter("torch_output_pin").as_int();
+        
+        
+        if(!has_parameter("transfer_input_pin")){
+            torch_config_.transfer_input_pin = declare_parameter<int>("transfer_input_pin",0);
+        }
+        torch_config_.transfer_input_pin = get_parameter("transfer_input_pin").as_int();
+
+        if(!has_parameter("voltage_input_pin")){
+            torch_config_.voltage_input_pin = declare_parameter<int>("voltage_input_pin",0);
+        }
+        torch_config_.voltage_input_pin = get_parameter("voltage_input_pin").as_int();
 
 
-
+        torch_controller_ = std::make_unique<TorchController>(*this,torch_config_);
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_cut_motion",
             std::bind(&CutProfileServer::handleApproval,this,

@@ -154,7 +154,6 @@ namespace hb_robot_skills{
         bool motion_rejected_{false};
 
         
-        TorchIOConfig torch_config_;
         std::unique_ptr<TorchController> torch_controller_;
 
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
