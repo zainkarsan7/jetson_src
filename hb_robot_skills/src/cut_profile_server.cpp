@@ -968,7 +968,7 @@ namespace hb_robot_skills{
         motion::ExecutablePlan executable_plan_ = std::move(*executable_opt);
         const auto& stats = cut_graph_planner_->statistics();
         RCLCPP_INFO(get_logger(),
-        "graph planning: tested %zu, process fail %zu",
+        "graph planning: tested %zu, process fail %zu, "
         "transit_in_fail: %zu, transit_out_fail: %zu, accepted: %zu",
         stats.candidates_tested,
         stats.process_failures,

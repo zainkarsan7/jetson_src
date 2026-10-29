@@ -66,6 +66,15 @@ class CutGraphPlanner{
             std::size_t accepted_candidates = 0;
         };
 
+        struct JointMotionMetrics
+        {
+            double total_travel = 0.0;
+            double maximum_joint_travel = 0.0;
+            double maximum_step = 0.0;
+        };
+
+        JointMotionMetrics jointMotionMetrics(const Plan& plan) const;
+
         CutGraphPlanner(
             moveit::core::RobotModelConstPtr robot_model,
             std::string planning_group,

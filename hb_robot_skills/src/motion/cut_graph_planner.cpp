@@ -53,6 +53,92 @@ namespace hb_robot_skills::motion{
             }
         };
 
+// double estimatedTransitCost(
+//     const moveit::core::RobotState& from,
+//     const moveit::core::RobotState& to,
+//     const moveit::core::JointModelGroup* jmg)
+// {
+//     const auto* joints = jmg->getActiveJointModels();
+
+//     double total = 0.0;
+//     double maximum = 0.0;
+
+//     for (const auto* joint : joints)
+//     {
+//         const double d = joint->distance(
+//             from.getJointPositions(joint),
+//             to.getJointPositions(joint));
+
+//         total += d;
+//         maximum = std::max(maximum, d);
+//     }
+
+//     return total + 2.0 * maximum;
+// }
+
+
+        CutGraphPlanner::JointMotionMetrics
+CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
+{
+    moveit::core::RobotState reference(robot_model_);
+    reference.setToDefaultValues();
+
+    moveit::core::robotStateMsgToRobotState(
+        plan.start_state_, reference);
+
+    robot_trajectory::RobotTrajectory trajectory(
+        robot_model_, planning_group_);
+
+    trajectory.setRobotTrajectoryMsg(
+        reference, plan.trajectory_);
+
+    JointMotionMetrics metrics;
+
+    const auto& active_joints =
+        joint_model_group_->getActiveJointModels();
+
+    for (const auto* joint : active_joints)
+    {
+        // This diagnostic assumes one variable per active joint,
+        // as is typical for the UR10e arm group.
+        if (joint->getVariableCount() != 1)
+            continue;
+
+        const std::string& variable =
+            joint->getVariableNames().front();
+
+        double joint_travel = 0.0;
+
+        for (std::size_t i = 1;
+             i < trajectory.getWayPointCount();
+             ++i)
+        {
+            const auto& previous =
+                trajectory.getWayPoint(i - 1);
+
+            const auto& current =
+                trajectory.getWayPoint(i);
+
+            const double delta = std::abs(
+                current.getVariablePosition(variable) -
+                previous.getVariablePosition(variable));
+
+            joint_travel += delta;
+
+            metrics.maximum_step =
+                std::max(metrics.maximum_step, delta);
+        }
+
+        metrics.total_travel += joint_travel;
+
+        metrics.maximum_joint_travel = std::max(
+            metrics.maximum_joint_travel,
+            joint_travel);
+    }
+
+    return metrics;
+}
+
         std::optional<CutGraphPlanner::PlannedCandidate> CutGraphPlanner::evaluateCandidate(
             const CutSegment& segment,
             const ProcessCandidate& candidate,
@@ -305,6 +391,37 @@ namespace hb_robot_skills::motion{
                     return std::nullopt;
                 }
             }
+            std::cout << "\n[GRAPH] Candidate estimates:\n";
+
+                    for (const auto& [node_id, info] : candidate_lookup)
+                    {
+                        double in_cost = 0.0;
+                        double out_cost = 0.0;
+
+                        for (const auto& edge : graph.edges())
+                        {
+                            if (edge.to == node_id)
+                                in_cost = edge.estimated_cost;
+
+                            if (edge.from == node_id)
+                                out_cost = edge.estimated_cost;
+                        }
+
+                        const double process_cost =
+                            graph.node(node_id).process_cost;
+
+                        std::cout
+                            << "  segment=" << info.segment_index
+                            << " candidate=" << info.candidate_index
+                            << " process=" << process_cost
+                            << " transit_in=" << in_cost
+                            << " transit_out=" << out_cost
+                            << " estimated_total="
+                            << process_cost + in_cost + out_cost
+                            << "\n";
+                    }
+                
+
             // now create caches 
             using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
             std::unordered_map<EdgeId, Plan> transit_cache;
@@ -319,7 +436,57 @@ namespace hb_robot_skills::motion{
             constexpr double failed_penalty = 1e6;
 
             GraphRoute selected_route;
+            auto printRoute = [&](const GraphRoute& route)
+                {
+                    std::cout
+                        << "\n[GRAPH] Selected route, cost="
+                        << route.cost
+                        << "\n";
 
+                    for (std::size_t i = 0; i < route.nodes.size(); ++i)
+                    {
+                        const NodeId node_id = route.nodes[i];
+
+                        const auto candidate_it =
+                            candidate_lookup.find(node_id);
+
+                        if (candidate_it == candidate_lookup.end())
+                        {
+                            std::cout
+                                << "  Home node " << node_id
+                                << "\n";
+                        }
+                        else
+                        {
+                            const auto& info = candidate_it->second;
+
+                            std::cout
+                                << "  Candidate node " << node_id
+                                << " segment=" << info.segment_index
+                                << " candidate=" << info.candidate_index
+                                << " process_cost="
+                                << graph.node(node_id).process_cost
+                                << " planned="
+                                << (process_cache.count(node_id) != 0)
+                                << "\n";
+                        }
+
+                        if (i < route.edges.size())
+                        {
+                            const EdgeId edge_id = route.edges[i];
+                            const auto& edge = graph.edge(edge_id);
+
+                            std::cout
+                                << "    Edge " << edge_id
+                                << " from=" << edge.from
+                                << " to=" << edge.to
+                                << " estimated=" << edge.estimated_cost
+                                << " actual=" << edge.actual_cost
+                                << " status=" << static_cast<int>(edge.status)
+                                << "\n";
+                        }
+                    }
+                };
             // do lazy search validation here:
             
             while(true){
@@ -334,6 +501,8 @@ namespace hb_robot_skills::motion{
                 if(route.nodes.empty()){
                     return std::nullopt;
                 }
+
+                printRoute(route);
 
                 bool changed = false;
                 // now start planning the process nodes in the route:
@@ -381,6 +550,9 @@ namespace hb_robot_skills::motion{
                 //the graph changed so recompute route
                 if(changed) continue;
                 std::cout<<"all graph nodes validated"<<std::endl;
+                
+                
+                
                 //resolve the first unplanned transit edge, 
                 //by now all the process nodes must have been validated
                 for(EdgeId edge_id : route.edges){
@@ -432,7 +604,24 @@ namespace hb_robot_skills::motion{
                     changed=true;
                     break;
                 }
-                edge.actual_cost = trajectoryCost(*transit)*options_.transit_weight;
+                
+                const auto metrics = jointMotionMetrics(*transit);
+
+                std::cout
+                    << "[GRAPH] Transit edge " << edge_id
+                    << " total_joint_travel=" << metrics.total_travel
+                    << " max_joint_travel=" << metrics.maximum_joint_travel
+                    << " max_step=" << metrics.maximum_step
+                    << std::endl;
+
+                const double travel_cost = metrics.total_travel;
+
+                const double max_joint_cost =
+                    metrics.maximum_joint_travel;
+
+                edge.actual_cost =
+                    options_.transit_weight *
+                    (travel_cost + 2.0 * max_joint_cost);
                 edge.status = TransitStatus::Valid;
                 transit_cache.emplace(edge_id, std::move(*transit));
                 changed = true;
@@ -450,6 +639,21 @@ namespace hb_robot_skills::motion{
             result.plan_id = plan_id;
             result.estimate_id = estimate_id;
             result.cuts.reserve(segment_count);
+            std::cout << "\n[GRAPH] FINAL SELECTED TRANSITS\n";
+
+            for (const EdgeId edge_id : selected_route.edges)
+            {
+                const auto& plan = transit_cache.at(edge_id);
+                const auto metrics = jointMotionMetrics(plan);
+
+                std::cout
+                    << "edge=" << edge_id
+                    << " cost=" << graph.edge(edge_id).actual_cost
+                    << " total_travel=" << metrics.total_travel
+                    << " max_joint_travel=" << metrics.maximum_joint_travel
+                    << " max_step=" << metrics.maximum_step
+                    << '\n';
+            }
 
             for (std::size_t i = 1; i+1 < selected_route.nodes.size(); i++){
                 const NodeId node_id = selected_route.nodes[i];

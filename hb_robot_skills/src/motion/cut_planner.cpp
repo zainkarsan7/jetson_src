@@ -333,11 +333,11 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
                     });
                     bool updated = false;
                     if(torch_collision){
-                        std::cout<<"trying torch nudge"<<std::endl;
+                        // std::cout<<"trying torch nudge"<<std::endl;
                         updated = proposeTorchNudge(trial,contacts);
                     }
                     else{
-                        std::cout<<"trying jacobean nudge"<<std::endl;
+                        // std::cout<<"trying jacobean nudge"<<std::endl;
                         updated = proposeJacobeanStep(trial,contacts);
                     }
                     if(!updated){
