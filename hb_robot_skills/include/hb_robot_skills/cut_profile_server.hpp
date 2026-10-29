@@ -55,6 +55,11 @@ namespace hb_robot_skills{
                 const std::shared_ptr<GoalHandleCutProfile> goal_handle,
                 const std::string& description
             );
+
+            MotionOutcome executeCut(
+                const motion::ExecutableCut& cut,
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+                );
             
           
 
@@ -62,6 +67,8 @@ namespace hb_robot_skills{
             std::shared_ptr<const CutProfile::Goal> goal);
 
             rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandleCutProfile>goal_handle);
+
+            void requestCutStop();
 
             void handleAccepted(const std::shared_ptr<GoalHandleCutProfile> goal_handle);
             void execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle);
@@ -153,7 +160,7 @@ namespace hb_robot_skills{
 
         bool motion_rejected_{false};
 
-        
+        std::atomic<bool> cut_stop_requested_{false};
         std::unique_ptr<TorchController> torch_controller_;
 
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;

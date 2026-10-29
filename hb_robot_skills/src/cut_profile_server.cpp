@@ -251,12 +251,27 @@ namespace hb_robot_skills{
 
     }
 
-    rclcpp_action::CancelResponse CutProfileServer::handleCancel(const std::shared_ptr<GoalHandleCutProfile> ){
-        RCLCPP_INFO(get_logger(),"cancel requested");
+    void CutProfileServer::requestCutStop(){
+
+        cut_stop_requested_.store(true);
+        if(torch_controller_){
+            torch_controller_->setTorchEnabled(false);
+        }
+
         if(move_group_){
             move_group_->stop();
-
         }
+
+
+    }
+    rclcpp_action::CancelResponse CutProfileServer::handleCancel(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
+        RCLCPP_INFO(get_logger(),"cancel requested");
+
+        (void) goal_handle;
+        RCLCPP_WARN(get_logger(),"cut cancellation requested");
+        requestCutStop();
+
+        
         approval_cv_.notify_all();
 
         return rclcpp_action::CancelResponse::ACCEPT;
@@ -598,6 +613,49 @@ namespace hb_robot_skills{
     return MotionOutcome::SUCCESS;
     }
             
+    CutProfileServer::MotionOutcome CutProfileServer::executeCut(
+                const motion::ExecutableCut& cut,
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+                ){
+                    if(!torch_controller_){
+                        RCLCPP_ERROR(get_logger(),"torch not available, doing try run instead");
+                        
+                    }
+                    if(goal_handle->is_canceling()){
+                        return MotionOutcome::CANCELED;
+                    }
+                    const auto& params= cut.parameters;
+                    torch_controller_->setActiveSegment(cut.name);
+                    const auto telemetry = torch_controller_->snapshot();
+                    if(!torch_controller_->hasFreshIO()){
+                        RCLCPP_ERROR(get_logger(),"torch IO is stale");
+                        return MotionOutcome::FAILED;
+                    }
+                    if(!telemetry.output_on.has_value() || *telemetry.output_on){
+                        RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
+                        return MotionOutcome::FAILED;
+                    }
+                    RCLCPP_INFO(get_logger(),"Cut %s: transfer=%s, analog=%s",
+                    cut.name.c_str(), 
+                    telemetry.transfer_detected.value_or(false)? "ON":"OFF",
+                    telemetry.analog_value ? std::to_string(*telemetry.analog_value).c_str(): "unavail"
+                );
+                    publishFeedback(goal_handle,cut.name+ ": dry run cutting motion"
+                    );
+
+
+
+
+                    const auto outcome = executeMotion(cut.process.cut, goal_handle,cut.name+": cut");
+                    (void) params;
+                    torch_controller_->setActiveSegment("");
+                    return outcome;
+
+                }
+
+
+
+
 
     CutProfileServer::MotionOutcome CutProfileServer::executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
                 const std::shared_ptr<GoalHandleCutProfile>goal_handle){
@@ -623,7 +681,7 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
-            outcome = run(cut.process.cut,"cut");
+            outcome = executeCut(cut,goal_handle);
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }

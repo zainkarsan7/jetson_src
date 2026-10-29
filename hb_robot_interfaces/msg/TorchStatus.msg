@@ -1,5 +1,6 @@
 #TorchStatus.msg
 builtin_interfaces/Time stamp
+string segment_name
 
 bool io_connected
 bool command_on
