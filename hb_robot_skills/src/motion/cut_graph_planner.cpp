@@ -659,6 +659,9 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
 
                 const double actual_cost = transitCost(*transit);
                 if (!std::isfinite(actual_cost)) {
+                    std::cout << "[GRAPH] Rejecting transit edge " << edge_id
+                              << ": non-finite travel or per-joint travel budget exceeded (limit="
+                              << options_.max_transit_joint_travel_rad << ")" << std::endl;
                     if(info.transit_in) ++statistics_.transit_in_failures;
                     else ++statistics_.transit_out_failures;
                     edge.status = TransitStatus::Invalid;

@@ -819,10 +819,10 @@ namespace hb_robot_skills{
 
         // 
         auto check_psm =[](const planning_scene::PlanningScenePtr& scene_)->bool{
-            const auto* world = scene_->getWorld().get();
             if(!scene_){
                 return false;
             }
+            const auto* world = scene_->getWorld().get();
 
             return    (!world->hasObject("inspection_workpiece") &&
                 world->hasObject("wk_workpiece_collision"));
@@ -850,11 +850,8 @@ namespace hb_robot_skills{
         const bool request_psm_update = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
 
         if(!request_psm_update){
-             RCLCPP_INFO(
-                get_logger(),
-                "request update failed");
-           
-            
+            fail(0, "Could not refresh planning scene before cutting");
+            return;
         }
         RCLCPP_INFO(
                 get_logger(),
@@ -877,51 +874,43 @@ namespace hb_robot_skills{
         }
         
 
-       if (check_psm(scene_snapshot)) {
+        // Object IDs are reused on every inspection. Their presence does not
+        // establish freshness; always replace the snapshot's cutting geometry
+        // with the authoritative object fetched for this planning operation.
+        scene_snapshot->getWorldNonConst()->removeObject("inspection_workpiece");
+        auto object = objects.at("wk_workpiece_collision");
+        object.operation = moveit_msgs::msg::CollisionObject::ADD;
+        if (!scene_snapshot->processCollisionObjectMsg(object))
+        {
+            fail(0, "Could not copy cutting collision geometry");
+            return;
+        }
 
-            RCLCPP_INFO(
-                get_logger(),
-                "Local planning scene is synchronized; "
-                "using snapshot directly"
-            );
+        // The estimate topic and planning-scene service are independent.
+        // Do not generate edges from an estimate belonging to a different fit.
+        if (object.meshes.size() != 1 || object.mesh_poses.size() != 1 ||
+            !scene_snapshot->knowsFrameTransform(object.header.frame_id) ||
+            !scene_snapshot->knowsFrameTransform(estimate.header.frame_id))
+        {
+            fail(0, "Cannot validate cutting estimate against extrusion geometry");
+            return;
+        }
+        Eigen::Isometry3d object_pose, mesh_pose, estimate_pose;
+        tf2::fromMsg(object.pose, object_pose);
+        tf2::fromMsg(object.mesh_poses.front(), mesh_pose);
+        tf2::fromMsg(estimate.pose, estimate_pose);
+        const Eigen::Isometry3d scene_from_mesh =
+            scene_snapshot->getFrameTransform(object.header.frame_id) * object_pose * mesh_pose;
+        const Eigen::Isometry3d scene_from_estimate =
+            scene_snapshot->getFrameTransform(estimate.header.frame_id) * estimate_pose;
+        if (!scene_from_mesh.matrix().allFinite() || !scene_from_estimate.matrix().allFinite() ||
+            (scene_from_mesh.translation() - scene_from_estimate.translation()).norm() > 1e-4 ||
+            (scene_from_mesh.linear() - scene_from_estimate.linear()).norm() > 1e-4)
+        {
+            fail(0, "Profile estimate and extrusion pose disagree; refusing stale cutting geometry");
+            return;
+        }
 
-        } else {
-
-            RCLCPP_WARN(
-                get_logger(),
-                "Local planning scene is missing cutting geometry; "
-                "reconciling snapshot"
-            );
-
-            // for (const auto& obj: {"inspection_workpiece", "wk_workpiece_collision","wk_section_collision"}){
-            
-                scene_snapshot->getWorldNonConst()->removeObject("inspection_workpiece");
-
-            // }
-            // for (const auto& obj: {"wk_workpiece_collision","wk_section_collision"}){
-                auto object = objects.at("wk_workpiece_collision");
-
-                object.operation =
-                    moveit_msgs::msg::CollisionObject::ADD;
-
-                if (!scene_snapshot->processCollisionObjectMsg(object))
-                {
-                    RCLCPP_ERROR(
-                        get_logger(),
-                        "Failed to copy wk_workpiece_collision into local cutting scene"
-                    );
-
-                    fail(0, "Could not copy cutting collision geometry");
-                    return;
-                }
-            }
-            RCLCPP_INFO(
-                    get_logger(),
-                    "Cutting scene snapshot reconciled successfully"
-                );
-
-
-        // }        
         const auto* world = scene_snapshot->getWorld().get();
 
         RCLCPP_INFO(

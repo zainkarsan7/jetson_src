@@ -170,6 +170,13 @@ Eigen::Isometry3f ProfileMatcher::makeProfilePose(const SectionModel& section, c
     Eigen::Isometry3f T_section_profile = Eigen::Isometry3f::Identity();
 
     T_section_profile.linear().block<2,2>(0,0) = match.transform.linear();
+    // A reflected 2-D fit is valid for the marker's point transform, but
+    // diag(R_xy, 1) then has determinant -1 and cannot be serialized as a
+    // quaternion. Preserve the fitted X/Y axes and complete a right-handed
+    // frame. For reflected fits this reverses Z; the symmetric extrusion
+    // occupies the same volume and points on the section remain unchanged.
+    T_section_profile.linear().col(2) =
+        T_section_profile.linear().col(0).cross(T_section_profile.linear().col(1));
     T_section_profile.translation().x() = match.transform.translation().x();
     T_section_profile.translation().y() = match.transform.translation().y();
     T_section_profile.translation().z() = 0.0f;

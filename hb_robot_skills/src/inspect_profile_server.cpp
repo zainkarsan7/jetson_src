@@ -379,18 +379,35 @@ bool InspectProfileServer::updateCuttingCollision(
 
         moveit_msgs::msg::CollisionObject profile_mesh_col;
         profile_mesh_col.header.frame_id = scene_frame_;
+        profile_mesh_col.header.stamp = now();
+        profile_mesh_col.pose.orientation.w = 1.0;
         profile_mesh_col.id = "wk_workpiece_collision";
         profile_mesh_col.operation = moveit_msgs::msg::CollisionObject::ADD;
         profile_mesh_col.meshes.push_back(std::move(*mesh));
 
         
 
-        Eigen::Isometry3d test_pose  = matcher_.makeProfilePose(estimate.section,estimate.match).cast<double>();
-        
-        const Eigen::Matrix3d R_delta = test_pose.linear().transpose()* estimate.world_from_member.linear();
-        const double angle = Eigen::AngleAxisd(R_delta).angle();
-        RCLCPP_INFO(get_logger(), "error angle is %.4f", angle * 180.0/M_PI);
-        profile_mesh_col.mesh_poses.push_back(tf2::toMsg(test_pose));
+        const Eigen::Isometry3d& mesh_pose = estimate.world_from_member;
+        const Eigen::Matrix3d rotation = mesh_pose.linear();
+        if (!mesh_pose.matrix().allFinite() ||
+            std::abs(rotation.determinant() - 1.0) > 1e-4 ||
+            !(rotation.transpose() * rotation).isApprox(Eigen::Matrix3d::Identity(), 1e-4))
+        {
+            RCLCPP_ERROR(get_logger(), "Invalid profile rotation before mesh serialization: det=%g",
+                         rotation.determinant());
+            return false;
+        }
+        const auto pose_msg = tf2::toMsg(mesh_pose);
+        Eigen::Isometry3d serialized_pose;
+        tf2::fromMsg(pose_msg, serialized_pose);
+        if (!serialized_pose.matrix().isApprox(mesh_pose.matrix(), 1e-5))
+        {
+            RCLCPP_ERROR(get_logger(), "Profile pose changed during quaternion serialization");
+            return false;
+        }
+        RCLCPP_INFO(get_logger(), "Extrusion pose: fit det=%.6f, pose det=%.6f",
+                    estimate.match.transform.linear().determinant(), rotation.determinant());
+        profile_mesh_col.mesh_poses.push_back(pose_msg);
         
 
         
@@ -418,7 +435,44 @@ bool InspectProfileServer::updateCuttingCollision(
             RCLCPP_ERROR(get_logger(),"couldnt update planning scene");
                 return false;
         }
-        RCLCPP_INFO(get_logger(),"updated planning scene with profile extrusion");
+        // Verify move_group's stored pose, not a second evaluation of the
+        // same local transform. Object and shape poses must both be included.
+        const auto stored_objects = planning_scene_interface_.getObjects({profile_mesh_col.id});
+        const auto stored_it = stored_objects.find(profile_mesh_col.id);
+        if (stored_it == stored_objects.end() || stored_it->second.meshes.size() != 1 ||
+            stored_it->second.mesh_poses.size() != 1 || !stored_it->second.primitives.empty())
+        {
+            RCLCPP_ERROR(get_logger(), "Extrusion readback missing or unexpected geometry");
+            return false;
+        }
+        const auto& stored = stored_it->second;
+        Eigen::Isometry3d object_pose, shape_pose;
+        tf2::fromMsg(stored.pose, object_pose);
+        tf2::fromMsg(stored.mesh_poses.front(), shape_pose);
+        Eigen::Isometry3d scene_from_header = Eigen::Isometry3d::Identity();
+        if (stored.header.frame_id != scene_frame_)
+        {
+            try
+            {
+                scene_from_header = tf2::transformToEigen(tf_buffer_->lookupTransform(
+                    scene_frame_, stored.header.frame_id, tf2::TimePointZero));
+            }
+            catch (const tf2::TransformException& ex)
+            {
+                RCLCPP_ERROR(get_logger(), "Cannot verify extrusion frame: %s", ex.what());
+                return false;
+            }
+        }
+        const Eigen::Isometry3d actual_pose = scene_from_header * object_pose * shape_pose;
+        const double position_error = (actual_pose.translation() - mesh_pose.translation()).norm();
+        const double rotation_error = (actual_pose.linear() - mesh_pose.linear()).norm();
+        if (!actual_pose.matrix().allFinite() || position_error > 1e-4 || rotation_error > 1e-4)
+        {
+            RCLCPP_ERROR(get_logger(), "Extrusion readback mismatch: position=%g m, rotation matrix error=%g",
+                         position_error, rotation_error);
+            return false;
+        }
+        RCLCPP_INFO(get_logger(),"updated planning scene with profile extrusion; pose readback verified");
 
         // RCLCPP_INFO(get_logger(),"updated planning scene with coarse points %zu, and section points %zu", coarse_wkpiece_col.primitives.size(),
         // fine_section_col.primitives.size() );
