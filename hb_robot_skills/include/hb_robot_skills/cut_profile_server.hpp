@@ -16,6 +16,7 @@
 #include "hb_robot_interfaces/action/cut_profile.hpp"
 #include "hb_robot_perception/profile_library.hpp"
 #include "rclcpp/rclcpp.hpp"
+
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
@@ -151,6 +152,11 @@ namespace hb_robot_skills{
         bool motion_approved_{false};
 
         bool motion_rejected_{false};
+
+        
+        TorchIOConfig torch_config_;
+        std::unique_ptr<TorchController> torch_controller_;
+
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;
 

@@ -21,6 +21,7 @@
   <depend>sensor_msgs</depend>
   <depend>eigen3_cmake_module</depend>
   <depend>eigen</depend>
+  <depend>ur_msgs</depend>
   <depend>tf2_eigen</depend>
   <depend>visualization_msgs</depend>
   <depend>moveit_ros_planning_interface</depend>

@@ -15,6 +15,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(ur_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(moveit_ros_planning REQUIRED)
@@ -49,6 +50,7 @@ ament_target_dependencies(hb_motion
   moveit_msgs
   hb_robot_interfaces
   tf2_eigen
+  
 
 )
 target_link_libraries(hb_motion
@@ -123,6 +125,7 @@ ament_target_dependencies(cut_profile_server
   moveit_msgs
   moveit_ros_planning_interface
   visualization_msgs
+  ur_msgs
 )
 
 target_link_libraries(cut_profile_server
