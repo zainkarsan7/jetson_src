@@ -44,9 +44,12 @@ namespace hb_robot_skills::motion{
             }
 
             if(options_.max_candidates_per_segment == 0||
-                options_.boundary_tol <=0.0||
-                options_.process_weight <0.0||
-                options_.transit_weight <0.0
+                !std::isfinite(options_.boundary_tol) || options_.boundary_tol <=0.0||
+                !std::isfinite(options_.process_weight) || options_.process_weight <0.0||
+                !std::isfinite(options_.transit_weight) || options_.transit_weight <0.0 ||
+                !std::isfinite(options_.preferred_joint_travel_rad) || options_.preferred_joint_travel_rad < 0.0 ||
+                !std::isfinite(options_.excess_travel_weight) || options_.excess_travel_weight < 0.0 ||
+                !std::isfinite(options_.max_transit_joint_travel_rad) || options_.max_transit_joint_travel_rad < 0.0
             ){
                throw std::invalid_argument("inbalid options");
 
@@ -122,6 +125,11 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
             const double delta = std::abs(
                 current.getVariablePosition(variable) -
                 previous.getVariablePosition(variable));
+
+            if (!std::isfinite(delta)) {
+                metrics.total_travel = std::numeric_limits<double>::infinity();
+                return metrics;
+            }
 
             joint_travel += delta;
 
@@ -208,8 +216,9 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
             trajectoryCost(result.cut.process.cut)+
             trajectoryCost(result.cut.process.retract));
             const double transit_cost = 
-            trajectoryCost(result.cut.transit_in) +
-            trajectoryCost(result.cut.transit_out);
+            transitCost(result.cut.transit_in) +
+            transitCost(result.cut.transit_out);
+            if (!std::isfinite(transit_cost)) return std::nullopt;
 
             result.cost = transit_cost * options_.transit_weight + 
             process_cost * options_.process_weight;
@@ -266,6 +275,33 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
             }
             return cost;
 
+        }
+
+        double CutGraphPlanner::transitEstimate(const moveit::core::RobotState& from,
+                                                const moveit::core::RobotState& to)const{
+            double total = 0.0, maximum = 0.0;
+            // Same commanded-position metric as jointMotionMetrics, including
+            // actual winding for the arm's single-variable revolute joints.
+            for (const auto* joint : joint_model_group_->getActiveJointModels()) {
+                if (joint->getVariableCount() != 1) continue;
+                const auto& name = joint->getVariableNames().front();
+                const double travel = std::abs(to.getVariablePosition(name) - from.getVariablePosition(name));
+                total += travel;
+                maximum = std::max(maximum, travel);
+            }
+            const double excess = std::max(0.0, maximum - options_.preferred_joint_travel_rad);
+            return total + 2.0 * maximum + options_.excess_travel_weight * excess * excess;
+        }
+
+        double CutGraphPlanner::transitCost(const Plan& plan)const{
+            const auto metrics = jointMotionMetrics(plan);
+            if (!std::isfinite(metrics.total_travel) ||
+                (options_.max_transit_joint_travel_rad > 0.0 &&
+                 metrics.maximum_joint_travel > options_.max_transit_joint_travel_rad))
+                return std::numeric_limits<double>::infinity();
+            const double excess = std::max(0.0, metrics.maximum_joint_travel - options_.preferred_joint_travel_rad);
+            return metrics.total_travel + 2.0 * metrics.maximum_joint_travel +
+                options_.excess_travel_weight * excess * excess;
         }
 
         bool CutGraphPlanner::statesMatch(const moveit::core::RobotState& a,
@@ -358,15 +394,22 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
                 std::size_t added = 0;
                 for(std::size_t cand_ind = 0; cand_ind<count; cand_ind++){
                     const auto& candidate = candidates[cand_ind];
-                    if(!candidate.entry || !candidate.exit || candidate.cut.empty())continue;
+                    if(!candidate.entry || !candidate.exit || candidate.cut.empty() ||
+                       !candidate.cut.front() || !candidate.cut.back())continue;
 
-                    const NodeId node_id = graph.addNode(2*segment_index + 1,options_.process_weight* candidate.score);
+                    // A lower bound on regenerated LIN paths, unlike the sampled
+                    // process score (which is only a retention heuristic).
+                    const double process_lower_bound =
+                        candidate.entry->distance(*candidate.cut.front(), joint_model_group_) +
+                        candidate.cut.front()->distance(*candidate.cut.back(), joint_model_group_) +
+                        candidate.cut.back()->distance(*candidate.exit, joint_model_group_);
+                    const NodeId node_id = graph.addNode(2*segment_index + 1,options_.process_weight* process_lower_bound);
                     candidate_lookup.emplace(node_id,CandidateGraphEntry{
                         node_id,
                         segment_index,cand_ind
                     });
-                    const double in_estimate = options_.transit_weight * home_state.distance(*candidate.entry,joint_model_group_);
-                    const double out_estimate =  options_.transit_weight * candidate.exit->distance(home_state, joint_model_group_);
+                    const double in_estimate = options_.transit_weight * transitEstimate(home_state, *candidate.entry);
+                    const double out_estimate = options_.transit_weight * transitEstimate(*candidate.exit, home_state);
 
                     const EdgeId in_edge = graph.addEdge(home_nodes[segment_index],node_id, in_estimate);
                     const EdgeId out_edge = graph.addEdge(node_id,home_nodes[segment_index+1], out_estimate);
@@ -614,14 +657,15 @@ CutGraphPlanner::jointMotionMetrics(const Plan& plan) const
                     << " max_step=" << metrics.maximum_step
                     << std::endl;
 
-                const double travel_cost = metrics.total_travel;
-
-                const double max_joint_cost =
-                    metrics.maximum_joint_travel;
-
-                edge.actual_cost =
-                    options_.transit_weight *
-                    (travel_cost + 2.0 * max_joint_cost);
+                const double actual_cost = transitCost(*transit);
+                if (!std::isfinite(actual_cost)) {
+                    if(info.transit_in) ++statistics_.transit_in_failures;
+                    else ++statistics_.transit_out_failures;
+                    edge.status = TransitStatus::Invalid;
+                    changed = true;
+                    break;
+                }
+                edge.actual_cost = options_.transit_weight * actual_cost;
                 edge.status = TransitStatus::Valid;
                 transit_cache.emplace(edge_id, std::move(*transit));
                 changed = true;

@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <random>
 
 namespace hb_robot_skills::motion
 {
@@ -87,7 +88,14 @@ CutProcessTrajectoryGenerator::CutProcessTrajectoryGenerator(
         options_.position_tolerance_m <= 0.0 ||
         options_.orientation_tolerance_rad <= 0.0 ||
         options_.duplicate_joint_distance < 0.0 ||
-        options_.max_roll_rad < options_.min_roll_rad)
+        options_.max_roll_rad < options_.min_roll_rad ||
+        options_.global_seeds_per_roll >= options_.seeds_per_roll ||
+        !std::isfinite(options_.local_seed_radius_rad) || options_.local_seed_radius_rad < 0.0 ||
+        !std::isfinite(options_.local_ik_consistency_rad) || options_.local_ik_consistency_rad <= 0.0 ||
+        !std::isfinite(options_.retention_transit_weight) || options_.retention_transit_weight < 0.0 ||
+        !std::isfinite(options_.retention_process_weight) || options_.retention_process_weight < 0.0 ||
+        !std::isfinite(options_.preferred_joint_travel_rad) || options_.preferred_joint_travel_rad < 0.0 ||
+        !std::isfinite(options_.excess_travel_weight) || options_.excess_travel_weight < 0.0)
     {
         throw std::invalid_argument(
             "Invalid process generator options");
@@ -234,7 +242,8 @@ CutProcessTrajectoryGenerator::solvePath(
     const CartesianPath& path,
     const moveit::core::RobotState& seed,
     const planning_scene::PlanningSceneConstPtr& scene,
-    bool backward) const
+    bool backward,
+    bool constrain_initial_ik) const
 {
     SolveResult result;
 
@@ -262,7 +271,15 @@ CutProcessTrajectoryGenerator::solvePath(
 
         // The previous solved configuration is the IK seed.
         // We check branch continuity explicitly afterward.
-        const bool ik_ok = next.setFromIK(
+        // Continuation must stay on the current branch. Geometric/local seeds
+        // also constrain the first solve; reference/global seeds can discover
+        // a distant reachable branch, which is subsequently ranked by transit.
+        const std::vector<double> consistency_limits(
+            joint_model_group_->getVariableCount(),
+            k == 0 ? options_.local_ik_consistency_rad : options_.max_joint_step_rad);
+        const bool ik_ok = (k > 0 || constrain_initial_ik) ? next.setFromIK(
+            joint_model_group_, target, plasma_link_, consistency_limits,
+            options_.ik_timeout_s) : next.setFromIK(
             joint_model_group_,
             target,
             plasma_link_,
@@ -416,6 +433,21 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
     const std::size_t direction_count =
         options_.enable_reverse_ik_search ? 2 : 1;
 
+    // Preserve the useful orientation found by the expensive geometric solve.
+    // This is only a seed: the complete Cartesian path is still revalidated.
+    std::vector<double> rolls;
+    const auto add_roll = [&](double roll) {
+        if (roll < options_.min_roll_rad || roll > options_.max_roll_rad) return;
+        for (double existing : rolls)
+            if (std::abs(std::remainder(roll - existing, 2.0 * std::acos(-1.0))) < 1e-6) return;
+        rolls.push_back(roll);
+    };
+    if (segment.start_state) {
+        const Eigen::Matrix3d relative = segment.start_pose.linear().transpose() *
+            segment.start_state->getGlobalLinkTransform(plasma_link_).linear();
+        add_roll(std::atan2(relative(1, 0), relative(0, 0)));
+    }
+    add_roll(0.0);
     for (std::size_t r = 0; r < options_.roll_samples; ++r)
     {
         double roll = options_.min_roll_rad;
@@ -430,6 +462,12 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
                 (options_.max_roll_rad - options_.min_roll_rad);
         }
 
+        add_roll(roll);
+    }
+    std::mt19937 rng(0); // Reproducible bounded perturbations for tuning.
+    std::uniform_real_distribution<double> jitter(
+        -options_.local_seed_radius_rad, options_.local_seed_radius_rad);
+    for (double roll : rolls) {
         const CartesianPath path =
             buildCartesianPath(segment, roll);
 
@@ -437,25 +475,28 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
              seed_index < options_.seeds_per_roll;
              ++seed_index)
         {
-            moveit::core::RobotState seed(reference_state);
-
-            if (seed_index > 0)
-            {
-                // Randomize the planning group, not the entire robot.
-                // The first attempt retains the reference configuration.
-                seed.setToRandomPositions(joint_model_group_);
-            }
-
-            seed.update();
-
             for (std::size_t d = 0; d < direction_count; ++d)
             {
                 const bool backward = d == 1;
+                const auto geometric = backward ? segment.retract_state : segment.approach_state;
+                const bool global = seed_index >= options_.seeds_per_roll - options_.global_seeds_per_roll;
+                const bool use_geometric = geometric && seed_index != 1 && !global;
+                moveit::core::RobotState seed(use_geometric ? *geometric : reference_state);
+                if (global) {
+                    seed.setToRandomPositions(joint_model_group_);
+                } else if (seed_index > 1) {
+                    std::vector<double> positions;
+                    seed.copyJointGroupPositions(joint_model_group_, positions);
+                    for (double& position : positions) position += jitter(rng);
+                    seed.setJointGroupPositions(joint_model_group_, positions);
+                    seed.enforceBounds(joint_model_group_);
+                }
+                seed.update();
 
                 ++result.stats.attempts;
 
                 SolveResult solved =
-                    solvePath(path, seed, scene, backward);
+                    solvePath(path, seed, scene, backward, use_geometric || (!global && seed_index > 1));
 
                 if (solved.failure != Failure::None)
                 {
@@ -507,18 +548,60 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
         }
     }
 
-    std::sort(
+    // Match the graph's transit objective before truncating the candidate pool.
+    const auto transit_rank = [&](const moveit::core::RobotState& state) {
+        double total = 0.0, maximum = 0.0;
+        for (const auto* joint : joint_model_group_->getActiveJointModels()) {
+            if (joint->getVariableCount() != 1) continue;
+            const auto& name = joint->getVariableNames().front();
+            const double travel = std::abs(state.getVariablePosition(name) - reference_state.getVariablePosition(name));
+            total += travel;
+            maximum = std::max(maximum, travel);
+        }
+        const double excess = std::max(0.0, maximum - options_.preferred_joint_travel_rad);
+        return total + 2.0 * maximum + options_.excess_travel_weight * excess * excess;
+    };
+    std::stable_sort(
         result.candidates.begin(),
         result.candidates.end(),
-        [](const ProcessCandidate& a,
+        [&](const ProcessCandidate& a,
            const ProcessCandidate& b)
         {
-            return a.score < b.score;
+            const auto rank = [&](const ProcessCandidate& candidate) {
+                return options_.retention_process_weight * candidate.score +
+                    options_.retention_transit_weight *
+                    (transit_rank(*candidate.entry) + transit_rank(*candidate.exit));
+            };
+            return rank(a) < rank(b);
         });
 
     if (result.candidates.size() > options_.max_candidates)
     {
-        result.candidates.resize(options_.max_candidates);
+        // Reserve a quarter of the budget for distinct configurations.
+        const std::size_t best_count = options_.max_candidates - options_.max_candidates / 4;
+        std::vector<ProcessCandidate> retained;
+        std::vector<bool> selected(result.candidates.size(), false);
+        for (std::size_t i = 0; i < best_count; ++i) {
+            retained.push_back(result.candidates[i]);
+            selected[i] = true;
+        }
+        for (std::size_t i = best_count; i < result.candidates.size() &&
+             retained.size() < options_.max_candidates; ++i) {
+            const auto& candidate = result.candidates[i];
+            const bool distinct = std::all_of(retained.begin(), retained.end(),
+                [&](const ProcessCandidate& other) {
+                    return std::max(jointDistance(*candidate.entry, *other.entry),
+                                    jointDistance(*candidate.exit, *other.exit)) > 0.75;
+                });
+            if (distinct) {
+                retained.push_back(candidate);
+                selected[i] = true;
+            }
+        }
+        for (std::size_t i = best_count; i < result.candidates.size() &&
+             retained.size() < options_.max_candidates; ++i)
+            if (!selected[i]) retained.push_back(result.candidates[i]);
+        result.candidates = std::move(retained);
     }
 
     result.stats.accepted = result.candidates.size();

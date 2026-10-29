@@ -152,6 +152,12 @@ install(
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(urdf REQUIRED)
+  find_package(srdfdom REQUIRED)
+  ament_add_gtest(cut_graph_planner_test test/cut_graph_planner_test.cpp)
+  target_link_libraries(cut_graph_planner_test hb_motion)
+  ament_target_dependencies(cut_graph_planner_test urdf srdfdom moveit_core moveit_ros_planning_interface)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

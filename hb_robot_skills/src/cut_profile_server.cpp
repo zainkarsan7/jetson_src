@@ -3,6 +3,7 @@
 #include <thread>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
@@ -137,12 +138,37 @@ namespace hb_robot_skills{
         plasma_link_);
 
 
+        const auto count_parameter = [this](const std::string& name, int64_t fallback, bool allow_zero = false) {
+            if (!has_parameter(name)) declare_parameter<int64_t>(name, fallback);
+            const auto value = get_parameter(name).as_int();
+            if (value < (allow_zero ? 0 : 1)) throw std::invalid_argument(name + " is out of range");
+            return static_cast<std::size_t>(value);
+        };
+        const auto double_parameter = [this](const std::string& name, double fallback) {
+            if (!has_parameter(name)) declare_parameter<double>(name, fallback);
+            return get_parameter(name).as_double();
+        };
+        motion::CutGraphPlanner::Options graph_options;
+        graph_options.max_candidates_per_segment = count_parameter("cut_sampling.max_candidates", 32);
+        graph_options.transit_weight = double_parameter("cut_cost.transit_weight", 1.0);
+        graph_options.process_weight = double_parameter("cut_cost.process_weight", 1.0);
+        graph_options.preferred_joint_travel_rad = double_parameter("cut_cost.preferred_joint_travel_rad", 1.57);
+        graph_options.excess_travel_weight = double_parameter("cut_cost.excess_travel_weight", 2.0);
+        graph_options.max_transit_joint_travel_rad = double_parameter("cut_cost.max_transit_joint_travel_rad", 0.0);
+
         motion::ProcessGeneratorOptions options;
-        options.roll_samples = 12;
-        options.seeds_per_roll = 16;
+        options.roll_samples = count_parameter("cut_sampling.roll_samples", 12);
+        options.seeds_per_roll = count_parameter("cut_sampling.seeds_per_roll", 16);
+        options.global_seeds_per_roll = count_parameter("cut_sampling.global_seeds_per_roll", 2, true);
+        options.local_seed_radius_rad = double_parameter("cut_sampling.local_seed_radius_rad", 0.35);
+        options.local_ik_consistency_rad = double_parameter("cut_sampling.local_ik_consistency_rad", 0.75);
+        options.retention_transit_weight = graph_options.transit_weight;
+        options.retention_process_weight = graph_options.process_weight;
+        options.preferred_joint_travel_rad = graph_options.preferred_joint_travel_rad;
+        options.excess_travel_weight = graph_options.excess_travel_weight;
         options.max_translation_step_m = 0.003;
         options.max_joint_step_rad = 0.20;
-        options.max_candidates = 32;
+        options.max_candidates = graph_options.max_candidates_per_segment;
 
         process_generator_ = std::make_unique<motion::CutProcessTrajectoryGenerator>
         (   move_group_->getRobotModel(),
@@ -203,7 +229,7 @@ namespace hb_robot_skills{
             result.retract = *retract_;           
             return result;
         },
-        motion::CutGraphPlanner::Options{}
+        graph_options
             );
         
 

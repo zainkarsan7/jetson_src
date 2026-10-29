@@ -53,6 +53,14 @@ struct ProcessGeneratorOptions
 
     // IK attempts per roll. The first uses the supplied reference.
     std::size_t seeds_per_roll = 2;
+    // The remaining attempts use geometric/reference seeds and bounded jitter.
+    std::size_t global_seeds_per_roll = 0;
+    double local_seed_radius_rad = 0.35;
+    double local_ik_consistency_rad = 0.75;
+    double retention_transit_weight = 1.0;
+    double retention_process_weight = 1.0;
+    double preferred_joint_travel_rad = 1.57;
+    double excess_travel_weight = 2.0;
 
     // Maximum Cartesian spacing between consecutive samples.
     double max_translation_step_m = 0.01;
@@ -179,7 +187,8 @@ private:
         const CartesianPath& path,
         const moveit::core::RobotState& seed,
         const planning_scene::PlanningSceneConstPtr& scene,
-        bool backward) const;
+        bool backward,
+        bool constrain_initial_ik) const;
 
     bool validState(
         const moveit::core::RobotState& state,

@@ -42,6 +42,10 @@ class CutGraphPlanner{
             double boundary_tol = 1e-3;
             double process_weight = 1.0;
             double transit_weight = 1.0;
+            double preferred_joint_travel_rad = 1.57;
+            double excess_travel_weight = 2.0;
+            // Zero disables the hard per-joint travel limit for each transit.
+            double max_transit_joint_travel_rad = 0.0;
         };
 
         struct CandidateGraphEntry{
@@ -119,6 +123,9 @@ class CutGraphPlanner{
         )const;
 
         double trajectoryCost(const Plan& plan)const;
+        double transitCost(const Plan& plan)const;
+        double transitEstimate(const moveit::core::RobotState& from,
+                               const moveit::core::RobotState& to)const;
 
         bool statesMatch(const moveit::core::RobotState& a,
         const moveit::core::RobotState& b)const;
