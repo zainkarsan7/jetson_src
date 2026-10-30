@@ -185,6 +185,9 @@ colcon build \
 
 UUID=c76b89e9-f661-43f7-9a8a-7a8cb8fe8af5 /ssd/ ext4 defaults 0 2
 
+## WSL Rviz2
+LIBGL_ALWAYS_SOFTWARE=1 QT_X11_NO_MITSHM=1 rviz2 -d src/hb_robot_moveit_config/config/moveit.rviz
+
 
 ## sphere stuff
 
