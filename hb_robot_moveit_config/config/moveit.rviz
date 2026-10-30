@@ -10,14 +10,13 @@ Panels:
         - /DepthCloud1/Auto Size1
         - /PointCloud21/Topic1
         - /Debug_Profiles1/Namespaces1
-        - /Cut Plan1
         - /Marker1/Topic1
         - /Debug_cut_planning1/Namespaces1
         - /Debug_wkpiece_normal1/Topic1
         - /Inspection Profile Match1/Topic1
         - /Inspection Coverage1/Topic1
         - /Inspection Poses1/Topic1
-        - /PointCloud22/Topic1
+        - /LiDAR1/Topic1
       Splitter Ratio: 0.7102615833282471
     Tree Height: 378
   - Class: rviz_common/Help
@@ -443,7 +442,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /cumotion/camera_1/robot_mask
+        Value: /k4a/rgb/image_raw
       Value: false
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
@@ -601,7 +600,7 @@ Visualization Manager:
       Decay Time: 0
       Depth Map Topic: /k4a/depth_to_rgb/image_raw
       Depth Map Transport Hint: raw
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 4096
@@ -620,7 +619,7 @@ Visualization Manager:
       Topic Filter: true
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -671,57 +670,7 @@ Visualization Manager:
       Enabled: true
       Name: Cut Plan
       Namespaces:
-        approach_paths: true
-        cut_pose_bottom_flange_appr_normal: true
-        cut_pose_bottom_flange_appr_tangent: true
-        cut_pose_bottom_flange_approach_normal: true
-        cut_pose_bottom_flange_approach_tangent: true
-        cut_pose_bottom_flange_end_normal: true
-        cut_pose_bottom_flange_end_tangent: true
-        cut_pose_bottom_flange_labels: true
-        cut_pose_bottom_flange_retr_normal: true
-        cut_pose_bottom_flange_retr_tangent: true
-        cut_pose_bottom_flange_retract_normal: true
-        cut_pose_bottom_flange_retract_tangent: true
-        cut_pose_bottom_flange_start_normal: true
-        cut_pose_bottom_flange_start_tangent: true
-        cut_pose_left_web_appr_normal: true
-        cut_pose_left_web_appr_tangent: true
-        cut_pose_left_web_approach_normal: true
-        cut_pose_left_web_approach_tangent: true
-        cut_pose_left_web_end_normal: true
-        cut_pose_left_web_end_tangent: true
-        cut_pose_left_web_labels: true
-        cut_pose_left_web_retr_normal: true
-        cut_pose_left_web_retr_tangent: true
-        cut_pose_left_web_retract_normal: true
-        cut_pose_left_web_retract_tangent: true
-        cut_pose_left_web_start_normal: true
-        cut_pose_left_web_start_tangent: true
-        cut_pose_right_web_approach_normal: true
-        cut_pose_right_web_approach_tangent: true
-        cut_pose_right_web_end_normal: true
-        cut_pose_right_web_end_tangent: true
-        cut_pose_right_web_labels: true
-        cut_pose_right_web_retract_normal: true
-        cut_pose_right_web_retract_tangent: true
-        cut_pose_right_web_start_normal: true
-        cut_pose_right_web_start_tangent: true
-        cut_pose_top_flange_appr_normal: true
-        cut_pose_top_flange_appr_tangent: true
-        cut_pose_top_flange_approach_normal: true
-        cut_pose_top_flange_approach_tangent: true
-        cut_pose_top_flange_end_normal: true
-        cut_pose_top_flange_end_tangent: true
-        cut_pose_top_flange_labels: true
-        cut_pose_top_flange_retr_normal: true
-        cut_pose_top_flange_retr_tangent: true
-        cut_pose_top_flange_retract_normal: true
-        cut_pose_top_flange_retract_tangent: true
-        cut_pose_top_flange_start_normal: true
-        cut_pose_top_flange_start_tangent: true
-        cut_segments: true
-        retract_paths: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -746,11 +695,7 @@ Visualization Manager:
       Enabled: true
       Name: Debug_cut_planning
       Namespaces:
-        sample_0_iter_0_actual_tcp_normal: true
-        sample_0_iter_0_actual_tcp_tangent: true
-        sample_0_iter_0_nominal_tcp_normal: true
-        sample_0_iter_0_nominal_tcp_tangent: true
-        sample_0_iter_0_status: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -774,9 +719,7 @@ Visualization Manager:
       Enabled: true
       Name: Inspection Profile Match
       Namespaces:
-        profile_boundary: true
-        profile_labels: true
-        section_observed: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -788,7 +731,7 @@ Visualization Manager:
       Enabled: true
       Name: Inspection Coverage
       Namespaces:
-        profile_support: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -800,8 +743,7 @@ Visualization Manager:
       Enabled: true
       Name: Inspection Poses
       Namespaces:
-        nbv_candidates: true
-        nbv_ik_solution: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Transient Local
@@ -812,8 +754,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 10.87358570098877
-        Min Value: -1.1556949615478516
+        Max Value: 10.544170379638672
+        Min Value: -1.157079815864563
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -827,7 +769,7 @@ Visualization Manager:
       Max Intensity: 255
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: PointCloud2
+      Name: LiDAR
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 3
@@ -861,41 +803,41 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 0.8907181620597839
+      Distance: 2.6133110523223877
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.10762681812047958
-        Y: 1.3528525829315186
-        Z: -0.15228067338466644
+        X: -0.16709406673908234
+        Y: 1.3703972101211548
+        Z: -0.027194779366254807
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3797953128814697
+      Pitch: 0.6847943663597107
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 2.941810369491577
+      Yaw: 3.9368057250976562
     Saved: ~
 Window Geometry:
   AzureKinect:
-    collapsed: true
+    collapsed: false
   Displays:
     collapsed: false
   Height: 1136
   Help:
     collapsed: false
   Hide Left Dock: false
-  Hide Right Dock: true
+  Hide Right Dock: false
   MotionPlanning:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd00000002000000000000038b00000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000460000004100fffffffb000000100044006900730070006c0061007900730100000089000001fd000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000028c000001c70000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff00000001000000e600000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000003a90000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000002000000000000038b00000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000460000004100fffffffb000000100044006900730070006c0061007900730100000089000001fd000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000028c000001c70000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff000000010000012e00000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000003a90000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   RvizVisualToolsGui:
     collapsed: false
   Trajectory - Trajectory Slider:

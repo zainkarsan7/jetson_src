@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 <xacro:macro name="hb_sensors" params="ur_type">
-<xacro:include filename="$(find azure_kinect_ros2_driver)/urdf/azure_kinect.urdf.xacro"/>
+<xacro:include filename="$(find hb_robot_description)/urdf/azure_kinect.urdf.xacro"/>
 <!-- <joint name="tool0_to_kinect" type="fixed">
     <parent link="${ur_type}_tool0"/>
     <child link="camera_base"/>
