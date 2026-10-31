@@ -7,9 +7,9 @@
     emulate_tty="true">
 
     <!-- Jetson X11 display for Kinect GPU initialization -->
-        <env name="DISPLAY" value=":1"/>
-        <env name="XAUTHORITY"
-             value="/run/user/1000/gdm/Xauthority"/>
+        <env name="DISPLAY" value=":0"/>
+        <!-- <env name="XAUTHORITY"
+             value="/run/user/1000/gdm/Xauthority"/> -->
 
     <!-- <param name="color_format" value="jpeg"/> -->
     <param name="color_enabled" value="true"/>
