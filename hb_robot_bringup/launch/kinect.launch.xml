@@ -21,4 +21,4 @@
     <param name="rgb_point_cloud" value="false"/>
     <!-- <param name="point_cloud_in_depth_frame" value="false"/> -->
     </node>
-</launch>
+</laun

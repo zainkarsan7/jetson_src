@@ -5,7 +5,7 @@
    
     <!-- MoveIt RViz -->
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/wsl_moveit_rviz.launch.py"/>
-
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/>
 
 
 </launch>
