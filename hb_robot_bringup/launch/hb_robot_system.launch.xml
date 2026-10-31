@@ -7,7 +7,7 @@
 
     <!-- MoveIt move_group -->
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/move_group.launch.py"/>
-    <!-- <include file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/> -->
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/>
 
     <!-- MoveIt RViz -->
     <!-- <include file="$(find-pkg-share hb_robot_moveit_config)/launch/moveit_rviz.launch.py"/> -->

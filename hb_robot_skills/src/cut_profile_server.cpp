@@ -111,15 +111,26 @@ namespace hb_robot_skills{
         move_group_->setPlanningTime(planning_time_);
         
         planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(shared_from_this(),"robot_description");
-
         if(!planning_scene_monitor_->getPlanningScene()){
             throw std::runtime_error("failed to create planning scene");
         }
+
+        
+        
         planning_scene_monitor_->startStateMonitor();
         planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
         planning_scene_monitor_->startWorldGeometryMonitor();
-        const bool scene_recieved  = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
-        if(!scene_recieved){
+        // const bool scene_recieved  = 
+        bool synchronized = false;
+        for(int attempt = 0; attempt <5; attempt++){
+            synchronized = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+            if(synchronized) break;
+            RCLCPP_WARN(get_logger(), " couldnt get PSM on attempt %zu",attempt);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+
+        
+        if(!synchronized){
              RCLCPP_INFO(
                 get_logger(),
                 "couldnt synchoroniz psm with move group");
