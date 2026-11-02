@@ -1250,9 +1250,19 @@ void K4AROS2Device::imuPublisherThread()
         else last_imu_time_usec_ = sample.acc_timestamp_usec;
       }
       if (!read) break;
-      // Always drain the SDK queue, but avoid constructing unused ROS messages.
-      if (!timestamp_ready_ || imu_orientation_publisher_->get_subscription_count() == 0)
+      ++imu_samples_read_;
+      imu_last_read_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      // Keep the existing demand policy, but make each suppression reason visible.
+      if (!timestamp_ready_)
       {
+        ++imu_samples_without_timestamp_;
+        samples.clear();
+        continue;
+      }
+      if (imu_orientation_publisher_->get_subscription_count() == 0)
+      {
+        ++imu_samples_without_subscriber_;
         samples.clear();
         continue;
       }
@@ -1263,7 +1273,18 @@ void K4AROS2Device::imuPublisherThread()
       samples.clear();
       if (result != K4A_RESULT_SUCCEEDED) throw std::runtime_error("IMU conversion failed");
       if (!k4a_device_ || (!recovering_ && generation == stream_generation_.load()))
+      {
+        const auto publish_start = std::chrono::steady_clock::now();
         imu_orientation_publisher_->publish(*msg);
+        const auto published_at = std::chrono::steady_clock::now();
+        const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            published_at - publish_start).count();
+        imu_last_publish_us_ = elapsed_us;
+        if (elapsed_us > imu_max_publish_us_.load()) imu_max_publish_us_ = elapsed_us;
+        imu_last_publish_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            published_at.time_since_epoch()).count();
+        ++imu_messages_published_;
+      }
     }
     loop_rate.sleep();
   }
@@ -1318,6 +1339,16 @@ void K4AROS2Device::publishDiagnostics()
     entry.value = std::to_string(value);
     status.values.push_back(std::move(entry));
   };
+  add("imu_samples_read", imu_samples_read_.load());
+  add("imu_messages_published", imu_messages_published_.load());
+  add("imu_samples_without_subscriber", imu_samples_without_subscriber_.load());
+  add("imu_samples_without_timestamp", imu_samples_without_timestamp_.load());
+  add("imu_last_publish_us", imu_last_publish_us_.load());
+  add("imu_max_publish_us", imu_max_publish_us_.load());
+  const auto imu_read_ns = imu_last_read_steady_ns_.load();
+  const auto imu_publish_ns = imu_last_publish_steady_ns_.load();
+  add("ms_since_last_imu_read", imu_read_ns ? (now_ns - imu_read_ns) / 1000000 : -1);
+  add("ms_since_last_imu_publish", imu_publish_ns ? (now_ns - imu_publish_ns) / 1000000 : -1);
   add("timestamp_offset_ns", timestamp_offset_ns_.load());
   add("timestamp_device_resets", timestamp_device_resets_.load());
   add("timestamp_ros_clock_jumps", timestamp_ros_clock_jumps_.load());

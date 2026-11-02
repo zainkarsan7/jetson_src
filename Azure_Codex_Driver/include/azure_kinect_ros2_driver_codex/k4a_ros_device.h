@@ -199,6 +199,15 @@ class K4AROS2Device : public rclcpp::Node
     int recovery_max_attempts_ = 3;
     int recovery_backoff_ms_ = 500;
     int max_capture_age_ms_ = 250;
+    // Cumulative IMU pipeline counters; diagnose acquisition versus DDS stalls.
+    std::atomic_uint64_t imu_samples_read_{0};
+    std::atomic_uint64_t imu_messages_published_{0};
+    std::atomic_uint64_t imu_samples_without_subscriber_{0};
+    std::atomic_uint64_t imu_samples_without_timestamp_{0};
+    std::atomic_int64_t imu_last_publish_us_{0};
+    std::atomic_int64_t imu_max_publish_us_{0};
+    std::atomic_int64_t imu_last_read_steady_ns_{0};
+    std::atomic_int64_t imu_last_publish_steady_ns_{0};
     std::atomic_uint64_t captures_received_{0};
     std::atomic_uint64_t captures_replaced_{0};
     std::atomic_uint64_t stale_captures_{0};

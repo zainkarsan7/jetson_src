@@ -200,3 +200,6 @@ ros2 launch isaac_ros_cumotion robot_segmentation.launch.py \
   robot_segmenter.depth_qos:=SENSOR_DATA \
   robot_segmenter.depth_info_qos:=SENSOR_DATA \
   robot_segmenter.log_debug:=True
+
+## WSL Stuff
+LIBGL_ALWAYS_SOFTWARE=1 rviz2
