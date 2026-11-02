@@ -1,0 +1,203 @@
+
+--- Host and load ---
+2026-11-02T11:52:02+01:00
+zkpac-desktop
+Linux zkpac-desktop 5.15.148-rt-tegra #1 SMP PREEMPT_RT Mon Oct 14 17:05:40 PDT 2024 aarch64 aarch64 aarch64 GNU/Linux
+ 11:52:02 up  3:03,  1 user,  load average: 7.84, 7.53, 7.43
+               total        used        free      shared  buff/cache   available
+Mem:           7.4Gi       1.8Gi       3.5Gi        35Mi       2.1Gi       5.5Gi
+Swap:          3.7Gi          0B       3.7Gi
+
+--- Network routes and interface counters ---
+default via 10.6.96.1 dev wlx90de80b467b3 proto dhcp metric 601 
+default via 192.168.200.1 dev wlP1p1s0 proto dhcp metric 20600 
+10.6.96.0/20 dev wlx90de80b467b3 proto kernel scope link src 10.6.99.139 metric 601 
+169.254.0.0/16 dev enP8p1s0 scope link metric 1000 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown 
+192.168.50.0/24 dev enP8p1s0 proto kernel scope link src 192.168.50.100 metric 100 
+192.168.200.0/24 dev wlP1p1s0 proto kernel scope link src 192.168.200.150 metric 600 
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    RX:  bytes packets errors dropped  missed   mcast           
+     119846354  728109      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+     119846354  728109      0       0       0       0 
+2: can0: <NOARP,ECHO> mtu 16 qdisc noop state DOWN mode DEFAULT group default qlen 10
+    link/can 
+    RX:  bytes packets errors dropped  missed   mcast           
+             0       0      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+             0       0      0       0       0       0 
+3: wlP1p1s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DORMANT group default qlen 1000
+    link/ether f0:68:e3:e8:59:49 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes  packets errors dropped  missed   mcast           
+     297877826   778198      0 2267666       0       0 
+    TX:  bytes  packets errors dropped carrier collsns           
+    7981569463 10954678      0       0       0       0 
+4: enP8p1s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT group default qlen 1000
+    link/ether ac:3a:e2:98:94:40 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+    1199289630 3051250      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+     243151385 3018707      0       0       0       0 
+5: wlx90de80b467b3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DORMANT group default qlen 1000
+    link/ether 90:de:80:b4:67:b3 brd ff:ff:ff:ff:ff:ff
+    RX:   bytes  packets errors dropped  missed   mcast           
+      385654696  2279882      0      54       0       0 
+    TX:   bytes  packets errors dropped carrier collsns           
+    16139335924 22478003      0       0       0       0 
+6: l4tbr0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+    link/ether 3e:c7:e7:79:f3:87 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+             0       0      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+             0       0      0       0       0       0 
+7: usb0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc pfifo_fast master l4tbr0 state DOWN mode DEFAULT group default qlen 1000
+    link/ether 4e:23:69:3f:f9:d1 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+             0       0      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+             0       0      0       0       0       0 
+8: usb1: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc pfifo_fast master l4tbr0 state DOWN mode DEFAULT group default qlen 1000
+    link/ether 4e:23:69:3f:f9:d3 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+             0       0      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+             0       0      0       0       0       0 
+9: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT group default 
+    link/ether 92:b0:fa:46:da:0e brd ff:ff:ff:ff:ff:ff
+    RX:  bytes packets errors dropped  missed   mcast           
+             0       0      0       0       0       0 
+    TX:  bytes packets errors dropped carrier collsns           
+             0       0      0       0       0       0 
+
+--- Highest CPU consumers ---
+    PID    PPID %CPU %MEM COMMAND
+  18561   18523 60.0  0.9 ur_ros2_control
+  18151   18144 31.9  2.4 azure_kinect_no
+  18601   18523 15.4  1.0 move_group
+  18153   18144 15.1  0.4 unitree_lidar_r
+  18571   18523  6.4  0.3 robot_state_pub
+    961       2  4.5  0.0 sugov:2
+   4469    4240  4.1  2.9 MainThread
+    960       2  4.0  0.0 sugov:0
+    209       2  3.1  0.0 irq/124-xhci-hc
+  17825   17714  2.7  0.0 htop
+     25       2  1.2  0.0 ksoftirqd/1
+  18565   18523  1.1  0.4 robot_state_hel
+  18569   18523  1.0  0.4 urscript_interf
+   1151       2  0.6  0.0 irq/244-enP8p1s
+     66       2  0.5  0.0 irq/126-3c00000
+     24       2  0.4  0.0 rcuc/1
+    604       2  0.4  0.0 irq/243-rtl88x2
+  18563   18523  0.4  0.4 dashboard_clien
+  18567   18523  0.4  0.3 controller_stop
+  18573   18523  0.4  0.4 trajectory_unti
+    444     424  0.3  0.0 systemd-udevd
+   4365    4240  0.3  1.0 MainThread
+  26609       1  0.3  0.7 python3
+     32       2  0.2  0.0 ksoftirqd/2
+
+--- Robot control threads and actual executable ---
+/opt/ros/humble/lib/ur_robot_driver/ur_ros2_control_node
+    PID     TID CLS RTPRIO PRI PSR %CPU COMMAND
+  18561   18561  TS      -   0   3  0.3 ur_ros2_control
+  18561   18627  TS      -   0   5  0.0 ur_ros2_control
+  18561   18630  TS      -   0   3  0.0 ur_ros2_control
+  18561   18636  TS      -   0   2  0.0 ur_ros2_control
+  18561   18637  TS      -   0   5  1.5 ur_ros2_control
+  18561   18648  TS      -   0   3  0.0 ur_ros2_control
+  18561   18649  TS      -   0   5  0.0 ur_ros2_control
+  18561   18652  TS      -   0   2  3.0 ur_ros2_control
+  18561   18653  TS      -   0   5  2.0 ur_ros2_control
+  18561   18654  TS      -   0   4  0.1 ur_ros2_control
+  18561   18657  TS      -   0   1  0.0 ur_ros2_control
+  18561   18710  TS      -   0   0  0.0 ur_ros2_control
+  18561   18711  TS      -   0   3  0.0 ur_ros2_control
+  18561   18712  TS      -   0   1  0.0 ur_ros2_control
+  18561   18713  TS      -   0   4  0.0 ur_ros2_control
+  18561   18714  TS      -   0   5  0.1 ur_ros2_control
+  18561   18715  TS      -   0   5  0.4 ur_ros2_control
+  18561   18777  TS      -   0   1  0.0 ur_ros2_control
+  18561   18778  TS      -   0   1  0.0 ur_ros2_control
+  18561   18779  FF     50  90   4 13.5 ur_ros2_control
+  18561   18780  TS      -   0   1  0.3 ur_ros2_control
+  18561   18781  FF     99 139   2  3.0 ur_ros2_control
+  18561   18782  TS      -   0   2  0.3 ur_ros2_control
+  18561   18783  TS      -   0   5  0.3 ur_ros2_control
+  18561   18784  TS      -   0   3  0.3 ur_ros2_control
+  18561   18785  TS      -   0   5  0.3 ur_ros2_control
+  18561   18787  TS      -   0   2  0.0 ur_ros2_control
+  18561   18788  TS      -   0   0  0.0 ur_ros2_control
+  18561   18789  TS      -   0   2  5.5 ur_ros2_control
+  18561   18790  TS      -   0   1  3.9 ur_ros2_control
+  18561   18795  TS      -   0   3  3.1 ur_ros2_control
+  18561   18796  TS      -   0   0  1.5 ur_ros2_control
+  18561   18797  TS      -   0   5  0.0 ur_ros2_control
+  18561   18798  TS      -   0   5  0.0 ur_ros2_control
+  18561   18799  TS      -   0   5  0.0 ur_ros2_control
+  18561   18805  TS      -   0   3  1.3 ur_ros2_control
+  18561   18806  TS      -   0   2  3.0 ur_ros2_control
+  18561   18807  TS      -   0   2  1.2 ur_ros2_control
+  18561   18808  TS      -   0   0  1.1 ur_ros2_control
+  18561   18809  TS      -   0   2 12.0 ur_ros2_control
+  18561   18810  TS      -   0   0  0.0 ur_ros2_control
+  18561   18811  TS      -   0   3  0.3 ur_ros2_control
+  18561   18812  TS      -   0   5  0.3 ur_ros2_control
+Limit                     Soft Limit           Hard Limit           Units     
+Max cpu time              unlimited            unlimited            seconds   
+Max file size             unlimited            unlimited            bytes     
+Max data size             unlimited            unlimited            bytes     
+Max stack size            8388608              unlimited            bytes     
+Max core file size        0                    unlimited            bytes     
+Max resident set          unlimited            unlimited            bytes     
+Max processes             29364                29364                processes 
+Max open files            1048576              1048576              files     
+Max locked memory         unlimited            unlimited            bytes     
+Max address space         unlimited            unlimited            bytes     
+Max file locks            unlimited            unlimited            locks     
+Max pending signals       29364                29364                signals   
+Max msgqueue size         819200               819200               bytes     
+Max nice priority         0                    0                    
+Max realtime priority     99                   99                   
+Max realtime timeout      unlimited            unlimited            us        
+
+--- Camera executable and command line ---
+/home/zk-pac/ros2_pac_ws/install/azure_kinect_ros2_driver_codex/lib/azure_kinect_ros2_driver_codex/azure_kinect_node_codex
+/home/zk-pac/ros2_pac_ws/install/azure_kinect_ros2_driver_codex/lib/azure_kinect_ros2_driver_codex/azure_kinect_node_codex --ros-args -r __node:=k4a_ros2_node --params-file /tmp/launch_params_5q3k694d --params-file /tmp/launch_params_ktmk62ij --params-file /tmp/launch_params_1k4szff0 --params-file /tmp/launch_params_vzlr_gz_ --params-file /tmp/launch_params_7js2iode --params-file /tmp/launch_params_8a8igo0t 
+ROS_DOMAIN_ID=0
+ROS_LOCALHOST_ONLY=0
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+--- Recent control and camera log findings ---
+
+LOG: /home/zk-pac/.ros/log/ur_ros2_control_node_18561_1793613507235.log
+[WARN] [1793613508.968611015] [UR_Client_Library:ur10e_]: Stream is connected but failed to read from it. Re-attempting to read!
+[INFO] [1793613509.360734045] [UR_Client_Library:ur10e_]: SCHED_FIFO OK, priority 99
+[INFO] [1793613510.951940954] [controller_manager]: Switch controller timeout is set to 0, using default 1s!
+[INFO] [1793613513.527490003] [UR_Client_Library:ur10e_]: Robot connected to reverse interface. Ready to receive control commands.
+[INFO] [1793614080.164137325] [UR_Client_Library:ur10e_]: Connection to reverse interface dropped.
+[INFO] [1793614090.395725014] [UR_Client_Library:ur10e_]: Robot connected to reverse interface. Ready to receive control commands.
+[INFO] [1793614095.051831775] [UR_Client_Library:ur10e_]: Connection to reverse interface dropped.
+[INFO] [1793614104.785728190] [UR_Client_Library:ur10e_]: Robot connected to reverse interface. Ready to receive control commands.
+[INFO] [1793614112.845776322] [UR_Client_Library:ur10e_]: Connection to reverse interface dropped.
+[INFO] [1793614785.155657111] [UR_Client_Library:ur10e_]: Robot connected to reverse interface. Ready to receive control commands.
+[INFO] [1793615377.062001924] [UR_Client_Library:ur10e_]: Connection to reverse interface dropped.
+[INFO] [1793615412.211647897] [UR_Client_Library:ur10e_]: Robot connected to reverse interface. Ready to receive control commands.
+
+LOG: /home/zk-pac/.ros/log/azure_kinect_node_codex_18151_1793613474882.log
+
+
+--- Local IMU probe (adds one subscriber for 10 seconds) ---
+Probe ROS_DOMAIN_ID=0 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+Compare these with the camera process environment above before interpreting a missing stream.
+average rate: 12.599
+	min: 0.000s max: 0.424s std dev: 0.12804s window: 17
+average rate: 10.551
+	min: 0.000s max: 0.424s std dev: 0.11115s window: 25
+average rate: 10.161
+	min: 0.000s max: 0.424s std dev: 0.09751s window: 35
+average rate: 12.932
+	min: 0.000s max: 0.424s std dev: 0.08934s window: 58
+
+--- Done ---
