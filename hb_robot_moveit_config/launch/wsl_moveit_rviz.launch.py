@@ -1,43 +1,41 @@
+"""Laptop supervisor: accelerated RViz, no hardware or skill servers."""
 
 from launch import LaunchDescription
-from launch.actions import SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
-from moveit_configs_utils.launches import generate_moveit_rviz_launch
 
 
 def generate_launch_description():
-    moveit_config = (
-        MoveItConfigsBuilder(
-            "hb_robot",
-            package_name="hb_robot_moveit_config"
-        )
-        .robot_description(
-            file_path="config/hb_robot.urdf.xacro"
-        )
-        .robot_description_semantic(
-            file_path="config/hb_robot.srdf"
-        )
-        .robot_description_kinematics(
-            file_path="config/kinematics.yaml"
-        )
-        .planning_pipelines(
-            pipelines=[
-                "ompl",
-                "chomp",
-                "pilz_industrial_motion_planner",
-            ]
-        )
+    config = (
+        MoveItConfigsBuilder("hb_robot", package_name="hb_robot_moveit_config")
+        .robot_description(file_path="config/hb_robot.urdf.xacro")
+        .robot_description_semantic(file_path="config/hb_robot.srdf")
+        .robot_description_kinematics(file_path="config/kinematics.yaml")
+        .planning_pipelines(pipelines=["ompl", "chomp", "pilz_industrial_motion_planner"])
         .to_moveit_configs()
     )
-
-    rviz_launch = generate_moveit_rviz_launch(moveit_config)
-
     return LaunchDescription([
-        SetEnvironmentVariable(
-            "LIBGL_ALWAYS_SOFTWARE", "1"
+        DeclareLaunchArgument(
+            "rviz_config",
+            default_value=str(config.package_path / "config/supervisor.rviz"),
         ),
-        SetEnvironmentVariable(
-            "QT_X11_NO_MITSHM", "1"
+        DeclareLaunchArgument(
+            "software_rendering", default_value="0",
+            description="Set to 1 only for a temporary graphics diagnostic.",
         ),
-        *rviz_launch.entities,
+        SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", LaunchConfiguration("software_rendering")),
+        SetEnvironmentVariable("QT_QPA_PLATFORM", "xcb"),
+        Node(
+            package="rviz2", executable="rviz2", output="screen",
+            arguments=["-d", LaunchConfiguration("rviz_config")],
+            parameters=[
+                config.robot_description,
+                config.robot_description_semantic,
+                config.robot_description_kinematics,
+                config.planning_pipelines,
+                {"use_sim_time": False},
+            ],
+        ),
     ])

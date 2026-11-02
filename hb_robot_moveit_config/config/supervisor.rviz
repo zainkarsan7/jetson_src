@@ -1,0 +1,893 @@
+Panels:
+- Class: rviz_common/Displays
+  Help Height: 70
+  Name: Displays
+  Property Tree Widget:
+    Expanded:
+    - /Global Options1
+    - /TF1/Frames1
+    - /AzureKinect1/Topic1
+    - /DepthCloud1/Auto Size1
+    - /PointCloud21/Topic1
+    - /Debug_Profiles1/Namespaces1
+    - /Cut Plan1
+    - /Marker1/Topic1
+    - /Debug_cut_planning1/Namespaces1
+    - /Debug_wkpiece_normal1/Topic1
+    - /Inspection Profile Match1/Topic1
+    - /Inspection Coverage1/Topic1
+    - /Inspection Poses1/Topic1
+    - /PointCloud22/Topic1
+    Splitter Ratio: 0.7102615833282471
+  Tree Height: 378
+- Class: rviz_common/Help
+  Name: Help
+- Class: rviz_visual_tools/RvizVisualToolsGui
+  Name: RvizVisualToolsGui
+Visualization Manager:
+  Class: ''
+  Displays:
+  - Alpha: 0.5
+    Cell Size: 1
+    Class: rviz_default_plugins/Grid
+    Color: 160; 160; 164
+    Enabled: true
+    Line Style:
+      Line Width: 0.029999999329447746
+      Value: Lines
+    Name: Grid
+    Normal Cell Count: 0
+    Offset:
+      X: 0
+      Y: 0
+      Z: 0
+    Plane: XY
+    Plane Cell Count: 10
+    Reference Frame: <Fixed Frame>
+    Value: true
+  - Acceleration_Scaling_Factor: 0.1
+    Class: moveit_rviz_plugin/MotionPlanning
+    Enabled: true
+    Move Group Namespace: ''
+    MoveIt_Allow_Approximate_IK: false
+    MoveIt_Allow_External_Program: false
+    MoveIt_Allow_Replanning: true
+    MoveIt_Allow_Sensor_Positioning: false
+    MoveIt_Planning_Attempts: 10
+    MoveIt_Planning_Time: 5
+    MoveIt_Use_Cartesian_Path: false
+    MoveIt_Use_Constraint_Aware_IK: false
+    MoveIt_Workspace:
+      Center:
+        X: 0
+        Y: 0
+        Z: 0
+      Size:
+        X: 2
+        Y: 2
+        Z: 2
+    Name: MotionPlanning
+    Planned Path:
+      Color Enabled: false
+      Interrupt Display: false
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        HB_carriage:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        Link Tree Style: Links in Alphabetic Order
+        camera_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_body:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_visor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        robot_mount:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        unilidar_imu:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        unilidar_lidar:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link_inertia:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_bracket_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_flange:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_forearm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_ft_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_tool0:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_torch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_1_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_3_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Loop Animation: false
+      Robot Alpha: 0.5
+      Robot Color: 150; 50; 150
+      Show Robot Collision: false
+      Show Robot Visual: true
+      Show Trail: false
+      State Display Time: 0.05 s
+      Trail Step Size: 1
+      Trajectory Topic: display_planned_path
+      Use Sim Time: false
+    Planning Metrics:
+      Payload: 1
+      Show Joint Torques: false
+      Show Manipulability: false
+      Show Manipulability Index: false
+      Show Weight Limit: false
+      TextHeight: 0.07999999821186066
+    Planning Request:
+      Colliding Link Color: 255; 0; 0
+      Goal State Alpha: 1
+      Goal State Color: 250; 128; 0
+      Interactive Marker Size: 0
+      Joint Violation Color: 255; 0; 255
+      Planning Group: manipulator
+      Query Goal State: true
+      Query Start State: false
+      Show Workspace: false
+      Start State Alpha: 1
+      Start State Color: 0; 255; 0
+    Planning Scene Topic: monitored_planning_scene
+    Robot Description: robot_description
+    Scene Geometry:
+      Scene Alpha: 0.5
+      Scene Color: 250; 50; 50
+      Scene Display Time: 0.009999999776482582
+      Show Scene Geometry: true
+      Voxel Coloring: Z-Axis
+      Voxel Rendering: Occupied Voxels
+    Scene Robot:
+      Attached Body Color: 150; 50; 150
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        HB_carriage:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        Link Tree Style: Links in Alphabetic Order
+        camera_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_body:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        camera_visor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        robot_mount:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        unilidar_imu:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        unilidar_lidar:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_base_link_inertia:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_bracket_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_flange:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_forearm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_ft_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_shoulder_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_tool0:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        ur10e_torch_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_upper_arm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_1_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_2_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        ur10e_wrist_3_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        world:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Robot Alpha: 0.5
+      Show Robot Collision: false
+      Show Robot Visual: true
+    Value: true
+    Velocity_Scaling_Factor: 0.1
+  - Class: rviz_default_plugins/TF
+    Enabled: true
+    Frame Timeout: 15
+    Frames:
+      All Enabled: false
+      HB_carriage:
+        Value: true
+      camera_base:
+        Value: false
+      camera_body:
+        Value: false
+      camera_visor:
+        Value: true
+      depth_camera_link:
+        Value: false
+      imu_link:
+        Value: false
+      rgb_camera_link:
+        Value: false
+      robot_mount:
+        Value: false
+      unilidar_imu:
+        Value: true
+      unilidar_imu_initial:
+        Value: false
+      unilidar_lidar:
+        Value: false
+      ur10e_base:
+        Value: false
+      ur10e_base_link:
+        Value: false
+      ur10e_base_link_inertia:
+        Value: false
+      ur10e_bracket_link:
+        Value: false
+      ur10e_flange:
+        Value: false
+      ur10e_forearm_link:
+        Value: false
+      ur10e_ft_frame:
+        Value: false
+      ur10e_shoulder_link:
+        Value: false
+      ur10e_tool0:
+        Value: false
+      ur10e_tool0_controller:
+        Value: false
+      ur10e_torch_link:
+        Value: true
+      ur10e_upper_arm_link:
+        Value: false
+      ur10e_wrist_1_link:
+        Value: false
+      ur10e_wrist_2_link:
+        Value: false
+      ur10e_wrist_3_link:
+        Value: false
+      world:
+        Value: false
+    Marker Scale: 1
+    Name: TF
+    Show Arrows: true
+    Show Axes: true
+    Show Names: false
+    Tree:
+      world:
+        HB_carriage:
+          robot_mount:
+            ur10e_base_link:
+              ur10e_base:
+                ur10e_tool0_controller: {}
+              ur10e_base_link_inertia:
+                ur10e_shoulder_link:
+                  ur10e_upper_arm_link:
+                    ur10e_forearm_link:
+                      ur10e_wrist_1_link:
+                        ur10e_wrist_2_link:
+                          ur10e_wrist_3_link:
+                            ur10e_flange:
+                              ur10e_tool0:
+                                camera_base:
+                                  camera_body: {}
+                                  camera_visor: {}
+                                  depth_camera_link:
+                                    imu_link: {}
+                                    rgb_camera_link: {}
+                                ur10e_bracket_link:
+                                  ur10e_torch_link: {}
+                            ur10e_ft_frame: {}
+          unilidar_lidar:
+            unilidar_imu:
+              unilidar_imu_initial: {}
+    Update Interval: 0
+    Value: true
+  - Class: rviz_default_plugins/Image
+    Enabled: false
+    Max Value: 1
+    Median window: 5
+    Min Value: 0
+    Name: AzureKinect
+    Normalize Range: true
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /cumotion/camera_1/robot_mask
+    Value: false
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: MarkerArray
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /inspection_viewpoints
+    Value: true
+  - Class: moveit_rviz_plugin/Trajectory
+    Color Enabled: false
+    Enabled: true
+    Interrupt Display: false
+    Links:
+      All Links Enabled: true
+      Expand Joint Details: false
+      Expand Link Details: false
+      Expand Tree: false
+      HB_carriage:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      Link Tree Style: Links in Alphabetic Order
+      camera_base:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      camera_body:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      camera_visor:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      robot_mount:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      unilidar_imu:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      unilidar_lidar:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_base:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_base_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_base_link_inertia:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_bracket_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_flange:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_forearm_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_ft_frame:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_shoulder_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_tool0:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+      ur10e_torch_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_upper_arm_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_wrist_1_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_wrist_2_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      ur10e_wrist_3_link:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+        Value: true
+      world:
+        Alpha: 1
+        Show Axes: false
+        Show Trail: false
+    Loop Animation: false
+    Name: Trajectory
+    Robot Alpha: 0.5
+    Robot Color: 150; 50; 150
+    Robot Description: robot_description
+    Show Robot Collision: false
+    Show Robot Visual: true
+    Show Trail: false
+    State Display Time: 3x
+    Trail Step Size: 25
+    Trajectory Topic: /display_planned_path
+    Use Sim Time: false
+    Value: true
+  - Alpha: 0.10000000149011612
+    Auto Size:
+      Auto Size Factor: 1
+      Value: true
+    Autocompute Intensity Bounds: true
+    Autocompute Value Bounds:
+      Max Value: 3.2867512702941895
+      Min Value: -0.887954831123352
+      Value: true
+    Axis: Z
+    CameraInfo Topic: /k4a/depth_to_rgb/camera_info
+    Channel Name: intensity
+    Class: rviz_default_plugins/DepthCloud
+    Color: 255; 255; 255
+    Color Image Topic: /k4a/rgb/image_raw
+    Color Transformer: RGB8
+    Color Transport Hint: raw
+    Decay Time: 0
+    Depth Map Topic: /k4a/depth_to_rgb/image_raw
+    Depth Map Transport Hint: raw
+    Enabled: false
+    Invert Rainbow: false
+    Max Color: 255; 255; 255
+    Max Intensity: 4096
+    Min Color: 0; 0; 0
+    Min Intensity: 0
+    Name: DepthCloud
+    Occlusion Compensation:
+      Occlusion Time-Out: 30
+      Value: false
+    Position Transformer: XYZ
+    Queue Size: 1
+    Reliability Policy: Best effort
+    Selectable: true
+    Size (Pixels): 2
+    Style: Points
+    Topic Filter: true
+    Use Fixed Frame: true
+    Use rainbow: true
+    Value: false
+  - Alpha: 1
+    Autocompute Intensity Bounds: true
+    Autocompute Value Bounds:
+      Max Value: 1.071526050567627
+      Min Value: -0.9112403392791748
+      Value: true
+    Axis: Z
+    Channel Name: intensity
+    Class: rviz_default_plugins/PointCloud2
+    Color: 255; 255; 255
+    Color Transformer: Intensity
+    Decay Time: 0
+    Enabled: false
+    Invert Rainbow: false
+    Max Color: 255; 255; 255
+    Max Intensity: 1
+    Min Color: 0; 0; 0
+    Min Intensity: 1
+    Name: PointCloud2
+    Position Transformer: XYZ
+    Selectable: false
+    Size (Pixels): 2
+    Size (m): 0.009999999776482582
+    Style: Points
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /profile_inspection/scene_cloud
+    Use Fixed Frame: true
+    Use rainbow: true
+    Value: false
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Debug_Profiles
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /perception/profiles
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Cut Plan
+    Namespaces:
+      approach_paths: true
+      cut_pose_bottom_flange_appr_normal: true
+      cut_pose_bottom_flange_appr_tangent: true
+      cut_pose_bottom_flange_approach_normal: true
+      cut_pose_bottom_flange_approach_tangent: true
+      cut_pose_bottom_flange_end_normal: true
+      cut_pose_bottom_flange_end_tangent: true
+      cut_pose_bottom_flange_labels: true
+      cut_pose_bottom_flange_retr_normal: true
+      cut_pose_bottom_flange_retr_tangent: true
+      cut_pose_bottom_flange_retract_normal: true
+      cut_pose_bottom_flange_retract_tangent: true
+      cut_pose_bottom_flange_start_normal: true
+      cut_pose_bottom_flange_start_tangent: true
+      cut_pose_left_web_appr_normal: true
+      cut_pose_left_web_appr_tangent: true
+      cut_pose_left_web_approach_normal: true
+      cut_pose_left_web_approach_tangent: true
+      cut_pose_left_web_end_normal: true
+      cut_pose_left_web_end_tangent: true
+      cut_pose_left_web_labels: true
+      cut_pose_left_web_retr_normal: true
+      cut_pose_left_web_retr_tangent: true
+      cut_pose_left_web_retract_normal: true
+      cut_pose_left_web_retract_tangent: true
+      cut_pose_left_web_start_normal: true
+      cut_pose_left_web_start_tangent: true
+      cut_pose_right_web_approach_normal: true
+      cut_pose_right_web_approach_tangent: true
+      cut_pose_right_web_end_normal: true
+      cut_pose_right_web_end_tangent: true
+      cut_pose_right_web_labels: true
+      cut_pose_right_web_retract_normal: true
+      cut_pose_right_web_retract_tangent: true
+      cut_pose_right_web_start_normal: true
+      cut_pose_right_web_start_tangent: true
+      cut_pose_top_flange_appr_normal: true
+      cut_pose_top_flange_appr_tangent: true
+      cut_pose_top_flange_approach_normal: true
+      cut_pose_top_flange_approach_tangent: true
+      cut_pose_top_flange_end_normal: true
+      cut_pose_top_flange_end_tangent: true
+      cut_pose_top_flange_labels: true
+      cut_pose_top_flange_retr_normal: true
+      cut_pose_top_flange_retr_tangent: true
+      cut_pose_top_flange_retract_normal: true
+      cut_pose_top_flange_retract_tangent: true
+      cut_pose_top_flange_start_normal: true
+      cut_pose_top_flange_start_tangent: true
+      cut_segments: true
+      retract_paths: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /cut_profile/cut_plan
+    Value: true
+  - Class: rviz_default_plugins/Marker
+    Enabled: false
+    Name: Marker
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /nvblox_node/tsdf_layer_marker
+    Value: false
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Debug_cut_planning
+    Namespaces:
+      sample_0_iter_0_actual_tcp_normal: true
+      sample_0_iter_0_actual_tcp_tangent: true
+      sample_0_iter_0_nominal_tcp_normal: true
+      sample_0_iter_0_nominal_tcp_tangent: true
+      sample_0_iter_0_status: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /cut_profile/debug_collision
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Debug_wkpiece_normal
+    Namespaces: {}
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /perception/nm_axes
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Inspection Profile Match
+    Namespaces:
+      profile_boundary: true
+      profile_labels: true
+      section_observed: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /profile_inspection/matches
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Inspection Coverage
+    Namespaces:
+      profile_support: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /profile_inspection/coverage
+    Value: true
+  - Class: rviz_default_plugins/MarkerArray
+    Enabled: true
+    Name: Inspection Poses
+    Namespaces:
+      nbv_candidates: true
+      nbv_ik_solution: true
+    Topic:
+      Depth: 5
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /profile_inspection/camera_poses
+    Value: true
+  - Alpha: 1
+    Autocompute Intensity Bounds: true
+    Autocompute Value Bounds:
+      Max Value: 10.87358570098877
+      Min Value: -1.1556949615478516
+      Value: true
+    Axis: Z
+    Channel Name: intensity
+    Class: rviz_default_plugins/PointCloud2
+    Color: 255; 255; 255
+    Color Transformer: AxisColor
+    Decay Time: 1
+    Enabled: false
+    Invert Rainbow: false
+    Max Color: 255; 255; 255
+    Max Intensity: 255
+    Min Color: 0; 0; 0
+    Min Intensity: 0
+    Name: PointCloud2
+    Position Transformer: XYZ
+    Selectable: true
+    Size (Pixels): 3
+    Size (m): 0.009999999776482582
+    Style: Flat Squares
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      Filter size: 10
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /hb_robot_lidar/cloud
+    Use Fixed Frame: true
+    Use rainbow: true
+    Value: false
+  Enabled: true
+  Global Options:
+    Background Color: 119; 118; 123
+    Fixed Frame: world
+    Frame Rate: 15
+  Name: root
+  Tools:
+  - Class: rviz_default_plugins/Interact
+    Hide Inactive Objects: true
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 0.8907181620597839
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0.10762681812047958
+        Y: 1.3528525829315186
+        Z: -0.15228067338466644
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.3797953128814697
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 2.941810369491577
+    Saved: null
+Window Geometry:
+  AzureKinect:
+    collapsed: true
+  Displays:
+    collapsed: false
+  Height: 1136
+  Help:
+    collapsed: false
+  Hide Left Dock: false
+  Hide Right Dock: true
+  MotionPlanning:
+    collapsed: false
+  MotionPlanning - Trajectory Slider:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd00000002000000000000038b00000416fc0200000009fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c0069006400650072010000003d000000460000004100fffffffb000000100044006900730070006c0061007900730100000089000001fd000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00730100000166000001910000000000000000fb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b50000000000000000fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000028c000001c70000017d00fffffffb00000024005200760069007a00560069007300750061006c0054006f006f006c007300470075006900000003e50000006e0000006e00fffffffb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb0000003c005400720061006a006500630074006f007200790020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff00000001000000e600000416fc0200000001fb000000160041007a007500720065004b0069006e006500630074000000003d000004160000002800ffffff000003a90000041600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  RvizVisualToolsGui:
+    collapsed: false
+  Trajectory - Trajectory Slider:
+    collapsed: false
+  Width: 1850
+  X: 70
+  Y: 27
