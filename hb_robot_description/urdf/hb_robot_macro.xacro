@@ -97,7 +97,7 @@
         <joint name="eef_bracket_torch_joint" type="fixed">
             <parent link="${ur_type}_bracket_link" />
             <child link="${ur_type}_torch_link" />
-            <origin xyz= "-.04415 0.00146 0.48478" rpy="2.3562 -0.0007 ${pi+0.0004}"/>
+            <origin xyz= "-.04301 0.00014 0.48102" rpy="2.3562 -0.0007 ${pi+0.0004}"/>
         </joint>
 
 
