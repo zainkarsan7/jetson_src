@@ -600,7 +600,7 @@ Visualization Manager:
       Decay Time: 0
       Depth Map Topic: /k4a/depth_to_rgb/image_raw
       Depth Map Transport Hint: raw
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 4096
@@ -619,7 +619,7 @@ Visualization Manager:
       Topic Filter: true
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -754,8 +754,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 10.544170379638672
-        Min Value: -1.157079815864563
+        Max Value: 11.04429817199707
+        Min Value: -1.132910132408142
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -803,25 +803,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.6133110523223877
+      Distance: 6.912256240844727
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.16709406673908234
-        Y: 1.3703972101211548
-        Z: -0.027194779366254807
+        X: -0.7309222221374512
+        Y: -0.1280011534690857
+        Z: 0.010670777410268784
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6847943663597107
+      Pitch: 0.43479445576667786
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 3.9368057250976562
+      Yaw: 0.6618044376373291
     Saved: ~
 Window Geometry:
   AzureKinect:

@@ -29,13 +29,13 @@
         <link name="robot_mount">
             <visual>
                 <geometry>
-                <mesh filename="package://hb_robot_description/meshes/board.stl"/>
+                <mesh filename="package://hb_robot_description/meshes/base_mount.stl"/>
                 </geometry>
                 <origin rpy="${pi/2} 0 0" xyz="0 0 0"/>
             </visual>
             <collision>
                 <geometry>
-                <mesh filename="package://hb_robot_description/meshes/board.stl"/>
+                <mesh filename="package://hb_robot_description/meshes/base_mount.stl"/>
                 </geometry>
                 <origin rpy="${pi/2} 0 0" xyz="0 0 0"/>
             </collision>

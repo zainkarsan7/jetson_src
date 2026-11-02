@@ -8,12 +8,19 @@
     <origin xyz= "-0.125 0 .15" rpy="0 ${-pi/2} 0"/>
 </joint> -->
 
-
+<!-- 
 <joint name="calibrated_camera_mount" type="fixed">
   <parent link="${ur_type}_tool0"/>
   <child link="camera_base"/>
   <origin xyz="-0.05878718188937343 0.059510573280679324 0.1513621946385637" rpy="-1.56712649894296 -0.7779397496579974 1.5852325385326869"/>
+</joint> -->
+
+<joint name="calibrated_camera_mount" type="fixed">
+  <parent link="${ur_type}_tool0"/>
+  <child link="camera_base"/>
+  <origin xyz="-0.05851854944289561 0.058550276611349567 0.15046260052156854" rpy="-1.5638679266599922 -0.7763264029766433 1.5938989828169094"/>
 </joint>
+
 <link name="unilidar_lidar"/>
 <link name="unilidar_imu"/>
 <!-- <joint name="mount_to_lidar" type="fixed">

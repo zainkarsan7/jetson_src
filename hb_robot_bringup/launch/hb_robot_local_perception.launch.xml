@@ -1,0 +1,75 @@
+<?xml version="1.0"?>
+
+
+<launch>
+    
+    <!-- Azure Kinect -->
+    <!-- <include file="$(find-pkg-share azure_kinect_ros2_driver)/launch/k4a_device_launch.py"> -->
+        
+     <node  pkg="azure_kinect_ros2_driver_codex"
+    exec = "azure_kinect_node_codex"
+    name="k4a_ros2_node"
+    output="screen"
+    emulate_tty="true">
+
+    <!-- Jetson X11 display for Kinect GPU initialization -->
+        <!-- <env name="DISPLAY" value=":0"/> -->
+        <!-- <env name="XAUTHORITY"
+             value="/run/user/1000/gdm/Xauthority"/> -->
+
+    <!-- <param name="color_format" value="jpeg"/> -->
+    <param name="color_enabled" value="true"/>
+    <param name="imu_rate_target" value="50"/>
+    <param name="color_resolution" value="720P"/>
+    
+    <param name="fps" value="30"/>
+    <param name="point_cloud" value="false"/>
+    <param name="rgb_point_cloud" value="false"/>
+    <!-- <param name="point_cloud_in_depth_frame" value="false"/> -->
+    </node>
+
+    <node pkg="unitree_lidar_ros2"
+    exec="unitree_lidar_ros2_node"
+    name="hb_robot_lidar"
+    output="screen">
+    <param name="initialize_type" value="1"/>
+    <param name="work_mode" value="8"/>
+    <param name="use_system_timestamp" value="true"/>
+    <param name="range_min" value="0.0"/>
+    <param name="range_max" value="100.0"/>
+    <param name="cloud_scan_num" value="18"/>
+    <param name="serial_port" value="/dev/ttyACM0"/>
+    <param name="baudrate" value="4000000"/>
+    <param name="lidar_port" value="6101"/>
+    <param name="lidar_ip" value="192.168.1.62"/>
+    <param name="local_port" value="6201"/>
+    <param name="local_ip" value="192.168.1.2"/>
+
+    <param name="cloud_frame" value="unilidar_lidar"/>
+    <param name="cloud_topic" value="hb_robot_lidar/cloud"/>
+    <param name="imu_frame" value="unilidar_imu"/>
+    <param name="imu_topic" value="hb_robot_lidar/imu"/>
+
+    
+    </node>
+
+
+    <!-- <node  pkg="hb_robot_perception"
+    exec = "perception_node"
+    name="perception_node"
+    output="screen">
+    </node> -->
+
+    <!-- <node  pkg="hb_robot_perception"
+    exec = "collision_publisher_node"
+    name="collision_depth_adapter"
+    output="screen">
+    <param name="decimation" value="10"/>
+    </node>
+ -->
+
+
+
+
+
+</launch>
