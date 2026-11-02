@@ -1,11 +1,8 @@
 <?xml version="1.0"?>
-
-
 <launch>
-   
-    <!-- MoveIt RViz -->
+    <!-- Keep raw RGB-D consumers local until remote perception is validated. -->
+    <arg name="launch_skills" default="false"/>
     <include file="$(find-pkg-share hb_robot_moveit_config)/launch/wsl_moveit_rviz.launch.py"/>
-    <!-- <include file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/> -->
-
-
+    <include if="$(var launch_skills)"
+             file="$(find-pkg-share hb_robot_bringup)/launch/skills.launch.py"/>
 </launch>

@@ -1,4 +1,4 @@
-"""Laptop supervisor: accelerated RViz, no hardware or skill servers."""
+"""Laptop supervisor with a compatible WSL graphics fallback."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
@@ -22,11 +22,12 @@ def generate_launch_description():
             default_value=str(config.package_path / "config/supervisor.rviz"),
         ),
         DeclareLaunchArgument(
-            "software_rendering", default_value="0",
-            description="Set to 1 only for a temporary graphics diagnostic.",
+            "software_rendering", default_value="1",
+            description="Software rendering is the working WSL fallback; 0 tests GPU rendering.",
         ),
         SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", LaunchConfiguration("software_rendering")),
         SetEnvironmentVariable("QT_QPA_PLATFORM", "xcb"),
+        SetEnvironmentVariable("QT_X11_NO_MITSHM", "1"),
         Node(
             package="rviz2", executable="rviz2", output="screen",
             arguments=["-d", LaunchConfiguration("rviz_config")],
