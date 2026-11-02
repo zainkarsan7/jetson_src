@@ -206,6 +206,12 @@ LIBGL_ALWAYS_SOFTWARE=1 rviz2
 
 ## UR DASHBOARD
 
+nc -v 192.168.50.55 29999
+is in remote control
+robotmode
+programState
+play
+
 /dashboard_client/ 
 ros2 service call /dashboard_client/play std_srvs/srv/Trigger "{}"
 
