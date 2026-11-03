@@ -70,6 +70,22 @@ ament_target_dependencies(cut_debug_node
   ur_msgs
 )
 
+add_executable(cut_debug_node_torch src/cut_debug_node_torch.cpp)
+ament_target_dependencies(cut_debug_node_torch
+  rclcpp
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
+  ur_msgs
+  hb_robot_interfaces
+)
+target_link_libraries(cut_debug_node_torch
+hb_motion
+)
+
 add_executable(approve_motion_server
 src/approve_motion_server.cpp)
 
