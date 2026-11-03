@@ -65,6 +65,15 @@ namespace hb_robot_skills{
 
 
         torch_controller_ = std::make_unique<TorchController>(*this,torch_config_);
+
+        torch_controller_->setFaultCallback([this](const std::string& reason){
+            RCLCPP_ERROR(get_logger(), "TORCH PROCESS FAULT %s", reason.c_str());
+            cut_stop_requested_.store(true);
+            if(move_group_){
+                move_group_->stop();
+            }
+
+        });
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_cut_motion",
             std::bind(&CutProfileServer::handleApproval,this,
@@ -656,25 +665,48 @@ namespace hb_robot_skills{
                 ){
                     if(!torch_controller_){
                         RCLCPP_ERROR(get_logger(),"torch not available, doing try run instead");
-                        
+                        return MotionOutcome::FAILED;
                     }
                     if(goal_handle->is_canceling()){
                         return MotionOutcome::CANCELED;
                     }
-                    const auto& params= cut.parameters;
-                    torch_controller_->setActiveSegment(cut.name);
-                    const auto telemetry = torch_controller_->snapshot();
+                    if(cut_stop_requested_.load()){
+                        return MotionOutcome::FAILED;
+                    }
                     if(!torch_controller_->hasFreshIO()){
                         RCLCPP_ERROR(get_logger(),"torch IO is stale");
                         return MotionOutcome::FAILED;
                     }
-                    if(!telemetry.output_on.has_value() || *telemetry.output_on){
+                    const auto telemetry = torch_controller_->snapshot();
+                    
+                    if(telemetry.output_on !=std::optional<bool>(false)){
                         RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
                         return MotionOutcome::FAILED;
                     }
 
-                    torch_controller_->setTorchEnabled(true);
+                    const auto& params= cut.parameters;
+                    torch_controller_->setActiveSegment(cut.name);
                     
+                    
+                    const auto ignition = torch_controller_->requestIgnition(std::chrono::milliseconds(1000),
+                    [&](){
+                        return goal_handle->is_canceling();
+                    });
+
+                    if(ignition != TorchCommandResult::CONFIRMED){
+                        return MotionOutcome::FAILED;
+                    }
+
+
+                    const auto transfer = torch_controller_->waitForArcTransfer(std::chrono::milliseconds(1000),
+                    [&](){
+                        return goal_handle->is_canceling();
+                    });
+
+                    if(transfer != TorchController::WaitResult::CONFIRMED){
+                        return MotionOutcome::FAILED;
+                    }
+
                     RCLCPP_INFO(get_logger(),"Cut %s: transfer=%s, analog=%s",
                     cut.name.c_str(), 
                     telemetry.transfer_detected.value_or(false)? "ON":"OFF",
@@ -682,13 +714,18 @@ namespace hb_robot_skills{
                 );
                     publishFeedback(goal_handle,cut.name+ ": dry run cutting motion"
                     );
-
-
-
-
-                    const auto outcome = executeMotion(cut.process.cut, goal_handle,cut.name+": cut");
-                    (void) params;
+                    const auto outcome = executeMotion(cut.process.cut, goal_handle,cut.name+": cut torch disabled");
+                    
                     torch_controller_->setActiveSegment("");
+                    if(goal_handle->is_canceling()){
+                        return MotionOutcome::CANCELED;
+                    }
+                    if(cut_stop_requested_.load() || 
+                    torch_controller_->hasFault()
+                ){
+                    return MotionOutcome::FAILED;
+                }
+
                     return outcome;
 
                 }
