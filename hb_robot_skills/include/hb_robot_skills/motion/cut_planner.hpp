@@ -88,7 +88,7 @@ struct CutSegment{
     std::vector<CutPathPoint> points;
     // Hard radial position bound about the original geometry, never relaxed.
     double pos_tol = 0.003;
-    double ang_tol = 0.03;
+    double ang_tol = 0.5;
 
     // poses
     Eigen::Isometry3d approach_pose = Eigen::Isometry3d::Identity();

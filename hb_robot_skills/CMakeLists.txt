@@ -170,6 +170,7 @@ install(
     cut_profile_server
     hb_motion
     cut_debug_node
+    cut_debug_node_torch
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

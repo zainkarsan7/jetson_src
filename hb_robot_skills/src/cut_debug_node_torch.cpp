@@ -113,6 +113,7 @@ public:
       const auto on = torch_->requestIgnition(
           std::chrono::milliseconds(ignition_timeout_ms_),
           [this] { return stop_requested_.load() || !rclcpp::ok(); });
+      
       if (on != TorchCommandResult::CONFIRMED)
         throw std::runtime_error("requestIgnition failed, result=" +
                                  std::to_string(static_cast<int>(on)));
@@ -142,6 +143,7 @@ public:
         // io_cycle intentionally does NOT require arc transfer.
         // It verifies ON feedback and immediately commands OFF.
         RCLCPP_INFO(get_logger(), "I/O cycle: ON feedback confirmed; requesting OFF");
+        std::this_thread::sleep_for(1000ms);
       }
       passed = true;
     } catch (const std::exception& e) {
