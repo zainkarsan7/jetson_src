@@ -663,76 +663,92 @@ namespace hb_robot_skills{
                 const motion::ExecutableCut& cut,
                 const std::shared_ptr<GoalHandleCutProfile> goal_handle
                 ){
+                    using namespace std::chrono_literals;
                     if(!torch_controller_){
                         RCLCPP_ERROR(get_logger(),"torch not available, doing try run instead");
                         return MotionOutcome::FAILED;
                     }
-                    if(goal_handle->is_canceling()){
-                        return MotionOutcome::CANCELED;
+                    auto& torch = *torch_controller_;
+                    const auto canceled = [&](){
+                        return goal_handle->is_canceling() || cut_stop_requested_.load() || !rclcpp::ok();
+                    };
+                    if(canceled()){
+                        return goal_handle->is_canceling() ? MotionOutcome::CANCELED : MotionOutcome::FAILED;
                     }
-                    if(cut_stop_requested_.load()){
-                        return MotionOutcome::FAILED;
-                    }
-                    if(!torch_controller_->hasFreshIO()){
-                        RCLCPP_ERROR(get_logger(),"torch IO is stale");
-                        return MotionOutcome::FAILED;
-                    }
-                    const auto telemetry = torch_controller_->snapshot();
-                    
-                    if(telemetry.output_on !=std::optional<bool>(false)){
-                        RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
-                        return MotionOutcome::FAILED;
+                    if(torch.hasFault() || !torch.hasFreshIO()){
+                        RCLCPP_ERROR(get_logger(),"torch is faulted or IO Stale");
+                         return MotionOutcome::FAILED;
                     }
 
+                    const auto before = torch.snapshot();
+                    if(before.output_on!=std::optional<bool>(false)||
+                        before.transfer_detected!=std::optional<bool>(false)){
+                         RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
+                        return MotionOutcome::FAILED;
+                    }
                     const auto& params= cut.parameters;
                     torch_controller_->setActiveSegment(cut.name);
+                    MotionOutcome outcome = MotionOutcome::FAILED;
+                    const auto shutdown = [&]()->bool{
+                        const auto off = torch.requestShutdown(1500ms);
+                        if(off != TorchCommandResult::CONFIRMED){
+                            RCLCPP_ERROR(get_logger(),"Torch off not confirmed for cut %s",
+                        cut.name.c_str());
+                        return false;
+                        }
+                        if(!torch.finishCut()){
+                            RCLCPP_ERROR(get_logger(),"torch could not return to IDLE");
+                            return false;
+                        }
+                        return true;
+                    };
+
+                    do{
+                        // request remote start on:
+                        publishFeedback(goal_handle,cut.name + ":ignition");
+                        const auto ignition = torch.requestIgnition(1500ms, canceled);
+                        if(ignition != TorchCommandResult::CONFIRMED){
+
+                            RCLCPP_ERROR(get_logger(),"IGNITION NOT CONFIRMED");
+                            break;
+
+                        }
+                        // wait for arc transfer
+                        publishFeedback(goal_handle,cut.name + ": waiting for arc transfer");
+                        const auto transfer = torch.waitForArcTransfer(2000ms,canceled);
+                        if(transfer != TorchController::WaitResult::CONFIRMED){
+                            RCLCPP_ERROR(get_logger(),"TRANSFER NOT CONFIRMED");
+                            break;
+                        }
+                        // pierce dwell is here eventually , 
+                        if(canceled()) break;
+                        // arm cutting state watchdog by using markcut:
+                        if(!torch.markCutting()){
+                            RCLCPP_ERROR(get_logger(),"CUTTING STATE NOT CONFIRMED");
+                            break;
+                        }
+                        if(canceled() || torch.hasFault())
+                            break;
+                        
+                        // FINALLY execute motion now: this call blocks, 
+                        //torch controller is running in background
+                        outcome = executeMotion(cut.process.cut, 
+                            goal_handle,cut.name+": cut");
+                        if(canceled() || torch.hasFault()) 
+                            outcome = MotionOutcome::FAILED;
+                        }
+                        while(false);
+
+                        const bool off_confirmed = shutdown();
+
+                        torch.setActiveSegment("");
+                        if(!off_confirmed) return MotionOutcome::FAILED;
+                        if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
+                        if(cut_stop_requested_.load() || torch.hasFault()) return MotionOutcome::FAILED;
+                        return outcome;
                     
-                    
-                    const auto ignition = torch_controller_->requestIgnition(std::chrono::milliseconds(1000),
-                    [&](){
-                        return goal_handle->is_canceling();
-                    });
 
-                    if(ignition != TorchCommandResult::CONFIRMED){
-                        return MotionOutcome::FAILED;
-                    }
-
-
-                    const auto transfer = torch_controller_->waitForArcTransfer(std::chrono::milliseconds(1000),
-                    [&](){
-                        return goal_handle->is_canceling();
-                    });
-
-                    if(transfer != TorchController::WaitResult::CONFIRMED){
-                        return MotionOutcome::FAILED;
-                    }
-
-                    RCLCPP_INFO(get_logger(),"Cut %s: transfer=%s, analog=%s",
-                    cut.name.c_str(), 
-                    telemetry.transfer_detected.value_or(false)? "ON":"OFF",
-                    telemetry.analog_value ? std::to_string(*telemetry.analog_value).c_str(): "unavail"
-                );
-                    publishFeedback(goal_handle,cut.name+ ": dry run cutting motion"
-                    );
-                    const auto outcome = executeMotion(cut.process.cut, goal_handle,cut.name+": cut torch disabled");
-                    
-                    torch_controller_->setActiveSegment("");
-                    if(goal_handle->is_canceling()){
-                        return MotionOutcome::CANCELED;
-                    }
-                    if(cut_stop_requested_.load() || 
-                    torch_controller_->hasFault()
-                ){
-                    return MotionOutcome::FAILED;
-                }
-
-                    return outcome;
-
-                }
-
-
-
-
+    }
 
     CutProfileServer::MotionOutcome CutProfileServer::executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
                 const std::shared_ptr<GoalHandleCutProfile>goal_handle){

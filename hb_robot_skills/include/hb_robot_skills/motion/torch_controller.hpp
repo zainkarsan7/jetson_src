@@ -126,7 +126,10 @@ class TorchController{
 
         }
 
-    bool isArcEstablished() const;
+    bool isArcEstablished() const{
+        std::lock_guard<std::mutex>lock(mutex_);
+        return state_==State::ESTABLISHED || state_==State::CUTTING;
+    }
     bool hasFault() const{
         std::lock_guard<std::mutex>lock(mutex_);
         return state_==State::FAULT;
@@ -186,20 +189,20 @@ class TorchController{
         }
 
 
-    bool beginCut(const std::string& segment){
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(!config_.ignition_enabled || 
-            state_!=State::IDLE||
-            !freshLocked() || 
-            telemetry_.output_on!=std::optional<bool>(false)||
-            telemetry_.transfer_detected!=std::optional<bool>(false)){
-                return false;
-            }
-        active_segment_ = segment;
-        state_ = State::IGNITING;
-        return true;
+    // bool beginCut(const std::string& segment){
+    //     std::lock_guard<std::mutex> lock(mutex_);
+    //     if(!config_.ignition_enabled || 
+    //         state_!=State::IDLE||
+    //         !freshLocked() || 
+    //         telemetry_.output_on!=std::optional<bool>(false)||
+    //         telemetry_.transfer_detected!=std::optional<bool>(false)){
+    //             return false;
+    //         }
+    //     active_segment_ = segment;
+    //     state_ = State::IGNITING;
+    //     return true;
 
-    }
+    // }
 
     bool finishCut(){
         std::lock_guard<std::mutex>lock(mutex_);
@@ -235,7 +238,7 @@ class TorchController{
             std::lock_guard<std::mutex>lock(mutex_);
             if(state_!=State::IGNITING ||
             !freshLocked()||
-            telemetry_.output_on == std::optional<bool>(true)||
+            telemetry_.output_on != std::optional<bool>(true)||
             telemetry_.transfer_detected != std::optional<bool>(true)){
                 return WaitResult::FAULT;
             }
@@ -342,10 +345,10 @@ class TorchController{
                     if(!response || !response->success) return TorchCommandResult::REQUEST_FAILED;
                     
                 }catch(const std::exception& e){
-                    RCLCPP_ERROR(node_->get_logger(),"SetIO exception %s",e.what());
+                    RCLCPP_ERROR(node_.get_logger(),"SetIO exception %s",e.what());
                     return TorchCommandResult::REQUEST_FAILED;
                 }
-                std::lock_guard<std::mutex>lock(mutex_);
+                std::unique_lock<std::mutex>lock(mutex_);
                 while(Clock::now() < deadline){
                     if(enabled && canceled && canceled()) return TorchCommandResult::CANCELED;
                     if(enabled && state_ == State::FAULT) return TorchCommandResult::FAULT; 
@@ -355,7 +358,7 @@ class TorchController{
                         telemetry_.command_on = enabled;
                         return TorchCommandResult::CONFIRMED;
                     }
-                    cv_.wait_for(lock,std::chrono::milliseconds(20));
+                cv_.wait_for(lock,std::chrono::milliseconds(20));
 
                 }
                 return TorchCommandResult::FEEDBACK_TIMEOUT;
