@@ -211,6 +211,7 @@ class TorchController{
         telemetry_.transfer_detected != std::optional<bool>(false)
     ) { return false;}
     state_ = State::IDLE;
+    transfer_lost_since_.reset();
     active_segment_.clear();
     return true;
     }

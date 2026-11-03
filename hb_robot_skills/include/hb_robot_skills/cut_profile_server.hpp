@@ -10,12 +10,15 @@
 #include "hb_robot_perception/profile_types.hpp"
 #include "hb_robot_skills/motion/cut_planner.hpp"
 #include "hb_robot_skills/motion/torch_controller.hpp"
-#include "hb_robot_skills/motion/cut_graph_planner.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
 #include "hb_robot_perception/profile_library.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <unordered_map>
+#include <string>
 
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/bool.hpp"

@@ -116,7 +116,7 @@ namespace hb_robot_skills{
 
     void CutProfileServer::initialize(){
 
-        move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
+        move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
         move_group_->setPlanningTime(planning_time_);
         
         planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(shared_from_this(),"robot_description");
