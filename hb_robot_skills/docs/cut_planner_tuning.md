@@ -62,15 +62,19 @@ or silently substitutes a fixed 0.5 mm cross-section.
 
 ## Transit ownership and return policy
 
-Default route, with cut order unchanged:
+Example direct route, with cut order unchanged:
 
 ```
 initial state -> A approach -> A cut -> A retract
               -> B approach -> B cut -> B retract -> initial state
 ```
 
-The graph contains candidate-to-candidate edges and lazily plans each selected
-edge using the actual regenerated process endpoints. A failed edge removes that
+By default the graph retains BOTH candidate-to-candidate edges and a home node
+at every boundary, with edges from every previous candidate and to every next
+candidate. It lazily plans the competing routes using actual regenerated process
+endpoints. Direct edges compete with the SUM of both home legs under the same
+travel objective; endpoint-distance estimates do not override actual planned
+detours. It can choose home at one boundary and direct at the next. A failed edge removes that
 candidate pair, not either entire candidate. Alternative pairs remain available.
 All transits still go through the existing collision-checked planning callback and
 boundary validation; a direct transit is not joint interpolation or a straight
@@ -87,7 +91,7 @@ then transit. Home means the captured initial robot state, not a named SRDF pose
 Launch controls:
 
 ```bash
-# Direct transitions, final return enabled (defaults):
+# Automatic direct-versus-home choice, final return enabled (defaults):
 ros2 launch hb_robot_bringup skills.launch.py
 # Legacy route with a home return between every cut:
 ros2 launch hb_robot_bringup skills.launch.py return_home_between_cuts:=true
@@ -97,8 +101,13 @@ ros2 launch hb_robot_bringup skills.launch.py return_home_after_last_cut:=false
 
 Corresponding node parameters are `cut_transit.return_home_between_cuts` and
 `cut_transit.return_home_after_last_cut`. Options are read at server initialization.
-A missing direct route fails explicitly; the planner never silently enables home
-returns. The graph optimizes across the retained candidates and fixed cut order,
+A failed or expensive direct route can select a validated home alternative.
+`return_home_between_cuts:=false` now means automatic choice, not direct-only;
+`true` still forces home for compatibility. The final-return option is independent.
+The home state is an actual optional waypoint, not merely a seed supplied to OMPL.
+Both legs are collision-planned and charged separately; hard travel limits apply
+to each leg, matching the existing per-transit semantics. No limit is relaxed.
+`[CUT GRAPH]` logs show selected incoming routes and home-return costs. The graph optimizes across the retained candidates and fixed cut order,
 not all possible IK solutions, cut orders, or stochastic transit-planner outcomes.
 
 ## Sampling controls and recommended starting values

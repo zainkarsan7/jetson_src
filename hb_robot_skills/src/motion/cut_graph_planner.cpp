@@ -367,11 +367,15 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
     };
     for (auto n : layers.front()) connect(start, n);
     for (std::size_t i = 1; i < count; ++i) {
-        if (options_.return_home_between_cuts) {
-            const auto home = graph.addNode(2*i, 0.0);
-            for (auto n : layers[i-1]) connect(n, home);
-            for (auto n : layers[i]) connect(home, n);
-        } else {
+        // Keep a home alternative at EVERY boundary. The home node has a
+        // single exact robot configuration, so its inbound/outbound plans can
+        // safely be shared across candidate pairs without changing ownership.
+        const auto home = graph.addNode(2*i, 0.0);
+        for (auto n : layers[i-1]) connect(n, home);
+        for (auto n : layers[i]) connect(home, n);
+        // Compatibility option: true forces the legacy home-only route;
+        // false lets the graph compare direct versus two-leg home transits.
+        if (!options_.return_home_between_cuts) {
             for (auto from : layers[i-1])
                 for (auto to : layers[i]) connect(from, to);
         }
@@ -446,9 +450,16 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
         // A direct candidate->candidate edge belongs ONLY to its destination.
         cut.transit_in = transits.at(selected.edges.at(i-1));
         cut.process = processes.at(n);
+        const auto incoming = selected.edges.at(i-1);
+        std::cout << "[CUT GRAPH] " << cut.name << " transit_in="
+                  << (lookup.count(graph.edge(incoming).from) ? "direct from previous retract" : "from initial/home state")
+                  << " cost=" << graph.edge(incoming).actual_cost << '\n';
         const auto outgoing = selected.edges.at(i);
-        if (!lookup.count(graph.edge(outgoing).to) && transits.count(outgoing))
+        if (!lookup.count(graph.edge(outgoing).to) && transits.count(outgoing)) {
             cut.transit_out = transits.at(outgoing);
+            std::cout << "[CUT GRAPH] " << cut.name << " return_home cost="
+                      << graph.edge(outgoing).actual_cost << '\n';
+        }
         result.cuts.push_back(std::move(cut));
         ++statistics_.accepted_candidates;
     }

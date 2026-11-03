@@ -156,12 +156,17 @@ TEST_F(CutGraphPlannerTest, FinalReturnCanBeOmittedIndependently) {
         EXPECT_EQ(result->cuts.front().transit_out.has_value(), between);
     }
 }
-TEST_F(CutGraphPlannerTest, FailedDirectConnectionDoesNotSilentlyGoHome) {
-    EXPECT_FALSE(multi(false, true, true));
-    EXPECT_TRUE(multi(true, true, true));
+TEST_F(CutGraphPlannerTest, FailedDirectConnectionFallsBackToValidatedHomeRoute) {
+    const auto result = multi(false, true, true);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->cuts.front().transit_out);
+    EXPECT_DOUBLE_EQ(result->cuts[1].transit_in.trajectory_.joint_trajectory.points.front().positions.front(), 0.0);
 }
-TEST_F(CutGraphPlannerTest, DiscontinuousDirectConnectionIsRejected) {
-    EXPECT_FALSE(multi(false, true, false, true));
+TEST_F(CutGraphPlannerTest, DiscontinuousDirectConnectionIsRejectedAndHomeRouteUsed) {
+    const auto result = multi(false, true, false, true);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->cuts.front().transit_out);
+    EXPECT_DOUBLE_EQ(result->cuts[1].transit_in.trajectory_.joint_trajectory.points.front().positions.front(), 0.0);
 }
 TEST_F(CutGraphPlannerTest, PilzPathOutsideOriginalPositionTubeIsRejected) {
     EXPECT_FALSE(multi(false, true, false, false, true));
@@ -310,4 +315,70 @@ TEST_F(CutGraphPlannerTest, GeometricBeamAcceptsOneCompleteChainBelowRequestedWi
             return std::vector<moveit::core::RobotStatePtr>{std::make_shared<moveit::core::RobotState>(state(0.2))};
         });
     EXPECT_TRUE(result);
+}
+
+
+TEST_F(CutGraphPlannerTest, HomeCompetesWithActualDirectDetourCost) {
+    for (bool direct_detour : {false, true}) {
+        CutGraphPlanner::Options options;
+        options.return_home_after_last_cut = false;
+        CutGraphPlanner planner(model, "arm",
+            [&](const auto& from, const auto& to) -> std::optional<CutGraphPlanner::Plan> {
+                const double a=from.getVariablePosition("joint"), b=to.getVariablePosition("joint");
+                // Endpoint estimate prefers direct 1->2; actual path may be wild.
+                if (direct_detour && a==1 && b==2) return trajectory({a,-3.0,b});
+                return trajectory({a,b});
+            }, [&](const CutSegment&, const ProcessCandidate& c) -> std::optional<SegmentMotionPlan> {
+                const double q=c.entry->getVariablePosition("joint");
+                auto p=trajectory({q,q}); return SegmentMotionPlan{p,p,p};
+            }, options);
+        CutPlan cuts; cuts.segments.resize(2);
+        const auto result=planner.plan(cuts,{{candidate(1,0)},{candidate(2,0)}},state(0),"p","e");
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->cuts.front().transit_out.has_value(),direct_detour);
+        EXPECT_DOUBLE_EQ(result->cuts[1].transit_in.trajectory_.joint_trajectory.points.front().positions.front(),direct_detour?0.0:1.0);
+        EXPECT_FALSE(result->cuts.back().transit_out);
+    }
+}
+TEST_F(CutGraphPlannerTest, HomeAlternativeRespectsTravelBudgetAndFailsWhenBothRoutesInvalid) {
+    for (bool home_valid : {false,true}) {
+        CutGraphPlanner::Options options;
+        options.return_home_after_last_cut=false;
+        options.max_transit_joint_travel_rad=2.1;
+        CutGraphPlanner planner(model,"arm",
+            [&](const auto& from,const auto& to) -> std::optional<CutGraphPlanner::Plan> {
+                const double a=from.getVariablePosition("joint"),b=to.getVariablePosition("joint");
+                if (a==1 && (b==2 || (!home_valid && b==0))) return trajectory({a,-3.0,b});
+                return trajectory({a,b});
+            },[&](const CutSegment&,const ProcessCandidate& c) -> std::optional<SegmentMotionPlan> {
+                auto p=trajectory({c.entry->getVariablePosition("joint"),c.entry->getVariablePosition("joint")});
+                return SegmentMotionPlan{p,p,p};
+            },options);
+        CutPlan cuts; cuts.segments.resize(2);
+        const auto result=planner.plan(cuts,{{candidate(1,0)},{candidate(2,0)}},state(0),"p","e");
+        EXPECT_EQ(result.has_value(),home_valid);
+        if (result) EXPECT_TRUE(result->cuts.front().transit_out);
+    }
+}
+TEST_F(CutGraphPlannerTest, MixedRouteUsesHomeOnlyAtExpensiveBoundary) {
+    CutGraphPlanner::Options options;
+    options.return_home_after_last_cut=false;
+    CutGraphPlanner planner(model,"arm",
+        [&](const auto& from,const auto& to) -> std::optional<CutGraphPlanner::Plan> {
+            const double a=from.getVariablePosition("joint"), b=to.getVariablePosition("joint");
+            if (a==1 && b==2) return trajectory({a,-3.0,b});
+            return trajectory({a,b});
+        },[&](const CutSegment&,const ProcessCandidate& c) -> std::optional<SegmentMotionPlan> {
+            auto p=trajectory({c.entry->getVariablePosition("joint"),c.entry->getVariablePosition("joint")});
+            return SegmentMotionPlan{p,p,p};
+        },options);
+    CutPlan cuts; cuts.segments.resize(3);
+    const auto result=planner.plan(cuts,{{candidate(1,0)},{candidate(2,0)},{candidate(2.2,0)}},state(0),"p","e");
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->cuts.size(),3u);
+    EXPECT_TRUE(result->cuts[0].transit_out);
+    EXPECT_FALSE(result->cuts[1].transit_out);
+    EXPECT_FALSE(result->cuts[2].transit_out);
+    EXPECT_DOUBLE_EQ(result->cuts[1].transit_in.trajectory_.joint_trajectory.points.front().positions.front(),0.0);
+    EXPECT_DOUBLE_EQ(result->cuts[2].transit_in.trajectory_.joint_trajectory.points.front().positions.front(),2.0);
 }

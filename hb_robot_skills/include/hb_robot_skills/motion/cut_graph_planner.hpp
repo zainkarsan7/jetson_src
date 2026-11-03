@@ -41,6 +41,7 @@ class CutGraphPlanner{
             std::size_t max_candidates_per_segment = 24;
             double boundary_tol = 1e-3;
             std::string tcp_link; // set by the server for Cartesian path validation
+            // false: optimize over direct AND home alternatives; true: force home.
             bool return_home_between_cuts = false;
             bool return_home_after_last_cut = true;
             double process_weight = 1.0;

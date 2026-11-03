@@ -86,7 +86,7 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument("return_home_between_cuts", default_value="false",
-            description="Return to the initial robot state between cuts instead of direct transits."),
+            description="Force home between cuts; false compares direct and home routes by planned travel cost."),
         DeclareLaunchArgument("return_home_after_last_cut", default_value="true",
             description="Return to the initial robot state after the final retract."),
         inspect_scene_server,
