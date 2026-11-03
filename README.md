@@ -215,6 +215,8 @@ play
 /dashboard_client/ 
 ros2 service call /dashboard_client/play std_srvs/srv/Trigger "{}"
 
+ros2 service call /dashboard_client/close_popup std_srvs/srv/Trigger "{}"
+
 ros2 service call /dashboard_client/brake_release std_srvs/srv/Trigger "{}"
 
 ros2 service call /dashboard_client/program_state ur_dashboard_msgs/srv/GetProgramState "{}"

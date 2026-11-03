@@ -672,6 +672,9 @@ namespace hb_robot_skills{
                         RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
                         return MotionOutcome::FAILED;
                     }
+
+                    torch_controller_->setTorchEnabled(true);
+                    
                     RCLCPP_INFO(get_logger(),"Cut %s: transfer=%s, analog=%s",
                     cut.name.c_str(), 
                     telemetry.transfer_detected.value_or(false)? "ON":"OFF",
