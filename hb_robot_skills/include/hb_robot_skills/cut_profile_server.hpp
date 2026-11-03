@@ -127,7 +127,9 @@ namespace hb_robot_skills{
 
             std::optional<moveit::planning_interface::MoveGroupInterface::Plan> makeLinPlan(
                 const moveit::core::RobotState& start_state,
-                const moveit::core::RobotState& goal_state);
+                const moveit::core::RobotState& goal_state,
+                double tcp_velocity_m_s
+            );
 
             std::shared_ptr<robot_trajectory::RobotTrajectory> collateSegmentTrajectory(
                 const motion::SegmentMotionPlan& smp
@@ -181,6 +183,7 @@ namespace hb_robot_skills{
             collision_debug_pub_;
 
         planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+        motion::CutProcessParams cut_process_params_;
 
     };
 

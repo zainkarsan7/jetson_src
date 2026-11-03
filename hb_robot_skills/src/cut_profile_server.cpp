@@ -229,19 +229,19 @@ namespace hb_robot_skills{
             motion::SegmentMotionPlan result;
 
             auto approach_ = makeLinPlan(*candidate.approach.front(),
-            *candidate.approach.back());
+            *candidate.approach.back(),cut_process_params_.approach_vel_m_s);
             if(!approach_){
                 RCLCPP_ERROR(get_logger(),"failed on approach linear");
                 return std::nullopt;
             }
             result.approach = *approach_;
-            auto cut_ = makeLinPlan(getFinalState(result.approach),*candidate.cut.back());
+            auto cut_ = makeLinPlan(getFinalState(result.approach),*candidate.cut.back(),cut_process_params_.cut_speed_m_s);
             if(!cut_){
                 RCLCPP_ERROR(get_logger(),"failed on start linear");
                 return std::nullopt;
             }            
             result.cut = *cut_;
-            auto retract_ = makeLinPlan(getFinalState(result.cut),*candidate.retract.back());
+            auto retract_ = makeLinPlan(getFinalState(result.cut),*candidate.retract.back(),cut_process_params_.retract_vel_m_s);
             if(!retract_){
                 RCLCPP_ERROR(get_logger(),"failed on retract linear");
                 return std::nullopt;
@@ -301,7 +301,7 @@ namespace hb_robot_skills{
 
         cut_stop_requested_.store(true);
         if(torch_controller_){
-            torch_controller_->setTorchEnabled(false);
+            torch_controller_->requestShutdown(std::chrono::milliseconds(1500));
         }
 
         if(move_group_){
@@ -353,9 +353,20 @@ namespace hb_robot_skills{
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(
         const moveit::core::RobotState& start_state,
-        const   moveit::core::RobotState& goal_state){
+        const   moveit::core::RobotState& goal_state,
+        double tcp_velocity_m_s
+    ){
+            constexpr double max_pilz_tcp_vel_m_s =  1.0;
+  
+            double vel_scale = tcp_velocity_m_s / max_pilz_tcp_vel_m_s;
+            if(!std::isfinite(vel_scale)|| vel_scale <=0.0 || vel_scale > 1.0){
+                return std::nullopt;
+            }
                 move_group_->setStartState(start_state);
-                
+                move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+                move_group_->setPlannerId("LIN");
+                move_group_->setMaxVelocityScalingFactor(vel_scale);
+                move_group_->setMaxAccelerationScalingFactor(0.1);
                 move_group_->setJointValueTarget(goal_state);
                 // const Eigen::Isometry3d goal_tf = goal_state.getGlobalLinkTransform(plasma_link_);
                 // geometry_msgs::msg::Pose goal_pose = tf2::toMsg(goal_tf);
@@ -369,37 +380,37 @@ namespace hb_robot_skills{
             };
 
     
-        std::optional<motion::SegmentMotionPlan> CutProfileServer::planSegmentPilzLinear(
-            const motion::CutSegment& segment, const moveit::core::RobotState& actual_approach
-        ){
-            motion::SegmentMotionPlan segment_motion_plan;
-            move_group_->clearPoseTargets();
-            move_group_->clearPathConstraints();
-            move_group_->setMaxVelocityScalingFactor(0.2);
-            move_group_->setMaxAccelerationScalingFactor(0.2);
-            move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
-            move_group_->setPlannerId("LIN");
-            // try the approach linear
-            auto approach_ = makeLinPlan(actual_approach,*segment.start_state);
-            if(!approach_){
-                RCLCPP_ERROR(get_logger(),"failed on approach linear");
-                return std::nullopt;
-            }
-            segment_motion_plan.approach = approach_.value();
-            auto start_ = makeLinPlan(getFinalState(segment_motion_plan.approach),*segment.end_state);
-            if(!start_){
-                RCLCPP_ERROR(get_logger(),"failed on start linear");
-                return std::nullopt;
-            }            
-            segment_motion_plan.cut = start_.value();
-            auto retract_ = makeLinPlan(getFinalState(segment_motion_plan.cut),*segment.retract_state);
-            if(!retract_){
-                RCLCPP_ERROR(get_logger(),"failed on retract linear");
-                return std::nullopt;
-            }
-            segment_motion_plan.retract = retract_.value();           
-            return segment_motion_plan;
-        }
+        // std::optional<motion::SegmentMotionPlan> CutProfileServer::planSegmentPilzLinear(
+        //     const motion::CutSegment& segment, const moveit::core::RobotState& actual_approach
+        // ){
+        //     motion::SegmentMotionPlan segment_motion_plan;
+        //     move_group_->clearPoseTargets();
+        //     move_group_->clearPathConstraints();
+        //     move_group_->setMaxVelocityScalingFactor(0.2);
+        //     move_group_->setMaxAccelerationScalingFactor(0.2);
+        //     move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+        //     move_group_->setPlannerId("LIN");
+        //     // try the approach linear
+        //     auto approach_ = makeLinPlan(actual_approach,*segment.start_state, cut_process_params_.approach_vel_m_s)
+        //     if(!approach_){
+        //         RCLCPP_ERROR(get_logger(),"failed on approach linear");
+        //         return std::nullopt;
+        //     }
+        //     segment_motion_plan.approach = approach_.value();
+        //     auto start_ = makeLinPlan(getFinalState(segment_motion_plan.approach),*segment.end_state,cut_process_params_.approach_vel_m_s);
+        //     if(!start_){
+        //         RCLCPP_ERROR(get_logger(),"failed on start linear");
+        //         return std::nullopt;
+        //     }            
+        //     segment_motion_plan.cut = start_.value();
+        //     auto retract_ = makeLinPlan(getFinalState(segment_motion_plan.cut),*segment.retract_state,cut_process_params_.cut_speed_m_s);
+        //     if(!retract_){
+        //         RCLCPP_ERROR(get_logger(),"failed on retract linear");
+        //         return std::nullopt;
+        //     }
+        //     segment_motion_plan.retract = retract_.value();           
+        //     return segment_motion_plan;
+        // }
 
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planConstrainedCut(
@@ -774,7 +785,8 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
-            outcome = executeCut(cut,goal_handle);
+            outcome = run(cut.process.cut,"cut");
+            // outcome = executeCut(cut,goal_handle);
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }

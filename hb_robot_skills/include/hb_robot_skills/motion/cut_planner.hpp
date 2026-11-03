@@ -116,7 +116,11 @@ struct CutProcessParams{
 
     double ignition_dwell_s = 0.5;
     double post_flow_s = 0.5;
-    double cut_vel_scale = 0.05;
+    double cut_speed_m_s = 0.015;
+    double approach_vel_m_s = 0.01;
+    double retract_vel_m_s = 0.05;
+    double speed_tol_fraction = 0.05;
+
     bool require_torch_ready = true;
 
 };
