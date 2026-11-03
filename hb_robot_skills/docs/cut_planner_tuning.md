@@ -8,10 +8,32 @@ position**, not an allowance to accumulate displacement at every correction.
 constraint. A positive finite `pos_tol` is required. No tolerance is relaxed on
 failure.
 
-Geometric sampling uses the exact nominal translation. It tries the previous
-solution's orientation, nominal orientation, then deterministic roll samples and
-bounded tilts. The old random positional sampling and contact-normal translation
-of the torch have been removed. Body-contact correction uses a bounded joint step
+Geometric sampling keeps the exact nominal translation. It first tries the previous
+solution's orientation and nominal orientation, then restores MoveIt's native
+`IKConstraintSampler::samplePose` distribution across the complete orientation
+constraint. The sampled translation is discarded: the position target is never
+shifted. This replaces the narrower hand-written half-tilt/golden-roll distribution,
+which could miss top-flange solutions.
+
+Most IK attempts use the reference/best feasible seed with consistency limits.
+Every fourth attempt (when enabled) explores another bounded robot configuration
+without the local consistency restriction, so elbow/wrist branches are not all
+excluded by the same reference seed. Bounds, position/orientation constraints and
+collision checks are passed INTO the IK validity callback, allowing a supporting
+solver to try another solution for the same orientation. Results are independently
+rechecked afterward. The shallowest admissible colliding solution is retained for
+repair if no collision-free IK result is found. Repeated equivalent solutions do
+not count toward `feasible_samples`; that setting is an early-stop target, not a
+minimum required for success.
+
+A waypoint beam retains up to three distinct configurations through approach,
+start, end and retract instead of irreversibly selecting the cheapest approach.
+The total pose-attempt budget at each phase is split across parent branches, not
+multiplied by beam width. A dead-end parent does not discard the other parents.
+This is still a bounded beam heuristic, not exhaustive backtracking or a guarantee
+of recovering every solution the old positional sampler found.
+
+Body-contact correction uses a bounded joint step
 in the TCP translation Jacobian's null space; IK projects its orientation proposal
 back onto the original position. Roll/tilt proposals provide an alternative for
 torch contacts. Every accepted step must satisfy the original position/orientation
@@ -86,10 +108,12 @@ and restart the server after rebuilding/installing launch changes.
 
 | Parameter | Default | Purpose |
 | --- | ---: | --- |
-| `cut_geometry.max_pose_samples` | 48 | Maximum orientation/IK attempts per geometric waypoint; formerly 100 random attempts |
-| `cut_geometry.feasible_samples` | 4 | Stop after this many feasible samples and keep lowest joint-distance cost |
+| `cut_geometry.max_pose_samples` | 48 | Total pose-attempt budget per waypoint, shared across beam parents |
+| `cut_geometry.feasible_samples` | 4 | Early-stop target of distinct feasible configurations per parent; fewer can succeed |
 | `cut_geometry.refinement_iterations` | 8 | Maximum monotone collision-repair iterations per sample |
-| `cut_geometry.ik_timeout_s` | 0.03 | Timeout per IK attempt |
+| `cut_geometry.ik_timeout_s` | 0.05 | Restore the original per-attempt IK timeout, allowing callback branch search |
+| `cut_geometry.waypoint_beam_width` | 3 | Distinct waypoint configurations retained for continuation |
+| `cut_geometry.explore_ik_branches` | true | Reserve every fourth attempt for an alternate unrestricted IK branch |
 | `cut_geometry.ik_consistency_rad` | 2.0 | Initial per-variable IK search bound |
 | `cut_geometry.repair_joint_step_rad` | 0.03 | Maximum joint correction per body-contact proposal |
 | `cut_geometry.repair_roll_step_rad` | 0.15 | Roll increment per contact-repair proposal |
@@ -101,12 +125,26 @@ and restart the server after rebuilding/installing launch changes.
 | `cut_sampling.local_ik_consistency_rad` | 0.75 | First IK consistency bound for geometric/local process seeds |
 | `cut_sampling.max_candidates` | 32 | Retained candidates per segment |
 
-Start with these bounds. For difficult profiles, raise `max_pose_samples` to 96
-and `feasible_samples` to 8 before changing geometric tolerances. To explore more
-branches for disconnected transits, raise `max_candidates_per_roll` to 4 or set
-it to 0. For fast previews, try 24 geometric samples, 2 feasible samples and 8
-seeds per orientation; reduced search can reduce success rate. Do not use
-`pos_tol` as a performance knob: it describes permitted cut-position error.
+Keep an existing 64-attempt / 8-feasible setup for comparison; increasing either is
+not required to enable this strategy. Use beam width 3, branch exploration enabled,
+and a 0.05-second IK timeout. `[CUT GEOMETRY]` logs identify the segment/phase and
+report pose sampling failures, IK failures, constraint/collision callback
+rejections, repairs, duplicates and distinct feasible results. Callback rejection
+counts can exceed the number of pose attempts because one IK call can test several
+solutions. Inspect those counts before tuning:
+
+- Many IK failures with few constraint/collision callbacks: inspect reachability,
+  solver timeout and seed/branch access.
+- Many collision rejections: inspect collision geometry and accepted contacts;
+  do not relax position bounds to hide incorrect geometry.
+- Feasible approach but no complete chain: preserve continuation diversity; try
+  beam width 4 within the same stage budget (each parent then gets fewer attempts).
+- Many duplicates: more feasible samples may simply repeat the same branch.
+
+`pos_tol` is not a performance knob. Exact-position solving remains stricter than
+the older random sampling inside its sphere; a task that actually needs a shifted
+cut position must fail under the fixed-position policy. Global seed exploration
+and native orientation sampling are stochastic, not repeatably identical.
 
 Direct mode ranks retained candidates by process cost with endpoint diversity,
 rather than penalizing every candidate for a fictitious round trip home. Legacy
@@ -130,7 +168,10 @@ colcon build --packages-select hb_robot_skills hb_robot_bringup --cmake-args -DB
 colcon test --packages-select hb_robot_skills --ctest-args -R cut_graph_planner_test --output-on-failure
 ```
 
-Regression tests cover direct ownership, legacy returns, optional final return,
+Regression tests also cover a cheap-approach dead end rescued by the beam, shared
+stage budgets, endpoint deduplication and rejection of incomplete chains. They do
+not prove top-flange success without the actual robot model and collision scene.
+Other regression tests cover direct ownership, legacy returns, optional final return,
 failed and discontinuous connections, alternative candidate pairs, position-bound
 rejection, and transit cost/budget behavior. They use a small synthetic robot and
 stub motion planners; they do not validate UR IK, hardware motion, or machining.

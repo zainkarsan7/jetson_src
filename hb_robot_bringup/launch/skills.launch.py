@@ -62,7 +62,9 @@ def generate_launch_description():
         "cut_geometry.max_pose_samples": 64,
         "cut_geometry.feasible_samples": 8,
         "cut_geometry.refinement_iterations": 8,
-        "cut_geometry.ik_timeout_s": 0.03,
+        "cut_geometry.ik_timeout_s": 0.05,
+        "cut_geometry.waypoint_beam_width": 3,
+        "cut_geometry.explore_ik_branches": True,
         "cut_sampling.max_candidates_per_roll": 2,
         # Geometric seed + reference seed + bounded local perturbations;
         # only the final two attempts per roll explore globally.

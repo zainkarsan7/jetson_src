@@ -170,7 +170,9 @@ namespace hb_robot_skills{
         geometry_options.max_pose_samples = count_parameter("cut_geometry.max_pose_samples", 48);
         geometry_options.feasible_samples = count_parameter("cut_geometry.feasible_samples", 4);
         geometry_options.refinement_iterations = count_parameter("cut_geometry.refinement_iterations", 8);
-        geometry_options.ik_timeout_s = double_parameter("cut_geometry.ik_timeout_s", 0.03);
+        geometry_options.ik_timeout_s = double_parameter("cut_geometry.ik_timeout_s", 0.05);
+        geometry_options.waypoint_beam_width = count_parameter("cut_geometry.waypoint_beam_width", 3);
+        geometry_options.explore_ik_branches = bool_parameter("cut_geometry.explore_ik_branches", true);
         geometry_options.ik_consistency_rad = double_parameter("cut_geometry.ik_consistency_rad", 2.0);
         geometry_options.repair_joint_step_rad = double_parameter("cut_geometry.repair_joint_step_rad", 0.03);
         geometry_options.repair_roll_step_rad = double_parameter("cut_geometry.repair_roll_step_rad", 0.15);

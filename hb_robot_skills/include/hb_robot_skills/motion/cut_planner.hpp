@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <array>
 
 namespace hb_robot_skills::motion{
 
@@ -191,11 +192,21 @@ struct CutPlannerOptions {
     std::size_t max_pose_samples = 48;
     std::size_t feasible_samples = 4;
     std::size_t refinement_iterations = 8;
-    double ik_timeout_s = 0.03;
+    double ik_timeout_s = 0.05;
+    std::size_t waypoint_beam_width = 3;
+    bool explore_ik_branches = true;
     double ik_consistency_rad = 2.0;
     double repair_joint_step_rad = 0.03;
     double repair_roll_step_rad = 0.15;
 };
+
+// Shared by the geometric planner and offline branch/backtracking tests.
+using ConstraintChain = std::array<moveit::core::RobotStatePtr, 4>;
+using ConstraintExpander = std::function<std::vector<moveit::core::RobotStatePtr>(
+    std::size_t, const moveit::core::RobotState&, std::size_t)>;
+std::optional<ConstraintChain> searchConstraintChain(
+    const moveit::core::RobotState& seed, const moveit::core::JointModelGroup* group,
+    std::size_t width, std::size_t stage_budget, const ConstraintExpander& expand);
 
 class CutPlanner{
     public: 
@@ -288,12 +299,12 @@ class CutPlanner{
             const Eigen::Vector3f& surface_normal)const;
         
 
-        bool sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+        std::vector<moveit::core::RobotStatePtr> sampleConstraints(
+            const moveit_msgs::msg::Constraints& constraints,
             const Eigen::Isometry3d& nominal_pose,
-            moveit::core::RobotState& state,
             const moveit::core::RobotState& reference_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene
-            )const;
+            const planning_scene::PlanningSceneConstPtr& p_scene,
+            std::size_t budget) const;
 
         bool solveSegmentConstraints(CutSegment& segment, 
             const moveit::core::RobotState& seed_state, 

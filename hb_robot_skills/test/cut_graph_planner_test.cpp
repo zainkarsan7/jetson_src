@@ -249,3 +249,65 @@ TEST_F(CutGraphPlannerTest, AlternativeBoxConstraintUsesRequestedPositionAndOrie
     EXPECT_DOUBLE_EQ(constraint.orientation_constraints.front().absolute_x_axis_tolerance,0.02);
     EXPECT_THROW(planner.makeBoxConstraints(segment,0,0.02),std::invalid_argument);
 }
+
+
+TEST_F(CutGraphPlannerTest, GeometricBeamRecoversWhenCheapestApproachIsADeadEnd) {
+    const auto* group=model->getJointModelGroup("arm");
+    const auto expand=[&](std::size_t phase,const auto& from,std::size_t) {
+        std::vector<moveit::core::RobotStatePtr> result;
+        if (phase==0) {
+            result.push_back(std::make_shared<moveit::core::RobotState>(state(0.1)));
+            result.push_back(std::make_shared<moveit::core::RobotState>(state(1.0)));
+        } else if (from.getVariablePosition("joint")>0.5) {
+            result.push_back(std::make_shared<moveit::core::RobotState>(state(1.0+0.1*phase)));
+        }
+        return result;
+    };
+    EXPECT_FALSE(searchConstraintChain(state(0),group,1,64,expand));
+    const auto result=searchConstraintChain(state(0),group,3,64,expand);
+    ASSERT_TRUE(result);
+    EXPECT_DOUBLE_EQ((*result)[0]->getVariablePosition("joint"),1.0);
+    EXPECT_DOUBLE_EQ((*result)[3]->getVariablePosition("joint"),1.3);
+}
+TEST_F(CutGraphPlannerTest, GeometricBeamSharesRatherThanMultipliesStageBudget) {
+    std::array<std::size_t,4> budgets{};
+    const auto result=searchConstraintChain(state(0),model->getJointModelGroup("arm"),3,64,
+        [&](std::size_t phase,const auto&,std::size_t budget) {
+            budgets[phase]+=budget;
+            return std::vector<moveit::core::RobotStatePtr>{
+                std::make_shared<moveit::core::RobotState>(state(0.1)),
+                std::make_shared<moveit::core::RobotState>(state(0.5)),
+                std::make_shared<moveit::core::RobotState>(state(1.0))};
+        });
+    ASSERT_TRUE(result);
+    for (auto budget:budgets) EXPECT_EQ(budget,64u);
+}
+TEST_F(CutGraphPlannerTest, GeometricBeamNeverReturnsPartialChain) {
+    const auto result=searchConstraintChain(state(0),model->getJointModelGroup("arm"),3,64,
+        [&](std::size_t phase,const auto&,std::size_t) {
+            std::vector<moveit::core::RobotStatePtr> out;
+            if (phase<3) out.push_back(std::make_shared<moveit::core::RobotState>(state(0.2)));
+            return out;
+        });
+    EXPECT_FALSE(result);
+}
+TEST_F(CutGraphPlannerTest, GeometricBeamDeduplicatesEndpointsWithoutLosingBetterHistory) {
+    const auto result=searchConstraintChain(state(0),model->getJointModelGroup("arm"),3,64,
+        [&](std::size_t phase,const auto&,std::size_t) {
+            std::vector<moveit::core::RobotStatePtr> out;
+            if (phase==0) {
+                out.push_back(std::make_shared<moveit::core::RobotState>(state(2.0)));
+                out.push_back(std::make_shared<moveit::core::RobotState>(state(0.5)));
+            } else out.push_back(std::make_shared<moveit::core::RobotState>(state(0.5)));
+            return out;
+        });
+    ASSERT_TRUE(result);
+    EXPECT_DOUBLE_EQ((*result)[0]->getVariablePosition("joint"),0.5);
+}
+TEST_F(CutGraphPlannerTest, GeometricBeamAcceptsOneCompleteChainBelowRequestedWidth) {
+    const auto result=searchConstraintChain(state(0),model->getJointModelGroup("arm"),3,64,
+        [&](std::size_t,const auto&,std::size_t) {
+            return std::vector<moveit::core::RobotStatePtr>{std::make_shared<moveit::core::RobotState>(state(0.2))};
+        });
+    EXPECT_TRUE(result);
+}

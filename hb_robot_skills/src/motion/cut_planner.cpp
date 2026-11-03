@@ -24,7 +24,8 @@ CutPlanner::CutPlanner(
         {
            if (!options_.max_pose_samples || !options_.feasible_samples ||
                options_.feasible_samples > options_.max_pose_samples ||
-               !options_.refinement_iterations ||
+               !options_.refinement_iterations || !options_.waypoint_beam_width ||
+               options_.waypoint_beam_width > options_.max_pose_samples ||
                !std::isfinite(options_.ik_timeout_s) || options_.ik_timeout_s <= 0 ||
                !std::isfinite(options_.ik_consistency_rad) || options_.ik_consistency_rad <= 0 ||
                !std::isfinite(options_.repair_joint_step_rad) || options_.repair_joint_step_rad <= 0 ||
@@ -337,126 +338,166 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
     return false;
 }
 
-bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+
+std::vector<moveit::core::RobotStatePtr> CutPlanner::sampleConstraints(
+    const moveit_msgs::msg::Constraints& constraints,
     const Eigen::Isometry3d& nominal_pose,
-    moveit::core::RobotState& state,
     const moveit::core::RobotState& reference_state,
-    const planning_scene::PlanningSceneConstPtr& p_scene) const
+    const planning_scene::PlanningSceneConstPtr& p_scene,
+    std::size_t budget) const
 {
-    if (!p_scene) return false;
+    std::vector<moveit::core::RobotStatePtr> accepted;
+    if (!p_scene || constraints.orientation_constraints.empty()) return accepted;
     kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
-    if (!constraint_set.add(constraints, p_scene->getTransforms())) return false;
-    moveit::core::RobotState best(reference_state);
-    double best_cost = std::numeric_limits<double>::infinity();
-    std::size_t feasible = 0;
-    // First reuse the previous solution's orientation at the new exact position,
-    // then nominal orientation, then a deterministic low-discrepancy roll/tilt set.
-    constexpr double golden = 0.6180339887498949;
-    const auto& orientation = constraints.orientation_constraints.front();
-    for (std::size_t i = 0; i < options_.max_pose_samples; ++i) {
-        Eigen::Isometry3d pose = nominal_pose;
-        if (i == 0) pose.linear() = reference_state.getGlobalLinkTransform(plasma_link_).linear();
-        if (i >= 2) {
-            const double roll = 2.0 * M_PI * std::remainder((i-1) * golden, 1.0);
-            pose.linear() = nominal_pose.linear() * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-            // Spend half the budget on pure roll before introducing bounded tilt.
-            if (i >= options_.max_pose_samples / 2) {
-                const double x = 0.5 * orientation.absolute_x_axis_tolerance * std::sin(i * 2.399963229728653);
-                const double y = 0.5 * orientation.absolute_y_axis_tolerance * std::cos(i * 2.399963229728653);
-                pose.linear() = pose.linear() * Eigen::AngleAxisd(x, Eigen::Vector3d::UnitX()).toRotationMatrix() *
-                    Eigen::AngleAxisd(y, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    if (!constraint_set.add(constraints, p_scene->getTransforms())) return accepted;
+    auto sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(
+        constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(p_scene, planning_group_, constraints));
+    if (!sampler || !sampler->isValid()) return accepted;
+    std::size_t attempted=0, pose_failed=0, ik_failed=0, constraint_rejected=0,
+        collision_rejected=0, repaired=0, duplicates=0;
+    const auto cost = [&](const auto& state) { return dq_cost(reference_state, state); };
+    for (std::size_t i=0; i<budget; ++i) {
+        Eigen::Isometry3d pose=nominal_pose;
+        if (i==0) pose.linear()=reference_state.getGlobalLinkTransform(plasma_link_).linear();
+        else if (i>=2) {
+            // Restore MoveIt's distribution over the COMPLETE orientation
+            // constraint; do not invent a roll/tilt distribution with different
+            // rotation-vector semantics. Deliberately discard sampled position.
+            Eigen::Vector3d ignored_position;
+            Eigen::Quaterniond orientation;
+            if (!sampler->samplePose(ignored_position, orientation, reference_state, 1)) {
+                ++pose_failed; continue;
             }
+            pose.linear()=orientation.normalized().toRotationMatrix();
         }
         moveit::core::RobotState trial(reference_state);
-        const std::vector<double> limits(joint_model_group_->getVariableCount(), options_.ik_consistency_rad);
-        if (!trial.setFromIK(joint_model_group_, pose, plasma_link_, limits, options_.ik_timeout_s)) continue;
+        const bool explore=options_.explore_ik_branches && i>=3 && i%4==3;
+        if (explore) trial.setToRandomPositions(joint_model_group_);
+        else if (!accepted.empty() && i%2==0) trial=*accepted.front();
         trial.update();
-        if (!trial.satisfiesBounds(joint_model_group_) || !constraint_set.decide(trial).satisfied) continue;
-        const auto collision = checkCol(trial, p_scene);
-        if (collision.collision && !refineCollision(trial, nominal_pose, constraints, collision, p_scene)) continue;
+        std::optional<moveit::core::RobotState> repair_seed;
+        collision_detection::CollisionResult repair_collision;
+        double repair_depth=std::numeric_limits<double>::infinity();
+        // Reject bad solutions INSIDE IK so a solver supporting callbacks can
+        // try another branch for the SAME orientation within its timeout.
+        const moveit::core::GroupStateValidityCallbackFn valid =
+            [&](moveit::core::RobotState* state, const moveit::core::JointModelGroup* group, const double* q) {
+                state->setJointGroupPositions(group,q);
+                state->update();
+                if (!state->satisfiesBounds(group) || !constraint_set.decide(*state).satisfied) {
+                    ++constraint_rejected; return false;
+                }
+                const auto collision=checkCol(*state,p_scene);
+                if (!collision.collision) return true;
+                ++collision_rejected;
+                const auto contacts=extractWorkpieceContacts(collision);
+                if (!contacts.empty()) {
+                    double depth=0;
+                    for (const auto& c:contacts) depth=std::max(depth,c.depth);
+                    if (depth<repair_depth) { repair_depth=depth; repair_seed=*state; repair_collision=collision; }
+                }
+                return false;
+            };
+        ++attempted;
+        const std::vector<double> limits(joint_model_group_->getVariableCount(),options_.ik_consistency_rad);
+        bool solved=explore ? trial.setFromIK(joint_model_group_,pose,plasma_link_,options_.ik_timeout_s,valid) :
+            trial.setFromIK(joint_model_group_,pose,plasma_link_,limits,options_.ik_timeout_s,valid);
+        if (!solved) {
+            ++ik_failed;
+            // Repair only the shallowest admissible contact, after IK has tried
+            // collision-free alternatives. The repair anchor never moves.
+            if (repair_seed && refineCollision(*repair_seed,nominal_pose,constraints,repair_collision,p_scene)) {
+                trial=*repair_seed; solved=true; ++repaired;
+            }
+        }
+        if (!solved) continue;
         trial.update();
-        if (!constraint_set.decide(trial).satisfied || p_scene->isStateColliding(trial, planning_group_)) continue;
-        const double cost = dq_cost(reference_state, trial);
-        if (cost < best_cost) { best_cost = cost; best = trial; }
-        if (++feasible >= options_.feasible_samples) break;
+        // Recheck independently: not every third-party IK plugin honors callbacks.
+        if (!trial.satisfiesBounds(joint_model_group_) || !constraint_set.decide(trial).satisfied ||
+            p_scene->isStateColliding(trial,planning_group_)) continue;
+        if (std::any_of(accepted.begin(),accepted.end(),[&](const auto& other) {
+            return trial.distance(*other,joint_model_group_)<0.05;
+        })) { ++duplicates; continue; }
+        accepted.push_back(std::make_shared<moveit::core::RobotState>(trial));
+        std::stable_sort(accepted.begin(),accepted.end(),[&](const auto& a,const auto& b){return cost(*a)<cost(*b);});
+        // A target count is an early-stop goal, NEVER a minimum success count.
+        if (accepted.size()>=options_.feasible_samples) break;
     }
-    if (!feasible) return false;
-    state = best;
-    return true;
+    std::cout << "[CUT GEOMETRY] budget=" << budget << " attempted=" << attempted
+        << " pose_failed=" << pose_failed << " IK_failed=" << ik_failed
+        << " constraint_rejected=" << constraint_rejected << " collision_rejected=" << collision_rejected
+        << " repaired=" << repaired << " duplicates=" << duplicates << " feasible=" << accepted.size() << '\n';
+    return accepted;
 }
 
-bool CutPlanner::solveSegmentConstraints(CutSegment& segment, 
-            const moveit::core::RobotState& seed_state, 
-            const planning_scene::PlanningSceneConstPtr& p_scene) const{
-
-                moveit::core::RobotState state(seed_state);
-
-                if(!sampleConstraint(segment.approach_constraints, segment.approach_pose,
-                    state,
-                    seed_state,
-                    p_scene)){
-                    std::cout<<"Solving Constraints: failed approach planning for "<<segment.name.c_str()<<std::endl;
-                    if(debug_vis_callback_)debug_vis_callback_(segment);
-                    
-                    
-                    return false;}
-                state.update();
-                segment.approach_state = std::make_shared<moveit::core::RobotState>(state);
-                if(debug_vis_callback_)debug_vis_callback_(segment);
-
-                const moveit::core::RobotState approach_reference(state);
-                if(!sampleConstraint(segment.start_constraints, segment.start_pose,
-                state, approach_reference, p_scene)){
-                    std::cout<<"Solving Constraints: failed start planning for "<<segment.name.c_str()<<std::endl;
-                    if(debug_vis_callback_)debug_vis_callback_(segment);
-                    return false;}
-                state.update();
-                segment.start_state = std::make_shared<moveit::core::RobotState>(state);
-                if(debug_vis_callback_)debug_vis_callback_(segment);
-
-                // segment constraint debug::
-                const Eigen::Isometry3d& actual = state.getGlobalLinkTransform(plasma_link_);
-                Eigen::Vector3d actual_z = actual.linear().col(2);
-                Eigen::Vector3d nominal_z = segment.start_pose.linear().col(2);
-                std::cout<<"Solving Constraints: TCP pointing error "<<
-                std::acos(std::clamp(
-                    actual_z.dot(nominal_z),-1.0,1.0))*180.0/M_PI<<" deg"<<std::endl;
-                
-                const moveit::core::RobotState start_reference(state);
-                if(!sampleConstraint(segment.end_constraints, segment.end_pose,
-                    state,
-                start_reference, 
-                p_scene)){
-                    std::cout<<"Solving Constraints: failed end planning for "<<segment.name.c_str()<<std::endl;
-                    
-                   if(debug_vis_callback_)debug_vis_callback_(segment);
-                    return false;
-                    
-                
-                }
-                state.update();
-                segment.end_state = std::make_shared<moveit::core::RobotState>(state);
-                if(debug_vis_callback_)debug_vis_callback_(segment);
-
-                const moveit::core::RobotState end_reference(state);
-                if(!sampleConstraint(segment.retract_constraints, segment.retract_pose,
-                state,end_reference,p_scene)){
-                    std::cout<<"Solving Constraints: failed retract planning for "<<segment.name.c_str()<<std::endl;
-                    
-                    if(debug_vis_callback_)debug_vis_callback_(segment);
-                    
-                    return false;}
-                state.update();
-                segment.retract_state = std::make_shared<moveit::core::RobotState>(state);
-                if(debug_vis_callback_)debug_vis_callback_(segment);
-                
-                std::cout<<"Solved Constraints for "<<segment.name.c_str()<<std::endl;
-                return true;
-
-
+std::optional<ConstraintChain> searchConstraintChain(
+    const moveit::core::RobotState& seed,const moveit::core::JointModelGroup* group,
+    std::size_t width,std::size_t stage_budget,const ConstraintExpander& expand)
+{
+    if (!group || !width || stage_budget<width || !expand) return std::nullopt;
+    struct Branch { ConstraintChain states{}; double cost=0.0; };
+    std::vector<Branch> beam(1);
+    for (std::size_t phase=0; phase<4; ++phase) {
+        std::vector<Branch> next;
+        std::size_t remaining=stage_budget;
+        for (std::size_t parent=0; parent<beam.size(); ++parent) {
+            const auto& branch=beam[parent];
+            const auto& from=phase ? *branch.states[phase-1] : seed;
+            // Same TOTAL pose-attempt budget per phase as a single greedy solve;
+            // split across branches rather than multiplying by beam width.
+            const auto allocation=remaining/(beam.size()-parent);
+            remaining-=allocation;
+            for (auto& state:expand(phase,from,allocation)) {
+                if (!state) continue;
+                auto child=branch;
+                child.states[phase]=state;
+                const double distance=from.distance(*state,group);
+                if (!std::isfinite(distance)) continue;
+                child.cost+=distance*distance;
+                next.push_back(std::move(child));
             }
+        }
+        if (next.empty()) return std::nullopt;
+        std::stable_sort(next.begin(),next.end(),[](const auto& a,const auto& b){return a.cost<b.cost;});
+        beam.clear();
+        // Distinct end configurations preserve continuation options; duplicates
+        // from multiple parents need only the lowest-cost history.
+        for (auto& branch:next) {
+            if (std::any_of(beam.begin(),beam.end(),[&](const auto& other) {
+                return branch.states[phase]->distance(*other.states[phase],group)<0.05;
+            })) continue;
+            beam.push_back(std::move(branch));
+            if (beam.size()>=width) break;
+        }
+    }
+    return beam.front().states;
+}
 
-
+bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
+    const moveit::core::RobotState& seed_state,
+    const planning_scene::PlanningSceneConstPtr& p_scene) const
+{
+    const std::array<const moveit_msgs::msg::Constraints*,4> constraints={
+        &segment.approach_constraints,&segment.start_constraints,&segment.end_constraints,&segment.retract_constraints};
+    const std::array<const Eigen::Isometry3d*,4> poses={
+        &segment.approach_pose,&segment.start_pose,&segment.end_pose,&segment.retract_pose};
+    const std::array<const char*,4> names={"approach","start","end","retract"};
+    auto chain=searchConstraintChain(seed_state,joint_model_group_,options_.waypoint_beam_width,
+        options_.max_pose_samples,[&](std::size_t phase,const auto& reference,std::size_t budget) {
+            std::cout << "[CUT GEOMETRY] " << segment.name << '/' << names[phase] << '\n';
+            return sampleConstraints(*constraints[phase],*poses[phase],reference,p_scene,budget);
+        });
+    if (!chain) {
+        std::cout << "[CUT GEOMETRY] no complete constraint chain for " << segment.name << '\n';
+        return false;
+    }
+    segment.approach_state=(*chain)[0];
+    segment.start_state=(*chain)[1];
+    segment.end_state=(*chain)[2];
+    segment.retract_state=(*chain)[3];
+    if (debug_vis_callback_) debug_vis_callback_(segment);
+    return true;
+}
 
 std::optional<CutPlan> CutPlanner::plan(
     const hb_robot_interfaces::msg::ProfileEstimate& estimate,
