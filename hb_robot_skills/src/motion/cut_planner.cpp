@@ -15,12 +15,21 @@ namespace hb_robot_skills::motion{
 CutPlanner::CutPlanner(
             moveit::core::RobotModelConstPtr robot_model,
             std::string planning_group,
-            std::string plasma_link
+            std::string plasma_link,
+            CutPlannerOptions options
         ): robot_model_(std::move(robot_model)),
             joint_model_group_(nullptr),
             planning_group_(std::move(planning_group)),
-            plasma_link_(std::move(plasma_link))
+            plasma_link_(std::move(plasma_link)), options_(options)
         {
+           if (!options_.max_pose_samples || !options_.feasible_samples ||
+               options_.feasible_samples > options_.max_pose_samples ||
+               !options_.refinement_iterations ||
+               !std::isfinite(options_.ik_timeout_s) || options_.ik_timeout_s <= 0 ||
+               !std::isfinite(options_.ik_consistency_rad) || options_.ik_consistency_rad <= 0 ||
+               !std::isfinite(options_.repair_joint_step_rad) || options_.repair_joint_step_rad <= 0 ||
+               !std::isfinite(options_.repair_roll_step_rad) || options_.repair_roll_step_rad <= 0)
+               throw std::invalid_argument("Invalid cut geometry sampling options");
            if(!robot_model_){
                 throw std::invalid_argument("Cut Planner: robot model null");
 
@@ -158,42 +167,6 @@ bool CutPlanner::constraintsSatisfied(moveit::core::RobotState& trial,
 
 
 
-bool CutPlanner::proposeTorchNudge(moveit::core::RobotState& trial,
-        std::vector<RobotWorkpieceContact>& contacts)const{
-        constexpr double clearance = 0.002;              
-        Eigen::Vector3d torch_outward = Eigen::Vector3d::Zero();
-
-        double max_torch_collision_depth = 0.0;
-        for (const auto & c : contacts){
-            if(c.robot_link == plasma_link_){
-                //collect all torch norms
-                const double depth  = std::max(0.0,c.depth);
-                torch_outward += c.normal_world.normalized() * depth;
-                max_torch_collision_depth = std::max(max_torch_collision_depth, depth);
-            }
-        }
-        
-        // do some profile standoff nudging
-        std::cout<<"torch in collision"<<std::endl;
-        if(torch_outward.norm() < 1e-8){
-            return false;
-        }
-        torch_outward.normalize();
-        const Eigen::Vector3d displacement = (std::max(0.0,max_torch_collision_depth) + clearance) * torch_outward;
-        
-        Eigen::Isometry3d trial_pose =  trial.getGlobalLinkTransform(plasma_link_);
-        trial_pose.translation()+=displacement;
-
-        std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
-        2.0);
-
-        if(!trial.setFromIK(joint_model_group_,trial_pose,plasma_link_,consistency_limits,0.05)){
-            std::cerr<<"ik trial pose failed" <<std::endl;
-            return false;
-        }
-        return true;
-    }
-
 bool CutPlanner::proposeJacobeanStep(moveit::core::RobotState& trial,
 std::vector<RobotWorkpieceContact>& contacts)const{
     if(contacts.empty()){
@@ -206,6 +179,7 @@ std::vector<RobotWorkpieceContact>& contacts)const{
 
 
             const auto* link = robot_model_->getLinkModel(worst->robot_link);
+                if (!link) return false;
                 const Eigen::Vector3d contact_pt = worst->pos_world;
                 const Eigen::Isometry3d& T_World_Link = trial.getGlobalLinkTransform(link);
                 const Eigen::Vector3d contact_local = T_World_Link.inverse() * contact_pt;
@@ -220,7 +194,11 @@ std::vector<RobotWorkpieceContact>& contacts)const{
                     };
                 const Eigen::MatrixXd J_c = J_contact.topRows(3);
 
-                const Eigen::Vector3d normal = worst->normal_world.normalized();
+                if (!link || !worst->normal_world.allFinite() || worst->normal_world.norm() < 1e-10) return false;
+                Eigen::Vector3d normal = worst->normal_world.normalized();
+                // MoveIt Jacobians use the parent frame of the group's root joint.
+                const auto* parent = joint_model_group_->getJointModels().front()->getParentLinkModel();
+                if (parent) normal = trial.getGlobalLinkTransform(parent).linear().transpose() * normal;
                 const Eigen::RowVectorXd J_normal = normal.transpose()* J_c;
 
                 constexpr double clearance = 0.002;
@@ -239,28 +217,16 @@ std::vector<RobotWorkpieceContact>& contacts)const{
 
                
 
-                Eigen::Matrix<double, 6,1> tcp_weights;
-                tcp_weights<<
-                1.0/(0.001 * 0.001),1.0/(0.001 * 0.001),1.0/(0.001 * 0.001),
-                1.0/(0.1 * 0.1),1.0/(0.1 * 0.1),1.0/(0.5 * 0.5);
-                
-                
-                Eigen::Matrix<double,6,6> W_t = tcp_weights.asDiagonal();
-
-                constexpr double lambda_tcp = 1.0;
-                constexpr double lambda_q = 1e-3;
-                
-                // augment the Tcp term to have local orientaiton not global orientation in the jacobean
-
-                const Eigen::Matrix3d R_W_tcp = trial.getGlobalLinkTransform(plasma_link_).linear();
-                Eigen::MatrixXd J_tcp_local = J_tcp;
-                J_tcp_local.bottomRows(3) = R_W_tcp.transpose() * J_tcp.bottomRows(3);
-
-                // do a least squares min solve on Jc^T J_c + lambda_t * J_tcp^T * W* J_tcp + conditioner q
-                
-                Eigen::MatrixXd H = J_normal.transpose() * J_normal + lambda_tcp * J_tcp_local.transpose() * W_t * J_tcp_local + lambda_q * Eigen::MatrixXd::Identity(n,n);
-                Eigen::VectorXd b = J_normal.transpose() * sep_dist;
-                Eigen::VectorXd dq = H.ldlt().solve(b);
+                // Move the contact in the null space of TCP translation.
+                // Orientation may change; translation is projected back by IK
+                // and rechecked against the original constraints before acceptance.
+                const Eigen::MatrixXd J_position = J_tcp.topRows(3);
+                const Eigen::MatrixXd inverse = J_position.completeOrthogonalDecomposition().pseudoInverse();
+                const Eigen::MatrixXd nullspace = Eigen::MatrixXd::Identity(n,n) - inverse * J_position;
+                const Eigen::VectorXd direction = nullspace * J_normal.transpose();
+                const double gain = (J_normal * direction)(0);
+                if (!std::isfinite(gain) || gain < 1e-10) return false;
+                Eigen::VectorXd dq = direction * (sep_dist / gain);
                 if(!dq.allFinite()){
                     std::cerr<<"solve unstable"<<std::endl;
                     return false;
@@ -273,7 +239,7 @@ std::vector<RobotWorkpieceContact>& contacts)const{
                     return false;
                 }
 
-                constexpr double max_joint_step = 0.03;
+                const double max_joint_step = options_.repair_joint_step_rad;
                 const double max_abs = dq.cwiseAbs().maxCoeff();
                 if(max_abs>max_joint_step){
                     dq *= max_joint_step/max_abs;
@@ -288,193 +254,136 @@ std::vector<RobotWorkpieceContact>& contacts)const{
 } 
 
 
+
 bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
-            const Eigen::Isometry3d& nominal_tcp_pose,
-            const moveit_msgs::msg::Constraints& constraints,
-            const collision_detection::CollisionResult& collision_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene) const{
-                
-                /// decide from collision state if its a torch or body collision
-                // two strategies if torch -> nudge point away within constraint 
-                // if body, use contact jacobean solve min distance adjustment problem
-                
-                moveit::core::RobotState trial(candidate);
-                
-                for (unsigned int iter = 0; iter<5; iter++){
-                    const auto collision = checkCol(trial,p_scene);
-                    std::vector<RobotWorkpieceContact> contacts =  extractWorkpieceContacts(collision);
-                    bool torch_collision = false;
-                    if(collision_debug_vis_callback_){
-                        CollisionDebugEvent event(trial,nominal_tcp_pose);
-                        event.label = "before correction";
-                        event.iter = iter;
-                        event.contacts = contacts;
-                        collision_debug_vis_callback_(event);
-                    }
-                    
-                    if(!collision.collision){
-                        if(constraintsSatisfied(trial,constraints,p_scene)){
-                            //
-                            candidate= trial;
-                            return true;
-                        }
-                        return false;
-                    }
-
-                    bool torch_nudge = false;
-                    if(contacts.empty()){
-                        std::cerr<<"no workpiece contacts"<<std::endl;
-                        return false;
-                    }
-                    // decide which strategy first:
-                    //
-                    torch_collision = std::any_of(contacts.begin(),contacts.end(),[&](const auto& c){
-                        return c.robot_link == plasma_link_;
-                    });
-                    bool updated = false;
-                    if(torch_collision){
-                        // std::cout<<"trying torch nudge"<<std::endl;
-                        updated = proposeTorchNudge(trial,contacts);
-                    }
-                    else{
-                        // std::cout<<"trying jacobean nudge"<<std::endl;
-                        updated = proposeJacobeanStep(trial,contacts);
-                    }
-                    if(!updated){
-                        return false;
-                    }
-                    trial.update();
-                    const auto post_collision = checkCol(trial,p_scene);
-                    if(collision_debug_vis_callback_){
-                        CollisionDebugEvent event(trial,nominal_tcp_pose);
-                        event.label = post_collision.collision ? "after correction still collision" : "after correction collision free";
-                        event.strategy = torch_collision ? "torch nudge" : "jacobean nudge";
-                        event.contacts = extractWorkpieceContacts(post_collision);
-                        collision_debug_vis_callback_(event);
-                    }
-
-                    }
-                
-                    return false;     
-                }
-                    
-bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
-            moveit::core::RobotState& state,
-            const moveit::core::RobotState& reference_state,
-            const planning_scene::PlanningSceneConstPtr& p_scene
-            )const{
-
-                if(!p_scene){
-                    std::cerr<<"no planning scene"<<std::endl;
-                    return false;
-                }
-                auto sampler = constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(
-                    p_scene,
-                    planning_group_,
-                    constraints
-                );
-
-                auto ik_sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(sampler);
-                if(!ik_sampler){
-                    std::cerr<<"ik sampler fucked"<<std::endl;
-                    return false;
-                }
-
-                if(!sampler){
-                    std::cerr<<"samplers fucked"<<std::endl;
-                    return false;
-                }
-                
-                if(!sampler->isValid()){
-                    std::cerr<<"samplers invalid and fucked"<<std::endl;
-                    return false;
-                }
-
-                std::cout<<"reference colliding "<<p_scene->isStateColliding(reference_state,planning_group_)<<std::endl;
-                std::cout<<"world objects: "<<p_scene->getWorld()->size()<<std::endl;
-
-                moveit::core::RobotState best(reference_state);
-                double best_cost  =std::numeric_limits<double>::infinity();
-                double highest_cost = 0.0;
-                bool found = false;
-                kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
-
-                for (unsigned int i=0; i<100; i++){
-                   
-                    Eigen::Vector3d cand_position;
-                    Eigen::Quaterniond cand_orn;
-
-                    if(!ik_sampler->samplePose(cand_position, cand_orn, reference_state,1)){
-                        
-                        // std::cerr<<"sampler couldnt find pose"<<std::endl;
-                        continue;
-                    } 
-                    Eigen::Isometry3d cand_pose = Eigen::Isometry3d::Identity();
-                    cand_pose.translation() = cand_position;
-                    cand_pose.linear() = cand_orn.toRotationMatrix();
-                    moveit::core::RobotState candidate(reference_state);
-                    std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
-                    2.0);
-                    if(!candidate.setFromIK(joint_model_group_,cand_pose,plasma_link_,consistency_limits,0.05)){
-                        // std::cerr<<"ik failed for sample "<<i<<std::endl;
-                        continue;
-                    }
-                    candidate.update();
-                    // collision stuff:
-
-                   
-                    auto col_res = checkCol(candidate,p_scene);
-                    
-                    
-                    
-
-
-                    if(col_res.collision){
-                        for(const auto& [pair,contacts]: col_res.contacts){
-                            std::cout<<"collidion between "<<pair.first<<" and " << pair.second<<std::endl;
-                        }
-                        
-                        if(!refineCollision(candidate,cand_pose,constraints,col_res,p_scene)){
-                            std::cout<<"failed fixing sample: "<<i<<std::endl;
-                            continue;
-                        }
-                    }
-                    candidate.update();
-                    
-                    if(p_scene->isStateColliding(candidate,planning_group_)){
-                        // std::cout<<"fixed sample "<<i<<" still in collision"<<std::endl;
-                        continue;
-                    }
-                    // std::cout<<"fixed sample "<<i<<" is collision free"<<std::endl;
-                    if(!constraintsSatisfied(candidate,constraints,p_scene)){
-                        // std::cout<<"fixed sample "<<i<<" doesnt satisfy constraints"<<std::endl;
-                        continue;
-                    }
-                    double cost = CutPlanner::dq_cost(reference_state, candidate);
-                    if (cost<best_cost){
-                        best_cost = cost;
-                        best = candidate;
-                        found = true;
-                    }
-                    if (cost>highest_cost) highest_cost = cost;
-
-                }
-                if(!found){
-                    return false;
-                }
-                std::cout<<"sampling candidates max cost:  "<<highest_cost<<"best cost: "<<best_cost<<std::endl;
-
-                state = best;
-                return true;
-
-                // constexpr unsigned int max_attempts=  100;
-                // if(!sampler->sample(state,reference_state,max_attempts)){
-                //     return false;
-                // }
-                // state.update();
-                // return true;
-
+    const Eigen::Isometry3d& nominal_tcp_pose,
+    const moveit_msgs::msg::Constraints& constraints,
+    const collision_detection::CollisionResult& collision_state,
+    const planning_scene::PlanningSceneConstPtr& p_scene) const
+{
+    kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+    if (!constraint_set.add(constraints, p_scene->getTransforms())) return false;
+    const auto admissible = [&](const moveit::core::RobotState& state) {
+        return state.satisfiesBounds(joint_model_group_) && constraint_set.decide(state).satisfied;
+    };
+    const auto merit = [](const collision_detection::CollisionResult& collision) {
+        if (!collision.collision) return 0.0;
+        const auto contacts = extractWorkpieceContacts(collision);
+        if (contacts.empty()) return std::numeric_limits<double>::infinity();
+        double total = 0.0, deepest = 0.0;
+        for (const auto& contact : contacts) {
+            const double depth = std::max(0.0, contact.depth);
+            total += depth;
+            deepest = std::max(deepest, depth);
+        }
+        return 1e-9 + deepest + total / contacts.size();
+    };
+    moveit::core::RobotState current(candidate);
+    auto collision = collision_state;
+    for (std::size_t iter = 0; iter < options_.refinement_iterations; ++iter) {
+        if (!collision.collision && admissible(current)) { candidate = current; return true; }
+        auto contacts = extractWorkpieceContacts(collision);
+        if (contacts.empty()) return false;
+        double best_merit = merit(collision);
+        std::optional<moveit::core::RobotState> best;
+        collision_detection::CollisionResult best_collision;
+        const auto consider = [&](moveit::core::RobotState seed, Eigen::Isometry3d pose) {
+            // Never push the torch away from a contact. All proposals keep the
+            // original Cartesian target, irrespective of accumulated iterations.
+            pose.translation() = nominal_tcp_pose.translation();
+            const std::vector<double> limits(joint_model_group_->getVariableCount(), 0.2);
+            if (!seed.setFromIK(joint_model_group_, pose, plasma_link_, limits, options_.ik_timeout_s)) return;
+            seed.update();
+            if (!admissible(seed)) return;
+            const auto result = checkCol(seed, p_scene);
+            const double value = merit(result);
+            if (value + 1e-12 < best_merit) {
+                best_merit = value;
+                best = seed;
+                best_collision = result;
             }
+        };
+        // Body-contact step: bounded joint displacement in the translation nullspace.
+        moveit::core::RobotState body(current);
+        if (proposeJacobeanStep(body, contacts)) {
+            body.update();
+            consider(body, body.getGlobalLinkTransform(plasma_link_));
+        }
+        // Torch/body fallback: roll first, then small tilts. Hard orientation
+        // constraints are checked on every proposal, not only at the end.
+        for (int axis : {2, 0, 1}) {
+            for (double sign : {-1.0, 1.0}) {
+                auto pose = current.getGlobalLinkTransform(plasma_link_);
+                const double angle = sign * (axis == 2 ? options_.repair_roll_step_rad : 0.01);
+                pose.linear() = pose.linear() * Eigen::AngleAxisd(angle, Eigen::Vector3d::Unit(axis)).toRotationMatrix();
+                consider(current, pose);
+            }
+            if (best && !best_collision.collision) break;
+        }
+        if (!best) return false; // no monotone improvement; try another initial orientation
+        current = *best;
+        collision = best_collision;
+        if (collision_debug_vis_callback_) {
+            CollisionDebugEvent event(current, nominal_tcp_pose);
+            event.iter = iter;
+            event.strategy = "fixed-position orientation repair";
+            event.label = collision.collision ? "improved contact" : "collision free";
+            event.contacts = extractWorkpieceContacts(collision);
+            collision_debug_vis_callback_(event);
+        }
+    }
+    // Include the result of the final iteration (previously discarded).
+    if (!collision.collision && admissible(current)) { candidate = current; return true; }
+    return false;
+}
+
+bool CutPlanner::sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+    const Eigen::Isometry3d& nominal_pose,
+    moveit::core::RobotState& state,
+    const moveit::core::RobotState& reference_state,
+    const planning_scene::PlanningSceneConstPtr& p_scene) const
+{
+    if (!p_scene) return false;
+    kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+    if (!constraint_set.add(constraints, p_scene->getTransforms())) return false;
+    moveit::core::RobotState best(reference_state);
+    double best_cost = std::numeric_limits<double>::infinity();
+    std::size_t feasible = 0;
+    // First reuse the previous solution's orientation at the new exact position,
+    // then nominal orientation, then a deterministic low-discrepancy roll/tilt set.
+    constexpr double golden = 0.6180339887498949;
+    const auto& orientation = constraints.orientation_constraints.front();
+    for (std::size_t i = 0; i < options_.max_pose_samples; ++i) {
+        Eigen::Isometry3d pose = nominal_pose;
+        if (i == 0) pose.linear() = reference_state.getGlobalLinkTransform(plasma_link_).linear();
+        if (i >= 2) {
+            const double roll = 2.0 * M_PI * std::remainder((i-1) * golden, 1.0);
+            pose.linear() = nominal_pose.linear() * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+            // Spend half the budget on pure roll before introducing bounded tilt.
+            if (i >= options_.max_pose_samples / 2) {
+                const double x = 0.5 * orientation.absolute_x_axis_tolerance * std::sin(i * 2.399963229728653);
+                const double y = 0.5 * orientation.absolute_y_axis_tolerance * std::cos(i * 2.399963229728653);
+                pose.linear() = pose.linear() * Eigen::AngleAxisd(x, Eigen::Vector3d::UnitX()).toRotationMatrix() *
+                    Eigen::AngleAxisd(y, Eigen::Vector3d::UnitY()).toRotationMatrix();
+            }
+        }
+        moveit::core::RobotState trial(reference_state);
+        const std::vector<double> limits(joint_model_group_->getVariableCount(), options_.ik_consistency_rad);
+        if (!trial.setFromIK(joint_model_group_, pose, plasma_link_, limits, options_.ik_timeout_s)) continue;
+        trial.update();
+        if (!trial.satisfiesBounds(joint_model_group_) || !constraint_set.decide(trial).satisfied) continue;
+        const auto collision = checkCol(trial, p_scene);
+        if (collision.collision && !refineCollision(trial, nominal_pose, constraints, collision, p_scene)) continue;
+        trial.update();
+        if (!constraint_set.decide(trial).satisfied || p_scene->isStateColliding(trial, planning_group_)) continue;
+        const double cost = dq_cost(reference_state, trial);
+        if (cost < best_cost) { best_cost = cost; best = trial; }
+        if (++feasible >= options_.feasible_samples) break;
+    }
+    if (!feasible) return false;
+    state = best;
+    return true;
+}
 
 bool CutPlanner::solveSegmentConstraints(CutSegment& segment, 
             const moveit::core::RobotState& seed_state, 
@@ -482,7 +391,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
 
                 moveit::core::RobotState state(seed_state);
 
-                if(!sampleConstraint(segment.approach_constraints,
+                if(!sampleConstraint(segment.approach_constraints, segment.approach_pose,
                     state,
                     seed_state,
                     p_scene)){
@@ -496,7 +405,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 if(debug_vis_callback_)debug_vis_callback_(segment);
 
                 const moveit::core::RobotState approach_reference(state);
-                if(!sampleConstraint(segment.start_constraints,
+                if(!sampleConstraint(segment.start_constraints, segment.start_pose,
                 state, approach_reference, p_scene)){
                     std::cout<<"Solving Constraints: failed start planning for "<<segment.name.c_str()<<std::endl;
                     if(debug_vis_callback_)debug_vis_callback_(segment);
@@ -514,7 +423,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                     actual_z.dot(nominal_z),-1.0,1.0))*180.0/M_PI<<" deg"<<std::endl;
                 
                 const moveit::core::RobotState start_reference(state);
-                if(!sampleConstraint(segment.end_constraints,
+                if(!sampleConstraint(segment.end_constraints, segment.end_pose,
                     state,
                 start_reference, 
                 p_scene)){
@@ -530,7 +439,7 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
                 if(debug_vis_callback_)debug_vis_callback_(segment);
 
                 const moveit::core::RobotState end_reference(state);
-                if(!sampleConstraint(segment.retract_constraints,
+                if(!sampleConstraint(segment.retract_constraints, segment.retract_pose,
                 state,end_reference,p_scene)){
                     std::cout<<"Solving Constraints: failed retract planning for "<<segment.name.c_str()<<std::endl;
                     
@@ -558,6 +467,11 @@ std::optional<CutPlan> CutPlanner::plan(
 ) const{
 
 
+    if (!std::isfinite(request.pos_tol) || request.pos_tol <= 0.0 ||
+        !std::isfinite(request.ang_tol) || request.ang_tol < 0.0 ||
+        !std::isfinite(request.standoff) || !std::isfinite(request.approach_dist) ||
+        !std::isfinite(request.retract_dist) || request.approach_dist < 0 || request.retract_dist < 0)
+        return std::nullopt;
     if(estimate.profile_name!=profile.name){
         std::cerr<<"profile mismatch, estimate is "
         <<estimate.profile_name<<" and profile is "
@@ -654,7 +568,9 @@ moveit_msgs::msg::Constraints CutPlanner::makeBoxConstraints(
         )const{
 
             moveit_msgs::msg::Constraints constraints;
-            constraints.name = "use_equality_constraints";
+            if (!std::isfinite(pos_tol) || pos_tol <= 0.0 || !std::isfinite(ang_tol) || ang_tol < 0.0)
+                throw std::invalid_argument("Invalid cut path tolerance");
+            constraints.name = "cut_path_constraints";
             const std::string& ref_frame = robot_model_->getModelFrame();
             moveit_msgs::msg::PositionConstraint box_constraint_;
             box_constraint_.header.frame_id = ref_frame;
@@ -668,14 +584,16 @@ moveit_msgs::msg::Constraints CutPlanner::makeBoxConstraints(
             const double length = (sp-ep).norm();
             Eigen::Isometry3d box_center = segment.start_pose;
             box_center.translation() = 0.5*(sp+ep);
-            constexpr double eq_width = 0.0005;
-            box.dimensions = {length + 0.01, eq_width,eq_width};
+            // Box cross-section inscribed in the requested radial tolerance.
+            // No extra length/standoff beyond the original cut endpoints.
+            box.dimensions = {std::max(length, 1e-9), std::sqrt(2.0) * pos_tol, std::sqrt(2.0) * pos_tol};
             box_constraint_.constraint_region.primitives.push_back(box);
             box_constraint_.constraint_region.primitive_poses.push_back(
                 tf2::toMsg(box_center)
             );
 
             constraints.position_constraints.push_back(std::move(box_constraint_));
+            constraints.orientation_constraints = makePoseConstraints(segment.start_pose, pos_tol, ang_tol).orientation_constraints;
             return constraints;
         }
 
@@ -784,6 +702,8 @@ CutSegment CutPlanner::makeSegment(
 
     CutSegment segment;
     segment.name = feature.name;
+    segment.pos_tol = request.pos_tol;
+    segment.ang_tol = request.ang_tol;
     segment.type = feature.type;
     Eigen::Vector2f tangent_2d = feature.end - feature.start;
     tangent_2d.normalize();

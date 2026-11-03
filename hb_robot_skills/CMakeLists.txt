@@ -58,6 +58,18 @@ target_link_libraries(hb_motion
 hb_robot_perception::hb_perception
 )
 
+add_executable(cut_debug_node src/cut_debug_node.cpp)
+ament_target_dependencies(cut_debug_node
+  rclcpp
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
+  ur_msgs
+)
+
 add_executable(approve_motion_server
 src/approve_motion_server.cpp)
 
@@ -141,6 +153,7 @@ install(
     approve_motion_server
     cut_profile_server
     hb_motion
+    cut_debug_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

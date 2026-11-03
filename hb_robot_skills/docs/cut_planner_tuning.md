@@ -1,88 +1,139 @@
-# Cut candidate and transit tuning
+# Cut sampling, position bounds, and inter-cut transits
 
-The active server settings are in `hb_robot_bringup/launch/skills.launch.py`.
-Parameters are read when the server initializes; restart it after changing them.
+## Position and collision policy
 
-The geometric constraint planner still chooses the cut geometry and finds nearby
-feasible IK states. The process generator now uses its approach state as the first
-seed (retract state for backward solving), includes its solved local-Z roll, and
-also includes zero roll. These are hints, not executable paths: every Cartesian
-sample still passes IK, bounds, collision, TCP error and branch-continuity checks.
-The nominal Cartesian path is preserved; small position/tilt deviations accepted
-by the geometric constraints are not copied into the cutting path.
+The action's `pos_tol` is a hard radial bound about the **original nominal TCP
+position**, not an allowance to accumulate displacement at every correction.
+`ang_tol` constrains tilt; local-Z roll remains free within the orientation
+constraint. A positive finite `pos_tol` is required. No tolerance is relaxed on
+failure.
 
-## Sampling
+Geometric sampling uses the exact nominal translation. It tries the previous
+solution's orientation, nominal orientation, then deterministic roll samples and
+bounded tilts. The old random positional sampling and contact-normal translation
+of the torch have been removed. Body-contact correction uses a bounded joint step
+in the TCP translation Jacobian's null space; IK projects its orientation proposal
+back onto the original position. Roll/tilt proposals provide an alternative for
+torch contacts. Every accepted step must satisfy the original position/orientation
+constraints and joint bounds, and reduce contact merit. No progress means failure
+of that sample, not a larger positional allowance. The last repair iteration is
+now checked for success.
 
-Default attempts per roll:
+This is a bounded local heuristic, not a globally optimal collision solver. It
+can reject a reachable solution if escaping contact requires first worsening the
+contact merit. Increase orientation sampling before increasing repair iterations.
+Self/environment collisions still fail unless the final planning-scene collision
+check accepts the state; no allowed-collision entries were changed.
 
-- One geometric seed, then one original robot-state seed.
-- Twelve bounded perturbations around the geometric seed.
-- Two globally random seeds for alternative branches.
+Process generation tries the full geometric orientation (including tilt) before
+the roll grid, always with the original path positions. Each sampled IK solution
+must meet both the generator accuracy limit and `pos_tol`, as well as orientation,
+collision, bounds, and branch-continuity checks. Regenerated Pilz trajectories
+are checked at their waypoints against the original finite approach/cut/retract
+lines and endpoint positions, plus orientation constraints. This is sampled path
+validation, not a continuous collision/geometry proof between waypoints. MoveIt's
+existing planning-scene collision checking remains required.
 
-`cut_sampling.global_seeds_per_roll` controls the last category. Set it to zero
-to disable explicit full-range random seeding; the IK solver may still perform
-its own search for the unconstrained reference attempt. Global attempts must be
-fewer than `cut_sampling.seeds_per_roll`.
+The alternative box path constraint now derives its cross-section from `pos_tol`
+and includes the orientation constraint. It no longer adds 10 mm to the cut length
+or silently substitutes a fixed 0.5 mm cross-section.
 
-`cut_sampling.local_seed_radius_rad` defaults to 0.35 radians per variable.
-`cut_sampling.local_ik_consistency_rad` defaults to 0.75 radians around the initial
-local/geometric seed. Later IK solves use the existing 0.20-radian continuation
-limit around the preceding state. Bounded jitter is reproducible; globally random
-seeds and the IK solver are not made deterministic by this change.
+## Transit ownership and return policy
 
-`cut_sampling.roll_samples` is the grid size; zero and the geometric roll can add
-samples, and equivalent roll orientations are deduplicated.
-
-The generator and graph share `cut_sampling.max_candidates` (default 32).
-Retention ranks process motion plus estimated round-trip transit cost. The best
-24 candidates occupy the first slots; up to eight remaining slots retain distinct
-entry/exit configurations (joint-group distance over 0.75). If fewer distinct
-configurations exist, the remaining cheapest candidates fill those slots.
-
-## Transit objective
-
-For each planned transit, let `total` be accumulated travel summed across arm
-joints and `maximum` the largest accumulated travel of any one joint. Cost is:
+Default route, with cut order unchanged:
 
 ```
-transit_weight * (total + 2 * maximum
-  + excess_travel_weight * max(0, maximum - preferred_joint_travel_rad)^2)
+initial state -> A approach -> A cut -> A retract
+              -> B approach -> B cut -> B retract -> initial state
 ```
 
-This retains the existing total/maximum travel objective and adds a soft budget.
-The default preferred budget is 1.57 radians and excess weight is 2.0. The budget
-is accumulated travel, not endpoint difference or a velocity limit. Estimates use
-the same objective on endpoint displacement; actual costs include detours.
+The graph contains candidate-to-candidate edges and lazily plans each selected
+edge using the actual regenerated process endpoints. A failed edge removes that
+candidate pair, not either entire candidate. Alternative pairs remain available.
+All transits still go through the existing collision-checked planning callback and
+boundary validation; a direct transit is not joint interpolation or a straight
+Cartesian shortcut.
 
-Increase `cut_cost.excess_travel_weight` to discourage long individual-joint moves.
-Increase `cut_cost.transit_weight` relative to `cut_cost.process_weight` to favor
-shorter transit at the expense of more process motion.
+**Ownership:** `cuts[i].transit_in` owns the motion from the previous cut's
+retract endpoint (or the initial state for the first cut) to this cut's approach
+endpoint. `transit_out` is optional and exists only for an explicit return to the
+initial state. Direct inter-cut motion is never duplicated as both A's outbound
+and B's inbound trajectory. Preview and execution both follow this representation.
+Torch/process sequencing and approval remain unchanged: approach, cut, retract,
+then transit. Home means the captured initial robot state, not a named SRDF pose.
 
-`cut_cost.max_transit_joint_travel_rad` optionally rejects transits exceeding an
-absolute accumulated per-joint travel limit. Zero (default) disables rejection,
-preserving expensive alternatives when they are the only feasible plans. A positive
-limit is never automatically relaxed: the graph tries other candidates or fails.
-The graph logs actual travel and selected costs using its existing diagnostics.
+Launch controls:
 
-Unplanned process nodes now use endpoint-distance lower bounds instead of sampled
-path scores, so an overestimated sampled score does not hide a cheaper regenerated
-process path. Process scores remain useful for candidate retention.
-
-The graph still returns to the original robot state after each cut. It does not
-optimize cut order or direct transitions between cuts. Pilz still regenerates
-process paths and validates their endpoint connections. The geometric planner's
-runtime is unchanged; the benefit is reuse of its work in candidate generation.
-
-## Validation on the ROS host
-
-```
-colcon build --packages-select hb_robot_skills --cmake-args -DBUILD_TESTING=ON
-colcon test --packages-select hb_robot_skills --event-handlers console_direct+
-colcon test-result --verbose
+```bash
+# Direct transitions, final return enabled (defaults):
+ros2 launch hb_robot_bringup skills.launch.py
+# Legacy route with a home return between every cut:
+ros2 launch hb_robot_bringup skills.launch.py return_home_between_cuts:=true
+# End at the final retract position:
+ros2 launch hb_robot_bringup skills.launch.py return_home_after_last_cut:=false
 ```
 
-The graph regression tests cover pessimistic sampled scores, actual transit
-detours, an alternative route under a hard travel limit, and no admissible route.
-Compare representative profile plans with the existing approval preview enabled:
-record success rate, planning time, total travel and maximum per-joint travel.
-These defaults are tuning starting points, not robot-validated thresholds.
+Corresponding node parameters are `cut_transit.return_home_between_cuts` and
+`cut_transit.return_home_after_last_cut`. Options are read at server initialization.
+A missing direct route fails explicitly; the planner never silently enables home
+returns. The graph optimizes across the retained candidates and fixed cut order,
+not all possible IK solutions, cut orders, or stochastic transit-planner outcomes.
+
+## Sampling controls and recommended starting values
+
+Edit the cut server parameter dictionary in `hb_robot_bringup/launch/skills.launch.py`
+and restart the server after rebuilding/installing launch changes.
+
+| Parameter | Default | Purpose |
+| --- | ---: | --- |
+| `cut_geometry.max_pose_samples` | 48 | Maximum orientation/IK attempts per geometric waypoint; formerly 100 random attempts |
+| `cut_geometry.feasible_samples` | 4 | Stop after this many feasible samples and keep lowest joint-distance cost |
+| `cut_geometry.refinement_iterations` | 8 | Maximum monotone collision-repair iterations per sample |
+| `cut_geometry.ik_timeout_s` | 0.03 | Timeout per IK attempt |
+| `cut_geometry.ik_consistency_rad` | 2.0 | Initial per-variable IK search bound |
+| `cut_geometry.repair_joint_step_rad` | 0.03 | Maximum joint correction per body-contact proposal |
+| `cut_geometry.repair_roll_step_rad` | 0.15 | Roll increment per contact-repair proposal |
+| `cut_sampling.roll_samples` | 12 | Process roll grid; geometric orientation and zero are also tried |
+| `cut_sampling.seeds_per_roll` | 16 | Maximum seed attempts per orientation |
+| `cut_sampling.global_seeds_per_roll` | 2 | Last seed attempts are global if the distinct-candidate cap has not been reached |
+| `cut_sampling.max_candidates_per_roll` | 2 | Stop after this many distinct process candidates per orientation; 0 disables early stopping |
+| `cut_sampling.local_seed_radius_rad` | 0.35 | Bounded seed perturbation |
+| `cut_sampling.local_ik_consistency_rad` | 0.75 | First IK consistency bound for geometric/local process seeds |
+| `cut_sampling.max_candidates` | 32 | Retained candidates per segment |
+
+Start with these bounds. For difficult profiles, raise `max_pose_samples` to 96
+and `feasible_samples` to 8 before changing geometric tolerances. To explore more
+branches for disconnected transits, raise `max_candidates_per_roll` to 4 or set
+it to 0. For fast previews, try 24 geometric samples, 2 feasible samples and 8
+seeds per orientation; reduced search can reduce success rate. Do not use
+`pos_tol` as a performance knob: it describes permitted cut-position error.
+
+Direct mode ranks retained candidates by process cost with endpoint diversity,
+rather than penalizing every candidate for a fictitious round trip home. Legacy
+mode keeps the home-based ranking. The best 3/4 of slots use cost; remaining slots
+favor distinct entry/exit states before filling with the next cheapest candidates.
+The two-candidate cap is per orientation, including the geometric tilt hint.
+
+Transit cost still combines total travel, twice maximum per-joint travel, and the
+quadratic excess-travel penalty (`cut_cost.preferred_joint_travel_rad=1.57`,
+`cut_cost.excess_travel_weight=2.0`). The optional hard accumulated per-joint transit
+budget `cut_cost.max_transit_joint_travel_rad` remains disabled at 0 and is never
+relaxed. Unknown-edge estimates allow for endpoint tolerances; actual planned
+costs replace them. The graph now indexes outgoing edges instead of scanning all
+edges at every node.
+
+## Validation
+
+```bash
+cd ~/ros2_ws
+colcon build --packages-select hb_robot_skills hb_robot_bringup --cmake-args -DBUILD_TESTING=ON
+colcon test --packages-select hb_robot_skills --ctest-args -R cut_graph_planner_test --output-on-failure
+```
+
+Regression tests cover direct ownership, legacy returns, optional final return,
+failed and discontinuous connections, alternative candidate pairs, position-bound
+rejection, and transit cost/budget behavior. They use a small synthetic robot and
+stub motion planners; they do not validate UR IK, hardware motion, or machining.
+Before execution, inspect the full approval preview and compare planning time,
+IK attempts, candidate counts, and transit travel on representative profiles.
+This change does not fix the separate UR reverse-interface connection failure.

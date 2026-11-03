@@ -1,4 +1,7 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
 
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -54,6 +57,13 @@ def generate_launch_description():
         # moveit_config.robot_description_kinematics,
         parameters = [moveit_config.to_dict(),{"skip_cutting_motion": False,
         "require_plan_approval": True,
+        "cut_transit.return_home_between_cuts": ParameterValue(LaunchConfiguration("return_home_between_cuts"), value_type=bool),
+        "cut_transit.return_home_after_last_cut": ParameterValue(LaunchConfiguration("return_home_after_last_cut"), value_type=bool),
+        "cut_geometry.max_pose_samples": 48,
+        "cut_geometry.feasible_samples": 4,
+        "cut_geometry.refinement_iterations": 8,
+        "cut_geometry.ik_timeout_s": 0.03,
+        "cut_sampling.max_candidates_per_roll": 2,
         # Geometric seed + reference seed + bounded local perturbations;
         # only the final two attempts per roll explore globally.
         "cut_sampling.roll_samples": 12,
@@ -73,6 +83,10 @@ def generate_launch_description():
         ,
     )
     return LaunchDescription([
+        DeclareLaunchArgument("return_home_between_cuts", default_value="false",
+            description="Return to the initial robot state between cuts instead of direct transits."),
+        DeclareLaunchArgument("return_home_after_last_cut", default_value="true",
+            description="Return to the initial robot state after the final retract."),
         inspect_scene_server,
         cut_profile_server,
         inspect_profile_server

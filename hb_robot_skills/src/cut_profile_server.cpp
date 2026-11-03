@@ -152,12 +152,6 @@ namespace hb_robot_skills{
         const auto robot_model =
                 move_group_->getRobotModel();
         
-        cut_planner_ = std::make_unique<motion::CutPlanner>(            
-        move_group_->getRobotModel(),
-        planning_group_,
-        plasma_link_);
-
-
         const auto count_parameter = [this](const std::string& name, int64_t fallback, bool allow_zero = false) {
             if (!has_parameter(name)) declare_parameter<int64_t>(name, fallback);
             const auto value = get_parameter(name).as_int();
@@ -168,7 +162,23 @@ namespace hb_robot_skills{
             if (!has_parameter(name)) declare_parameter<double>(name, fallback);
             return get_parameter(name).as_double();
         };
+        const auto bool_parameter = [this](const std::string& name, bool fallback) {
+            if (!has_parameter(name)) declare_parameter<bool>(name, fallback);
+            return get_parameter(name).as_bool();
+        };
+        motion::CutPlannerOptions geometry_options;
+        geometry_options.max_pose_samples = count_parameter("cut_geometry.max_pose_samples", 48);
+        geometry_options.feasible_samples = count_parameter("cut_geometry.feasible_samples", 4);
+        geometry_options.refinement_iterations = count_parameter("cut_geometry.refinement_iterations", 8);
+        geometry_options.ik_timeout_s = double_parameter("cut_geometry.ik_timeout_s", 0.03);
+        geometry_options.ik_consistency_rad = double_parameter("cut_geometry.ik_consistency_rad", 2.0);
+        geometry_options.repair_joint_step_rad = double_parameter("cut_geometry.repair_joint_step_rad", 0.03);
+        geometry_options.repair_roll_step_rad = double_parameter("cut_geometry.repair_roll_step_rad", 0.15);
+        cut_planner_ = std::make_unique<motion::CutPlanner>(robot_model, planning_group_, plasma_link_, geometry_options);
         motion::CutGraphPlanner::Options graph_options;
+        graph_options.return_home_between_cuts = bool_parameter("cut_transit.return_home_between_cuts", false);
+        graph_options.return_home_after_last_cut = bool_parameter("cut_transit.return_home_after_last_cut", true);
+        graph_options.tcp_link = plasma_link_;
         graph_options.max_candidates_per_segment = count_parameter("cut_sampling.max_candidates", 32);
         graph_options.transit_weight = double_parameter("cut_cost.transit_weight", 1.0);
         graph_options.process_weight = double_parameter("cut_cost.process_weight", 1.0);
@@ -177,6 +187,8 @@ namespace hb_robot_skills{
         graph_options.max_transit_joint_travel_rad = double_parameter("cut_cost.max_transit_joint_travel_rad", 0.0);
 
         motion::ProcessGeneratorOptions options;
+        options.max_candidates_per_roll = count_parameter("cut_sampling.max_candidates_per_roll", 2, true);
+        options.rank_transits_via_home = graph_options.return_home_between_cuts;
         options.roll_samples = count_parameter("cut_sampling.roll_samples", 12);
         options.seeds_per_roll = count_parameter("cut_sampling.seeds_per_roll", 16);
         options.global_seeds_per_roll = count_parameter("cut_sampling.global_seeds_per_roll", 2, true);
@@ -795,9 +807,9 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
-            outcome = run(cut.transit_out,"transit out");
-            if(outcome != MotionOutcome::SUCCESS){
-                return outcome;
+            if (cut.transit_out) {
+                outcome = run(*cut.transit_out, "return home");
+                if (outcome != MotionOutcome::SUCCESS) return outcome;
             }
             
 
@@ -1036,6 +1048,11 @@ namespace hb_robot_skills{
 
                RCLCPP_INFO(get_logger(),"Segment: %s generated %zu candidates",
                segment.name.c_str(), generated.candidates.size());
+               RCLCPP_INFO(get_logger(),
+                   "Process sampling: attempts=%zu, IK=%zu, collision=%zu, bounds=%zu, jump=%zu, TCP=%zu, duplicates=%zu",
+                   generated.stats.attempts, generated.stats.ik_failures, generated.stats.collision_failures,
+                   generated.stats.joint_limit_failures, generated.stats.joint_jump_failures,
+                   generated.stats.tcp_error_failures, generated.stats.duplicate_candidates);
                if(generated.candidates.empty()){
                 fail(0,"no process candidates generated");
                 return;
@@ -1165,7 +1182,7 @@ namespace hb_robot_skills{
                 valid&= appendPlan(cut.process.approach, cut.name + "/approach");
                 valid&= appendPlan(cut.process.cut, cut.name + "/cut");
                 valid&= appendPlan(cut.process.retract, cut.name + "/retract");
-                valid&= appendPlan(cut.transit_out, cut.name + "/transit_out");
+                if (cut.transit_out) valid &= appendPlan(*cut.transit_out, cut.name + "/return_home");
             }
             if(!valid){
                 fail(0,"empty trajectories found");

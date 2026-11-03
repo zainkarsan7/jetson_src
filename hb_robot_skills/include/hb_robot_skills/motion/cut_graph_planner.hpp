@@ -40,6 +40,9 @@ class CutGraphPlanner{
         struct Options{
             std::size_t max_candidates_per_segment = 24;
             double boundary_tol = 1e-3;
+            std::string tcp_link; // set by the server for Cartesian path validation
+            bool return_home_between_cuts = false;
+            bool return_home_after_last_cut = true;
             double process_weight = 1.0;
             double transit_weight = 1.0;
             double preferred_joint_travel_rad = 1.57;
@@ -53,13 +56,6 @@ class CutGraphPlanner{
             std::size_t segment_index;
             std::size_t candidate_index;
 
-        };
-
-        struct TransitEdgeInfo{
-            EdgeId edge_id;
-            std::size_t segment_index;
-            std::size_t candidate_index;
-            bool transit_in;
         };
 
         struct Statistics{
@@ -102,19 +98,6 @@ class CutGraphPlanner{
 
     private:
 
-        struct PlannedCandidate{
-            ExecutableCut cut;
-            double cost = 0.0;
-            std::size_t candidate_index= 0;
-        };
-
-        std::optional<PlannedCandidate> evaluateCandidate(
-            const CutSegment& segment,
-            const ProcessCandidate& candidate,
-            const moveit::core::RobotState& home_state,
-            std::size_t candidate_index
-        );
-
         std::optional<moveit::core::RobotState> firstState(
             const Plan& plan
         )const;
@@ -125,12 +108,12 @@ class CutGraphPlanner{
         double trajectoryCost(const Plan& plan)const;
         double transitCost(const Plan& plan)const;
         double transitEstimate(const moveit::core::RobotState& from,
-                               const moveit::core::RobotState& to)const;
+                               const moveit::core::RobotState& to, double endpoint_slack = 0.0)const;
 
         bool statesMatch(const moveit::core::RobotState& a,
         const moveit::core::RobotState& b)const;
 
-        bool validateProcess(const ProcessCandidate& candidate, 
+        bool validateProcess(const CutSegment& segment, const ProcessCandidate& candidate,
         const SegmentMotionPlan& process)const;
 
         moveit::core::RobotModelConstPtr robot_model_;

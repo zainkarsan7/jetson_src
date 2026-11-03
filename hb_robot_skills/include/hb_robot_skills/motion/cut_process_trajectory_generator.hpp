@@ -53,6 +53,10 @@ struct ProcessGeneratorOptions
 
     // IK attempts per roll. The first uses the supplied reference.
     std::size_t seeds_per_roll = 2;
+    // Stop redundant full-path solves once this many distinct branches exist.
+    // Zero retains exhaustive seed attempts.
+    std::size_t max_candidates_per_roll = 2;
+    bool rank_transits_via_home = false;
     // The remaining attempts use geometric/reference seeds and bounded jitter.
     std::size_t global_seeds_per_roll = 0;
     double local_seed_radius_rad = 0.35;
@@ -176,7 +180,7 @@ private:
 
     CartesianPath buildCartesianPath(
         const CutSegment& segment,
-        double roll_rad) const;
+        const Eigen::Matrix3d& orientation_offset) const;
 
     void appendInterpolated(
         std::vector<Eigen::Isometry3d>& output,
@@ -188,7 +192,7 @@ private:
         const moveit::core::RobotState& seed,
         const planning_scene::PlanningSceneConstPtr& scene,
         bool backward,
-        bool constrain_initial_ik) const;
+        bool constrain_initial_ik, const CutSegment& segment) const;
 
     bool validState(
         const moveit::core::RobotState& state,

@@ -7,25 +7,12 @@
 #include <stdexcept>
 #include <utility>
 #include <random>
+#include <moveit/kinematic_constraints/kinematic_constraint.h>
 
 namespace hb_robot_skills::motion
 {
 namespace
 {
-
-Eigen::Isometry3d rotatedAboutLocalZ(
-    const Eigen::Isometry3d& pose,
-    double angle)
-{
-    Eigen::Isometry3d result = pose;
-
-    result.linear() =
-        pose.linear() *
-        Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ())
-            .toRotationMatrix();
-
-    return result;
-}
 
 Eigen::Isometry3d interpolatePose(
     const Eigen::Isometry3d& a,
@@ -138,21 +125,26 @@ void CutProcessTrajectoryGenerator::appendInterpolated(
 CutProcessTrajectoryGenerator::CartesianPath
 CutProcessTrajectoryGenerator::buildCartesianPath(
     const CutSegment& segment,
-    double roll_rad) const
+    const Eigen::Matrix3d& orientation_offset) const
 {
     CartesianPath path;
+    const auto oriented = [&](const Eigen::Isometry3d& pose) {
+        Eigen::Isometry3d result = pose;
+        result.linear() = pose.linear() * orientation_offset;
+        return result;
+    };
 
     const Eigen::Isometry3d approach =
-        rotatedAboutLocalZ(segment.approach_pose, roll_rad);
+        oriented(segment.approach_pose);
 
     const Eigen::Isometry3d start =
-        rotatedAboutLocalZ(segment.start_pose, roll_rad);
+        oriented(segment.start_pose);
 
     const Eigen::Isometry3d end =
-        rotatedAboutLocalZ(segment.end_pose, roll_rad);
+        oriented(segment.end_pose);
 
     const Eigen::Isometry3d retract =
-        rotatedAboutLocalZ(segment.retract_pose, roll_rad);
+        oriented(segment.retract_pose);
 
     path.poses.push_back(approach);
 
@@ -243,9 +235,17 @@ CutProcessTrajectoryGenerator::solvePath(
     const moveit::core::RobotState& seed,
     const planning_scene::PlanningSceneConstPtr& scene,
     bool backward,
-    bool constrain_initial_ik) const
+    bool constrain_initial_ik, const CutSegment& segment) const
 {
     SolveResult result;
+    kinematic_constraints::KinematicConstraintSet orientation_check(robot_model_);
+    moveit_msgs::msg::Constraints orientation_constraints;
+    orientation_constraints.orientation_constraints = segment.start_constraints.orientation_constraints;
+    if (!orientation_constraints.orientation_constraints.empty() &&
+        !orientation_check.add(orientation_constraints, scene->getTransforms())) {
+        result.failure = Failure::TCPError;
+        return result;
+    }
 
     if (path.poses.empty())
     {
@@ -294,7 +294,9 @@ CutProcessTrajectoryGenerator::solvePath(
 
         next.update();
 
-        if (!closeToTarget(next, target))
+        if (!closeToTarget(next, target) ||
+            (next.getGlobalLinkTransform(plasma_link_).translation() - target.translation()).norm() > segment.pos_tol ||
+            !orientation_check.decide(next).satisfied)
         {
             result.failure = Failure::TCPError;
             result.states.clear();
@@ -429,6 +431,7 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
         throw std::invalid_argument("Null planning scene");
 
     ProcessGenerationResult result;
+    if (!std::isfinite(segment.pos_tol) || segment.pos_tol <= 0.0) return result;
 
     const std::size_t direction_count =
         options_.enable_reverse_ik_search ? 2 : 1;
@@ -467,16 +470,33 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
     std::mt19937 rng(0); // Reproducible bounded perturbations for tuning.
     std::uniform_real_distribution<double> jitter(
         -options_.local_seed_radius_rad, options_.local_seed_radius_rad);
+    std::vector<Eigen::Matrix3d> orientations;
+    // Reuse the full feasible orientation, including bounded tilt, but never
+    // reuse its translated TCP position as cut geometry.
+    if (segment.start_state)
+        orientations.push_back(segment.start_pose.linear().transpose() *
+            segment.start_state->getGlobalLinkTransform(plasma_link_).linear());
     for (double roll : rolls) {
-        const CartesianPath path =
-            buildCartesianPath(segment, roll);
+        const Eigen::Matrix3d offset = Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+        if (std::none_of(orientations.begin(), orientations.end(), [&](const auto& other) {
+            return orientationError(other, offset) < 1e-6;
+        })) orientations.push_back(offset);
+    }
+    for (const auto& offset : orientations) {
+        const double roll = std::atan2(offset(1,0), offset(0,0));
+        const auto initial_count = result.candidates.size();
+        const CartesianPath path = buildCartesianPath(segment, offset);
 
         for (std::size_t seed_index = 0;
              seed_index < options_.seeds_per_roll;
              ++seed_index)
         {
+            if (options_.max_candidates_per_roll > 0 &&
+                result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
             for (std::size_t d = 0; d < direction_count; ++d)
             {
+                if (options_.max_candidates_per_roll > 0 &&
+                    result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
                 const bool backward = d == 1;
                 const auto geometric = backward ? segment.retract_state : segment.approach_state;
                 const bool global = seed_index >= options_.seeds_per_roll - options_.global_seeds_per_roll;
@@ -496,7 +516,7 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
                 ++result.stats.attempts;
 
                 SolveResult solved =
-                    solvePath(path, seed, scene, backward, use_geometric || (!global && seed_index > 1));
+                    solvePath(path, seed, scene, backward, use_geometric || (!global && seed_index > 1), segment);
 
                 if (solved.failure != Failure::None)
                 {
@@ -569,8 +589,8 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
         {
             const auto rank = [&](const ProcessCandidate& candidate) {
                 return options_.retention_process_weight * candidate.score +
-                    options_.retention_transit_weight *
-                    (transit_rank(*candidate.entry) + transit_rank(*candidate.exit));
+                    (options_.rank_transits_via_home ? options_.retention_transit_weight *
+                    (transit_rank(*candidate.entry) + transit_rank(*candidate.exit)) : 0.0);
             };
             return rank(a) < rank(b);
         });

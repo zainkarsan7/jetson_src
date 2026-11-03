@@ -58,13 +58,16 @@ namespace hb_robot_skills::motion{
             return nodes_[a].layer<nodes_[b].layer;
         }
     );
+        std::vector<std::vector<EdgeId>> outgoing(nodes_.size());
+        for (const auto& edge : edges_) outgoing[edge.from].push_back(edge.id);
         // set the start cost to whatever cost the node has.
         cost[start] = nodes_[start].process_cost;
         for (NodeId u: order){
             if(!std::isfinite(cost[u])){
                 continue;
             }
-            for (const GraphEdge & e: edges_){
+            for (const auto edge_id : outgoing[u]){
+                const auto& e = edges_[edge_id];
                 // look for all the edges of u
                 if(e.from != u){
                     continue;

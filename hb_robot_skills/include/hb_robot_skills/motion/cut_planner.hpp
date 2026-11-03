@@ -86,6 +86,9 @@ struct CutSegment{
     hb_perception::ProfileCutFeatureType type = hb_perception::ProfileCutFeatureType::Unknown;
     
     std::vector<CutPathPoint> points;
+    // Hard radial position bound about the original geometry, never relaxed.
+    double pos_tol = 0.003;
+    double ang_tol = 0.03;
 
     // poses
     Eigen::Isometry3d approach_pose = Eigen::Isometry3d::Identity();
@@ -137,7 +140,9 @@ struct ExecutableCut{
     std::string name;
     moveit::planning_interface::MoveGroupInterface::Plan transit_in;
     SegmentMotionPlan process;
-    moveit::planning_interface::MoveGroupInterface::Plan transit_out;
+    // The next cut owns a direct inter-cut connection as its transit_in.
+    // Present only for an explicit return to the initial/home state.
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> transit_out;
     CutProcessParams parameters;
 };
 
@@ -182,13 +187,24 @@ struct CutRequest{
     double ang_tol = 0.03;
 };
 
+struct CutPlannerOptions {
+    std::size_t max_pose_samples = 48;
+    std::size_t feasible_samples = 4;
+    std::size_t refinement_iterations = 8;
+    double ik_timeout_s = 0.03;
+    double ik_consistency_rad = 2.0;
+    double repair_joint_step_rad = 0.03;
+    double repair_roll_step_rad = 0.15;
+};
+
 class CutPlanner{
     public: 
 
         CutPlanner(
             moveit::core::RobotModelConstPtr robot_model,
             std::string planning_group,
-            std::string plasma_link
+            std::string plasma_link,
+            CutPlannerOptions options = {}
         );
 
 
@@ -255,8 +271,6 @@ class CutPlanner{
     const moveit_msgs::msg::Constraints& constraints,
     const planning_scene::PlanningSceneConstPtr& p_scene)const;
 
-        bool proposeTorchNudge(moveit::core::RobotState& trial,
-        std::vector<RobotWorkpieceContact>& contacts)const;
 
         bool proposeJacobeanStep(moveit::core::RobotState& trial,
         std::vector<RobotWorkpieceContact>& contacts)const;
@@ -275,6 +289,7 @@ class CutPlanner{
         
 
         bool sampleConstraint(const moveit_msgs::msg::Constraints& constraints,
+            const Eigen::Isometry3d& nominal_pose,
             moveit::core::RobotState& state,
             const moveit::core::RobotState& reference_state,
             const planning_scene::PlanningSceneConstPtr& p_scene
@@ -294,6 +309,7 @@ class CutPlanner{
         const moveit::core::JointModelGroup* joint_model_group_;
         std::string planning_group_;
         std::string plasma_link_;
+        CutPlannerOptions options_;
     
 };
 
