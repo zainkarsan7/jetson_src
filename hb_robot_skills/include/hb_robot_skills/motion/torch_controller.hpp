@@ -107,9 +107,13 @@ class TorchController{
         using namespace std::chrono_literals;
         std::lock_guard<std::mutex> command_lock(command_mutex_);
         if(!hasFreshIO()){
+            RCLCPP_ERROR(node_.get_logger(),"fresh IO call failed");
             return false;
         }
-        if(!io_client_->wait_for_service(1s)){
+        RCLCPP_WARN(node_.get_logger(),"TORCH GPIO REQUEST: enabled %d, pin %d, srv %s",
+        enabled,config_.torch_output_pin,io_client_->get_service_name()  
+    );
+        if(!io_client_->wait_for_service(2s)){
             RCLCPP_ERROR(node_.get_logger(),"ur SetIO is unavailable");
             return false;
         }
@@ -122,7 +126,7 @@ class TorchController{
             RCLCPP_ERROR(node_.get_logger(),"UR set IO timed out");
             return false;
         }
-
+        
         const auto response = future.get();
         if(!response || !response->success){
             RCLCPP_ERROR(node_.get_logger(),"couldnt turn torch on");
