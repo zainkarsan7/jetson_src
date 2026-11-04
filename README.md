@@ -220,3 +220,16 @@ ros2 service call /dashboard_client/close_popup std_srvs/srv/Trigger "{}"
 ros2 service call /dashboard_client/brake_release std_srvs/srv/Trigger "{}"
 
 ros2 service call /dashboard_client/program_state ur_dashboard_msgs/srv/GetProgramState "{}"
+
+
+enum class TorchCommandResult{
+    CONFIRMED,
+    NOT_READY,
+    SERVICE_UNAVAILABLE,
+    REQUEST_FAILED,
+    FEEDBACK_TIMEOUT,
+    IO_LOST,
+    CANCELED,
+    FAULT
+
+};

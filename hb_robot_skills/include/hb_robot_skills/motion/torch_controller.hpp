@@ -323,7 +323,16 @@ class TorchController{
             }
             return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
         };
-        if(!io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))){
+        // if(!io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))){
+        //     RCLCPP_ERROR(node_.get_logger(),"ur SetIO is unavailable");
+        //     return TorchCommandResult::SERVICE_UNAVAILABLE;
+        // }
+        while(rclcpp::ok() && remaining().count()>0){
+            if(io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))){
+                break;
+            }
+        }
+        if(!io_client_->service_is_ready()){
             RCLCPP_ERROR(node_.get_logger(),"ur SetIO is unavailable");
             return TorchCommandResult::SERVICE_UNAVAILABLE;
         }
