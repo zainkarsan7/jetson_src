@@ -348,18 +348,59 @@ bool InspectProfileServer::updateCuttingCollision(
             }
         return col_obj;
         };
+        // ESTIMATE FROM POINTS INSTEAD OF PADDED BOX
+        const Eigen::Isometry3d member_from_world =
+        estimate.world_from_member.inverse();
+
+        double z_min = std::numeric_limits<double>::infinity();
+        double z_max = -std::numeric_limits<double>::infinity();
+
+        for (const auto& p : estimate.workpiece.cloud->points)
+        {
+            if (!std::isfinite(p.x) ||
+                !std::isfinite(p.y) ||
+                !std::isfinite(p.z))
+                continue;
+
+            const Eigen::Vector3d world_point(p.x, p.y, p.z);
+
+            const Eigen::Vector3d member_point =
+                member_from_world * world_point;
+
+            z_min = std::min(z_min, member_point.z());
+            z_max = std::max(z_max, member_point.z());
+        }
+
+        if (!std::isfinite(z_min) ||
+            !std::isfinite(z_max) ||
+            z_max <= z_min)
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Invalid workpiece longitudinal extent");
+            return false;
+        }
+
+        // Optional longitudinal padding.
+        constexpr double padding = 0.02;
+
+        auto mesh = mesh_builder_.extrude(
+            estimate.match.profile,
+            z_min - padding,
+            z_max + padding
+        );
         // get z_min z_max from inspection workpiece
-        const auto psm_objs = planning_scene_interface_.getObjects({"inspection_workpiece"});
-        const auto it = psm_objs.find("inspection_workpiece");
-        if(it == psm_objs.end() || it->second.primitives.empty()){
-            //collision object mesg is a std pair of string and primitive
-            RCLCPP_ERROR(get_logger(),"inspectionworkfpiece not found");
-            return false;}
-        const auto& inspection_box = it->second;
-        const auto& box = inspection_box.primitives.front();
-        auto mesh = mesh_builder_.extrude(estimate.match.profile,
-            static_cast<double>(-box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0),
-            static_cast<double>(box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0) );
+        // const auto psm_objs = planning_scene_interface_.getObjects({"inspection_workpiece"});
+        // const auto it = psm_objs.find("inspection_workpiece");
+        // if(it == psm_objs.end() || it->second.primitives.empty()){
+        //     //collision object mesg is a std pair of string and primitive
+        //     RCLCPP_ERROR(get_logger(),"inspectionworkfpiece not found");
+        //     return false;}
+        // const auto& inspection_box = it->second;
+        // const auto& box = inspection_box.primitives.front();
+        // auto mesh = mesh_builder_.extrude(estimate.match.profile,
+        //     static_cast<double>(-box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0),
+        //     static_cast<double>(box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0) );
 
         if(!mesh){
             RCLCPP_ERROR(get_logger(),"coudlnt make mesh");
@@ -484,154 +525,64 @@ bool InspectProfileServer::updateCuttingCollision(
 bool InspectProfileServer::updateWorkpieceCollision(
     const hb_perception::WorkpieceModel& workpiece)
 {
+    using PointT = pcl::PointXYZRGB;
+    using PointCloud = pcl::PointCloud<PointT>;
+    using CollisionObject = moveit_msgs::msg::CollisionObject;
+    using Primitive = shape_msgs::msg::SolidPrimitive;
+
     if (!workpiece.cloud || workpiece.cloud->empty())
         return false;
 
-    // 1. Longitudinal direction from the smallest eigenvector
-    //    of the surface-normal covariance.
-    Eigen::Vector3f z =
-        extractor_.estimateAxisFromNormals(
-            workpiece.cloud, 0.025f);
+    // Downsample the extracted workpiece cloud.
+    pcl::VoxelGrid<PointT> voxel;
+    voxel.setInputCloud(workpiece.cloud);
 
-    if (!z.allFinite() || z.norm() < 1e-6f)
-    {
-        RCLCPP_WARN(
-            get_logger(),
-            "Invalid normal-derived workpiece axis");
+    constexpr float voxel_size = 0.015f; // 15 mm
+    voxel.setLeafSize(voxel_size, voxel_size, voxel_size);
+
+    PointCloud coarse_cloud;
+    voxel.filter(coarse_cloud);
+
+    if (coarse_cloud.empty())
         return false;
-    }
 
-    z.normalize();
-
-    // Keep the axis sign consistent with the extracted workpiece.
-    if (z.dot(workpiece.l_axes) < 0.0f)
-        z = -z;
-
-    // 2. Build an orthonormal frame around the normal-derived axis.
-    // Prefer the secondary PCA direction for cross-section orientation.
-    Eigen::Vector3f x =
-        workpiece.p_axes.col(1);
-
-    x -= x.dot(z) * z;
-
-    // If the projected PCA direction is degenerate, use a
-    // world-axis fallback that is not parallel to z.
-    if (!x.allFinite() || x.norm() < 1e-5f)
-    {
-        const Eigen::Vector3f reference =
-            std::abs(z.dot(Eigen::Vector3f::UnitX())) < 0.9f
-                ? Eigen::Vector3f::UnitX()
-                : Eigen::Vector3f::UnitY();
-
-        x = reference - reference.dot(z) * z;
-    }
-
-    x.normalize();
-
-    Eigen::Vector3f y = z.cross(x).normalized();
-
-    // Recompute x to remove numerical orthogonality error.
-    x = y.cross(z).normalized();
-
-    Eigen::Matrix3f R;
-    R.col(0) = x;
-    R.col(1) = y;
-    R.col(2) = z;
-
-    // 3. Project every finite cloud point into the new box frame.
-    Eigen::Vector3f min_local =
-        Eigen::Vector3f::Constant(
-            std::numeric_limits<float>::infinity());
-
-    Eigen::Vector3f max_local =
-        Eigen::Vector3f::Constant(
-            -std::numeric_limits<float>::infinity());
-
-    std::size_t valid_points = 0;
-
-    for (const auto& p : workpiece.cloud->points)
-    {
-        const Eigen::Vector3f world(p.x, p.y, p.z);
-
-        if (!world.allFinite())
-            continue;
-
-        const Eigen::Vector3f local =
-            R.transpose() * (world - workpiece.centroid);
-
-        min_local = min_local.cwiseMin(local);
-        max_local = max_local.cwiseMax(local);
-
-        ++valid_points;
-    }
-
-    if (valid_points < 30 ||
-        !min_local.allFinite() ||
-        !max_local.allFinite())
-    {
-        RCLCPP_WARN(
-            get_logger(),
-            "Insufficient points for workpiece collision box");
-        return false;
-    }
-
-    // 4. Dimensions and center from the actual point bounds.
-    const Eigen::Vector3f center_local =
-        0.5f * (min_local + max_local);
-
-    const Eigen::Vector3f center_world =
-        workpiece.centroid + R * center_local;
-
-    const Eigen::Vector3f dimensions =
-        max_local - min_local;
-
-    constexpr double padding = 0.02;  // 20 mm on each side
-
-    Eigen::Quaternionf q(R);
-    q.normalize();
-
-    // 5. Construct the MoveIt collision object.
-    moveit_msgs::msg::CollisionObject object;
-
+    CollisionObject object;
     object.header.frame_id = scene_frame_;
     object.header.stamp = now();
-
     object.id = "inspection_workpiece";
-    object.operation =
-        moveit_msgs::msg::CollisionObject::ADD;
+    object.operation = CollisionObject::ADD;
+    object.pose.orientation.w = 1.0;
 
-    shape_msgs::msg::SolidPrimitive box;
-    box.type = shape_msgs::msg::SolidPrimitive::BOX;
+    // Radius of each collision sphere.
+    constexpr double sphere_radius = 0.012; // 12 mm
 
-    box.dimensions.resize(3);
+    object.primitives.reserve(coarse_cloud.size());
+    object.primitive_poses.reserve(coarse_cloud.size());
 
-    box.dimensions[
-        shape_msgs::msg::SolidPrimitive::BOX_X] =
-        static_cast<double>(dimensions.x()) + 2.0 * padding;
+    for (const auto& p : coarse_cloud.points)
+    {
+        if (!std::isfinite(p.x) ||
+            !std::isfinite(p.y) ||
+            !std::isfinite(p.z))
+            continue;
 
-    box.dimensions[
-        shape_msgs::msg::SolidPrimitive::BOX_Y] =
-        static_cast<double>(dimensions.y()) + 2.0 * padding;
+        Primitive sphere;
+        sphere.type = Primitive::SPHERE;
+        sphere.dimensions = {sphere_radius};
 
-    box.dimensions[
-        shape_msgs::msg::SolidPrimitive::BOX_Z] =
-        static_cast<double>(dimensions.z()) + 2.0 * padding;
+        geometry_msgs::msg::Pose pose;
+        pose.orientation.w = 1.0;
+        pose.position.x = p.x;
+        pose.position.y = p.y;
+        pose.position.z = p.z;
 
-    geometry_msgs::msg::Pose pose;
+        object.primitives.push_back(sphere);
+        object.primitive_poses.push_back(pose);
+    }
 
-    pose.position.x = center_world.x();
-    pose.position.y = center_world.y();
-    pose.position.z = center_world.z();
+    if (object.primitives.empty())
+        return false;
 
-    pose.orientation.x = q.x();
-    pose.orientation.y = q.y();
-    pose.orientation.z = q.z();
-    pose.orientation.w = q.w();
-
-    object.primitives.push_back(box);
-    object.primitive_poses.push_back(pose);
-
-    // 6. Publish to the MoveIt planning scene.
     const bool applied =
         planning_scene_interface_.applyCollisionObject(object);
 
@@ -639,25 +590,197 @@ bool InspectProfileServer::updateWorkpieceCollision(
     {
         RCLCPP_ERROR(
             get_logger(),
-            "Failed to apply workpiece collision object");
+            "Failed to apply sphere collision object");
         return false;
     }
 
     RCLCPP_INFO(
         get_logger(),
-        "Workpiece collision box: "
-        "%.3f x %.3f x %.3f m, "
-        "%zu points",
-        box.dimensions[
-            shape_msgs::msg::SolidPrimitive::BOX_X],
-        box.dimensions[
-            shape_msgs::msg::SolidPrimitive::BOX_Y],
-        box.dimensions[
-            shape_msgs::msg::SolidPrimitive::BOX_Z],
-        valid_points);
+        "Workpiece collision spheres: %zu, radius %.3f m",
+        object.primitives.size(),
+        sphere_radius);
 
     return true;
 }
+// BOX COLLISION OBJECT
+
+// bool InspectProfileServer::updateWorkpieceCollision(
+//     const hb_perception::WorkpieceModel& workpiece)
+// {
+//     if (!workpiece.cloud || workpiece.cloud->empty())
+//         return false;
+
+//     // 1. Longitudinal direction from the smallest eigenvector
+//     //    of the surface-normal covariance.
+//     Eigen::Vector3f z =
+//         extractor_.estimateAxisFromNormals(
+//             workpiece.cloud, 0.025f);
+
+//     if (!z.allFinite() || z.norm() < 1e-6f)
+//     {
+//         RCLCPP_WARN(
+//             get_logger(),
+//             "Invalid normal-derived workpiece axis");
+//         return false;
+//     }
+
+//     z.normalize();
+
+//     // Keep the axis sign consistent with the extracted workpiece.
+//     if (z.dot(workpiece.l_axes) < 0.0f)
+//         z = -z;
+
+//     // 2. Build an orthonormal frame around the normal-derived axis.
+//     // Prefer the secondary PCA direction for cross-section orientation.
+//     Eigen::Vector3f x =
+//         workpiece.p_axes.col(1);
+
+//     x -= x.dot(z) * z;
+
+//     // If the projected PCA direction is degenerate, use a
+//     // world-axis fallback that is not parallel to z.
+//     if (!x.allFinite() || x.norm() < 1e-5f)
+//     {
+//         const Eigen::Vector3f reference =
+//             std::abs(z.dot(Eigen::Vector3f::UnitX())) < 0.9f
+//                 ? Eigen::Vector3f::UnitX()
+//                 : Eigen::Vector3f::UnitY();
+
+//         x = reference - reference.dot(z) * z;
+//     }
+
+//     x.normalize();
+
+//     Eigen::Vector3f y = z.cross(x).normalized();
+
+//     // Recompute x to remove numerical orthogonality error.
+//     x = y.cross(z).normalized();
+
+//     Eigen::Matrix3f R;
+//     R.col(0) = x;
+//     R.col(1) = y;
+//     R.col(2) = z;
+
+//     // 3. Project every finite cloud point into the new box frame.
+//     Eigen::Vector3f min_local =
+//         Eigen::Vector3f::Constant(
+//             std::numeric_limits<float>::infinity());
+
+//     Eigen::Vector3f max_local =
+//         Eigen::Vector3f::Constant(
+//             -std::numeric_limits<float>::infinity());
+
+//     std::size_t valid_points = 0;
+
+//     for (const auto& p : workpiece.cloud->points)
+//     {
+//         const Eigen::Vector3f world(p.x, p.y, p.z);
+
+//         if (!world.allFinite())
+//             continue;
+
+//         const Eigen::Vector3f local =
+//             R.transpose() * (world - workpiece.centroid);
+
+//         min_local = min_local.cwiseMin(local);
+//         max_local = max_local.cwiseMax(local);
+
+//         ++valid_points;
+//     }
+
+//     if (valid_points < 30 ||
+//         !min_local.allFinite() ||
+//         !max_local.allFinite())
+//     {
+//         RCLCPP_WARN(
+//             get_logger(),
+//             "Insufficient points for workpiece collision box");
+//         return false;
+//     }
+
+//     // 4. Dimensions and center from the actual point bounds.
+//     const Eigen::Vector3f center_local =
+//         0.5f * (min_local + max_local);
+
+//     const Eigen::Vector3f center_world =
+//         workpiece.centroid + R * center_local;
+
+//     const Eigen::Vector3f dimensions =
+//         max_local - min_local;
+
+//     constexpr double padding = 0.02;  // 20 mm on each side
+
+//     Eigen::Quaternionf q(R);
+//     q.normalize();
+
+//     // 5. Construct the MoveIt collision object.
+//     moveit_msgs::msg::CollisionObject object;
+
+//     object.header.frame_id = scene_frame_;
+//     object.header.stamp = now();
+
+//     object.id = "inspection_workpiece";
+//     object.operation =
+//         moveit_msgs::msg::CollisionObject::ADD;
+
+//     shape_msgs::msg::SolidPrimitive box;
+//     box.type = shape_msgs::msg::SolidPrimitive::BOX;
+
+//     box.dimensions.resize(3);
+
+//     box.dimensions[
+//         shape_msgs::msg::SolidPrimitive::BOX_X] =
+//         static_cast<double>(dimensions.x()) + 2.0 * padding;
+
+//     box.dimensions[
+//         shape_msgs::msg::SolidPrimitive::BOX_Y] =
+//         static_cast<double>(dimensions.y()) + 2.0 * padding;
+
+//     box.dimensions[
+//         shape_msgs::msg::SolidPrimitive::BOX_Z] =
+//         static_cast<double>(dimensions.z()) + 2.0 * padding;
+
+//     geometry_msgs::msg::Pose pose;
+
+//     pose.position.x = center_world.x();
+//     pose.position.y = center_world.y();
+//     pose.position.z = center_world.z();
+
+//     pose.orientation.x = q.x();
+//     pose.orientation.y = q.y();
+//     pose.orientation.z = q.z();
+//     pose.orientation.w = q.w();
+
+//     object.primitives.push_back(box);
+//     object.primitive_poses.push_back(pose);
+
+//     // 6. Publish to the MoveIt planning scene.
+//     const bool applied =
+//         planning_scene_interface_.applyCollisionObject(object);
+
+//     if (!applied)
+//     {
+//         RCLCPP_ERROR(
+//             get_logger(),
+//             "Failed to apply workpiece collision object");
+//         return false;
+//     }
+
+//     RCLCPP_INFO(
+//         get_logger(),
+//         "Workpiece collision box: "
+//         "%.3f x %.3f x %.3f m, "
+//         "%zu points",
+//         box.dimensions[
+//             shape_msgs::msg::SolidPrimitive::BOX_X],
+//         box.dimensions[
+//             shape_msgs::msg::SolidPrimitive::BOX_Y],
+//         box.dimensions[
+//             shape_msgs::msg::SolidPrimitive::BOX_Z],
+//         valid_points);
+
+//     return true;
+// }
 
 
 

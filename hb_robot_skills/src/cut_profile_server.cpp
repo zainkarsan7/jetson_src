@@ -324,9 +324,10 @@ namespace hb_robot_skills{
         cut_planner_->setCollisionDebugVisCallback([this](const motion::CollisionDebugEvent& event){
             publishCollisionDebug(event);
         });
+        const auto trajectory_qos = rclcpp::QoS(1).transient_local().reliable();
 
         display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
-        10
+        trajectory_qos
         //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
     );
 
