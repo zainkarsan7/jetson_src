@@ -51,4 +51,25 @@
       </Fallback>
     </Sequence>
   </BehaviorTree>
+  <TreeNodesModel>
+    <Condition ID="FaultActive"/>
+    <Condition ID="ReferenceExists"/>
+    <Condition ID="WorkpiecePoseValid"/>
+    <Condition ID="ValidateTaskState"/>
+    <Condition ID="KerfVerified"/>
+    <Condition ID="KerfInconclusive"/>
+    <Condition ID="ResidualDetected"/>
+    <Condition ID="ValidateKerf"/>
+
+    <Action ID="InspectProfile"/>
+    <Action ID="AwaitGeometry"/>
+    <Action ID="RevalidateWorkpiece"/>
+    <Action ID="PlanCut"/>
+    <Action ID="ExecuteCut"/>
+    <Action ID="InspectKerf"/>
+    <Action ID="PlanRecut"/>
+    <Action ID="ExecuteRecut"/>
+    <Action ID="Escape"/>
+  </TreeNodesModel>
+
 </root>

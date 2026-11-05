@@ -1,5 +1,6 @@
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <behaviortree_cpp_v3/action_node.h>
+#include <behaviortree_cpp_v3/loggers/bt_zmq_publisher.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <hb_robot_interfaces/recovery.hpp>
@@ -241,18 +242,38 @@ int main(int argc,char** argv) {
       result.status,result.message.c_str(),result.torch_confirmed_off,result.robot_stationary);
     return result.torch_confirmed_off && result.robot_stationary;
   });
-  rclcpp::executors::MultiThreadedExecutor executor;executor.add_node(node);
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
   std::thread spin([&]{executor.spin();});
   int code=1;
   try {
     const auto file=node->declare_parameter<std::string>("tree_file","");
     auto tree=factory.createTreeFromFile(file);
+
+    /// monitoring in groot:
+    constexpr unsigned max_msg_per_second = 25;
+    constexpr unsigned publisher_port = 1666;
+    constexpr unsigned server_port = 1667;
+
+    BT::PublisherZMQ groot_publisher(
+      tree,
+      max_msg_per_second,
+      publisher_port,
+      server_port
+    );
+    RCLCPP_INFO(node->get_logger(), "groot monitoring enabled, PUB: %u, SERVER: %u", publisher_port, server_port);
     BT::NodeStatus status=BT::NodeStatus::RUNNING;
     while(rclcpp::ok() && status==BT::NodeStatus::RUNNING) {
-      status=tree.tickRoot();std::this_thread::sleep_for(50ms);
+      status=tree.tickRoot();
+      std::this_thread::sleep_for(50ms);
     }
-    tree.haltTree();code=status==BT::NodeStatus::SUCCESS?0:1;
+    tree.haltTree();
+    code=status==BT::NodeStatus::SUCCESS?0:1;
     RCLCPP_INFO(node->get_logger(),"Recovery tree finished: %s",code?"unverified / intervention required":"separation verified");
-  } catch(const std::exception& e){RCLCPP_ERROR(node->get_logger(),"%s",e.what());}
-  executor.cancel();spin.join();rclcpp::shutdown();return code;
+  } catch(const std::exception& e){
+    RCLCPP_ERROR(node->get_logger(),"%s",e.what());}
+  executor.cancel();
+  spin.join();
+  rclcpp::shutdown();
+  return code;
 }
