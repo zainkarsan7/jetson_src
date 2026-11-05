@@ -3,7 +3,7 @@
 #include <moveit/robot_state/robot_state.h>
 #include "hb_robot_skills/motion/torch_controller.hpp"
 #include <geometry_msgs/msg/pose_stamped.hpp>
-
+#include <hb_robot_interfaces/msg/torch_status.hpp>
 #include <chrono>
 #include <cmath>
 #include <atomic>
@@ -50,6 +50,16 @@ public:
       stop_requested_.store(true);
       if (move_group_) move_group_->stop();
     });
+
+    status_pub_ = create_publisher<hb_robot_interfaces::msg::TorchStatus>(
+                "/cut_debug/torch_status",
+                rclcpp::QoS(10)
+            );
+    status_timer_ = create_wall_timer(std::chrono::milliseconds(100),
+            [this](){
+                publishDebugStatus();
+            });
+
   }
 
   void run() {
@@ -57,7 +67,7 @@ public:
       throw std::runtime_error("mode must be dry, io_cycle, or cut");
     if (axis_ != "x" && axis_ != "y" && axis_ != "z")
       throw std::runtime_error("axis must be x, y, or z");
-    if (!std::isfinite(distance_m_) || std::abs(distance_m_) > 0.1 || distance_m_ == 0.0)
+    if (!std::isfinite(distance_m_) || std::abs(distance_m_) > 0.5 || distance_m_ == 0.0)
       throw std::runtime_error("distance_m must be nonzero and within +/-0.1 m");
     if (!(velocity_scale_ > 0.0 && velocity_scale_ <= 1.0) ||
         !(acceleration_scale_ > 0.0 && acceleration_scale_ <= 1.0))
@@ -190,12 +200,35 @@ private:
   void printStatus(const char* stage) {
     const auto t = torch_->snapshot();
     RCLCPP_INFO(get_logger(),
-      "%s: state=%d fresh=%d DO=%d DI_transfer=%d command=%d fault=%d",
+      "%s: state=%d fresh=%d DO=%d DI_arc=%d AnIn=%.3f AnDom=%d command=%d fault=%d",
       stage, static_cast<int>(torch_->state()), torch_->hasFreshIO(),
       t.output_on.has_value() ? static_cast<int>(*t.output_on) : -1,
       t.transfer_detected.has_value() ? static_cast<int>(*t.transfer_detected) : -1,
-      t.command_on, torch_->hasFault());
+      t.analog_value.has_value() ? static_cast<double>(*t.analog_value): 0.0,
+      t.analog_domain.has_value() ? static_cast<int>(*t.analog_domain) : -1,
+      t.command_on, torch_->hasFault())
+      ;
   }
+
+   void publishDebugStatus(){
+
+        const auto data = torch_->snapshot();
+
+        hb_robot_interfaces::msg::TorchStatus msg;
+        msg.stamp = data.stamp;
+        msg.io_connected = torch_->hasFreshIO();
+        msg.command_on = data.command_on;
+        msg.output_on = data.output_on.value_or(false);
+        msg.transfer_detected = data.transfer_detected.value_or(false);
+        msg.analog_valid = data.analog_value.has_value();
+        msg.analog_input_value = data.analog_value.value_or(0.0);
+        msg.analog_domain = static_cast<uint8_t>(data.analog_domain.value_or(0));        
+        msg.arc_voltage_valid = data.arc_voltage_v.has_value();
+        msg.arc_voltage_v = data.arc_voltage_v.value_or(0.0);
+        msg.ready = false;
+        msg.fault =torch_->hasFault();
+        status_pub_->publish(msg);
+    }
 
   void shutdownOrThrow(const char* stage) {
     const auto result = torch_->requestShutdown(
@@ -246,6 +279,10 @@ private:
   std::atomic<bool> stop_requested_{false};
   std::unique_ptr<TorchController> torch_;
   std::shared_ptr<MoveGroup> move_group_;
+  rclcpp::Publisher<hb_robot_interfaces::msg::TorchStatus>::SharedPtr status_pub_;
+  rclcpp::TimerBase::SharedPtr status_timer_;
+
+
 
 };
 
