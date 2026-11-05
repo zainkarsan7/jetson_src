@@ -139,8 +139,22 @@ hb_motion
 hb_robot_perception::hb_perception
 )
 
+add_executable(inspect_cut_server src/inspect_cut_server.cpp)
+ament_target_dependencies(inspect_cut_server
+  rclcpp rclcpp_action geometry_msgs hb_robot_interfaces Eigen3 tf2_eigen
+  sensor_msgs moveit_msgs moveit_ros_planning_interface)
+target_link_libraries(inspect_cut_server hb_motion hb_robot_perception::hb_perception)
+
+add_executable(task_state_server src/task_state_server.cpp)
+ament_target_dependencies(task_state_server rclcpp hb_robot_interfaces moveit_msgs std_msgs)
+target_link_libraries(task_state_server hb_robot_perception::hb_perception)
+add_executable(revalidate_workpiece_server src/revalidate_workpiece_server.cpp)
+ament_target_dependencies(revalidate_workpiece_server rclcpp rclcpp_action hb_robot_interfaces
+  moveit_ros_planning_interface tf2_eigen)
+target_link_libraries(revalidate_workpiece_server hb_robot_perception::hb_perception)
+
 add_executable(cut_profile_server
-src/cut_profile_server.cpp)
+src/cut_profile_server.cpp src/cut_recovery.cpp)
 
 ament_target_dependencies(cut_profile_server 
   rclcpp
@@ -164,8 +178,11 @@ hb_robot_perception::hb_perception
 
 install(
   TARGETS
+    task_state_server
+    revalidate_workpiece_server
     inspect_scene_server
     inspect_profile_server
+    inspect_cut_server
     approve_motion_server
     cut_profile_server
     hb_motion
@@ -183,6 +200,10 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(recovery_test test/recovery_test.cpp)
+  target_link_libraries(recovery_test hb_motion hb_robot_perception::hb_perception)
+  ament_add_gtest(cut_inspection_test test/cut_inspection_test.cpp)
+  target_link_libraries(cut_inspection_test hb_motion hb_robot_perception::hb_perception)
   find_package(urdf REQUIRED)
   find_package(srdfdom REQUIRED)
   ament_add_gtest(cut_graph_planner_test test/cut_graph_planner_test.cpp)

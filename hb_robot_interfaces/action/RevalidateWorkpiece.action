@@ -1,0 +1,11 @@
+uint64 expected_pose_version
+---
+bool localized
+ProfileEstimate estimate
+float64 registration_fitness
+float64 translation_delta
+float64 rotation_delta
+bool poorly_constrained
+string message
+---
+string stage

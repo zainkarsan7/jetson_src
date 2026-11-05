@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <thread>
 #include <mutex>
 #include <thread>
@@ -73,6 +74,7 @@ class InspectProfileServer: public rclcpp::Node{
 
 
     ///APPROVAL STUFF
+        rclcpp::Publisher<hb_robot_interfaces::msg::WorkpieceReference>::SharedPtr reference_pub_;
         rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
         std::mutex approval_mutex_;
         std::condition_variable approval_cv_;

@@ -1,35 +1,54 @@
 <root main_tree_to_execute="MainTree">
-    <BehaviorTree ID="MainTree">
-    <Sequence name="InspectAndPlan">
-    <InspectProfile
-     max_views = "10"     
-     samples_per_view = "3"
-     depth_range = "0.75"   
-     camera_standoff = "0.4"
-     rms_error = "{profile_rms}"
-     inlier_fraction = "{profile_inlier}"
-     coverage = "{profile_coverage}"
-     rms_target = "0.01"
-     inlier_fraction_target = "0.3"
-     coverage_target = "0.2"
-     />
-    
-    <ProfileValid
-        rms_error = "{profile_rms}"
-        inlier_fraction = "{profile_inlier}"
-        coverage = "{profile_coverage}"
-        rms_max = "0.01"
-        inlier_min = "0.3"
-        coverage_min = "0.2"
-    />
-
-
-    <CutProfile 
-        standoff = "0.01"
-        ang_tol = "0.3"
-        pos_tol = "0.01"
-        execute = "true"
-        />
+  <!-- The server's supervision callback requests OFF/stop independently of ticks.
+       The fallback below handles containment outcomes, never automatic resumption. -->
+  <BehaviorTree ID="MainTree">
+    <Fallback>
+      <ReactiveSequence>
+        <Inverter><FaultActive/></Inverter>
+        <Sequence>
+          <Fallback>
+            <Sequence><ReferenceExists/><SubTree ID="EnsureGeometryValid"/></Sequence>
+            <Sequence><Inverter><ReferenceExists/></Inverter><InspectProfile/><AwaitGeometry/></Sequence>
+          </Fallback>
+          <SubTree ID="EnsureGeometryValid"/>
+          <PlanCut/>
+          <ValidateTaskState/>
+          <ExecuteCut/>
+          <SubTree ID="EnsureSeparationVerified"/>
+        </Sequence>
+      </ReactiveSequence>
+      <Sequence><Escape/><AlwaysFailure/></Sequence>
+    </Fallback>
+  </BehaviorTree>
+  <BehaviorTree ID="EnsureGeometryValid">
+    <Fallback>
+      <WorkpiecePoseValid/>
+      <Sequence><RevalidateWorkpiece/><AwaitGeometry/></Sequence>
+    </Fallback>
+  </BehaviorTree>
+  <BehaviorTree ID="ObserveAndEvaluate">
+    <Sequence><InspectKerf/><ValidateKerf/></Sequence>
+  </BehaviorTree>
+  <BehaviorTree ID="EnsureSeparationVerified">
+    <Sequence>
+      <SubTree ID="ObserveAndEvaluate"/>
+      <Fallback>
+        <KerfVerified/>
+        <Sequence>
+          <KerfInconclusive/>
+          <SubTree ID="ObserveAndEvaluate"/>
+          <KerfVerified/>
+        </Sequence>
+        <Sequence>
+          <ResidualDetected/>
+          <SubTree ID="EnsureGeometryValid"/>
+          <PlanRecut/>
+          <ValidateTaskState/>
+          <ExecuteRecut/>
+          <SubTree ID="ObserveAndEvaluate"/>
+          <KerfVerified/>
+        </Sequence>
+      </Fallback>
     </Sequence>
-    </BehaviorTree>
+  </BehaviorTree>
 </root>

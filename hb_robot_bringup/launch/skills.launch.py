@@ -89,6 +89,16 @@ def generate_launch_description():
             description="Force home between cuts; false compares direct and home routes by planned travel cost."),
         DeclareLaunchArgument("return_home_after_last_cut", default_value="true",
             description="Return to the initial robot state after the final retract."),
+        DeclareLaunchArgument("inspect_cut_preview_only", default_value="true",
+            description="Preview inspection views; false permits post-cut camera motion."),
+        DeclareLaunchArgument("platform_imu_topic", default_value="/hb_robot_lidar/imu",
+            description="Independent platform-fixed IMU; never use robot-mounted /k4a/imu here."),
+        Node(package="hb_robot_skills", executable="task_state_server", output="screen",
+             parameters=[{"platform_imu_topic": LaunchConfiguration("platform_imu_topic")}]),
+        Node(package="hb_robot_skills", executable="revalidate_workpiece_server", output="screen"),
+        Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
+             parameters=[moveit_config.to_dict(), {
+                 "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool)}]),
         inspect_scene_server,
         cut_profile_server,
         inspect_profile_server

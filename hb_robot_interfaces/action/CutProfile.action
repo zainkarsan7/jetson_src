@@ -3,10 +3,28 @@ float32 standoff
 float32 ang_tol
 float32 pos_tol
 bool execute
+# A plan_id requests execution of exactly that stored plan, never replanning.
+string plan_id
+string cut_id
+# Empty for a full cut. Recut uses original feature geometry and a stored parent.
+string parent_plan_id
+CutInterval[] intervals
+uint64 geometry_version
+uint64 pose_version
+uint64 scene_version
 ---
 #Result
 bool success
 string message
+string plan_id
+string cut_id
+string parent_plan_id
+string[] required_segments
+bool executed
+bool interrupted
+uint32 completed_segments
+string active_segment
+uint64 execution_version
 ---
 #Feedback
 string stage

@@ -126,6 +126,17 @@ class TorchController{
 
         }
 
+    // Nonblocking containment path, callable from supervision callbacks. This is
+    // a process stop request, not a hardware emergency-stop guarantee. Feedback
+    // must still confirm output OFF before a recovery motion is permitted.
+    void emergencyShutdown(const std::string& reason) {
+        { std::lock_guard<std::mutex> lock(mutex_); latchFaultLocked(reason); }
+        if (!io_client_->service_is_ready()) return;
+        auto request=std::make_shared<ur_msgs::srv::SetIO::Request>();
+        request->fun=1; request->pin=config_.torch_output_pin; request->state=0.0;
+        io_client_->async_send_request(request, [](rclcpp::Client<ur_msgs::srv::SetIO>::SharedFuture){});
+    }
+
     bool isArcEstablished() const{
         std::lock_guard<std::mutex>lock(mutex_);
         return state_==State::ESTABLISHED || state_==State::CUTTING;

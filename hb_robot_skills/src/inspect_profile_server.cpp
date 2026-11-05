@@ -1,3 +1,4 @@
+#include <pcl_conversions/pcl_conversions.h>
 #include "hb_robot_skills/inspect_profile_server.hpp"
 #include <algorithm>
 #include <cmath>
@@ -1381,6 +1382,22 @@ void InspectProfileServer::execute(
     }
     
 
+    if(!waitForStability()) {
+      fail(InspectProfile::Result::MOTION_FAILED,"No stable reference publication window");
+      return;
+    }
+    // Only final successful inspection creates a localization reference. Intermediate
+    // nearest-cluster estimates must never silently restore execution permission.
+    if (!reference_pub_) reference_pub_ =
+      create_publisher<hb_robot_interfaces::msg::WorkpieceReference>(
+        "/workpiece_reference", rclcpp::QoS(1).transient_local());
+    hb_robot_interfaces::msg::WorkpieceReference reference;
+    reference.estimate = matcher_.getProfileEstimateMsg(
+      scene_frame_, estimate->section, estimate->match);
+    reference.estimate.header.stamp = now();
+    pcl::toROSMsg(*estimate->workpiece.cloud, reference.cloud);
+    reference.cloud.header = reference.estimate.header;
+    reference_pub_->publish(reference);
     result->success= true;
     result->result_code =
         InspectProfile::Result::SUCCESS;

@@ -15,7 +15,14 @@ find_package(sensor_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CutInterval.msg"
+  "msg/KerfSegmentEvidence.msg"
+  "msg/KerfEvidence.msg"
+  "msg/WorkpieceReference.msg"
+  "action/RevalidateWorkpiece.action"
+  "action/Escape.action"
   "msg/CutTraj.msg"
+  "msg/KerfObservation.msg"
   "msg/TorchStatus.msg"
   "msg/TaskState.msg"
   "msg/ProfileEstimate.msg"
@@ -31,6 +38,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs sensor_msgs moveit_msgs
 )
 
+install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+ament_export_include_directories(include)
 ament_export_dependencies(rosidl_default_runtime)
 # uncomment the following section in order to fill in
 # further dependencies manually.

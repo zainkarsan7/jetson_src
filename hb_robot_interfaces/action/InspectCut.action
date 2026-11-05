@@ -1,12 +1,17 @@
-# Goal
-geometry_msgs/Pose viewpoints
+# Known transverse cut frame: profile XY, extrusion +Z. Must be in planning frame.
+hb_robot_interfaces/ProfileEstimate estimate
+string cut_id
+string[] required_segments
+uint64 geometry_version
+uint64 pose_version
+uint64 execution_version
+# Zero selects server defaults.
+float64 sample_spacing
+float64 camera_standoff
 uint32 samples_per_viewpoint
-float64 max_ang_vel
-
 ---
-# Result
+# Success means acquisition completed, NEVER verified separation.
 bool success
-
 uint8 SUCCESS=0
 uint8 PLANNING_FAILED=1
 uint8 MOTION_FAILED=2
@@ -14,14 +19,22 @@ uint8 STABILITY_TIMEOUT=3
 uint8 ACQUISITION_FAILED=4
 uint8 REGISTRATION_FAILED=5
 uint8 CANCELLED=6
-
 uint8 result_code
-
+uint8 NOT_EVALUATED=0
+uint8 INCONCLUSIVE=1
+uint8 VERIFIED=2
+uint8 RESIDUAL=3
+uint8 interpretation
 bool cut_complete
 float32 confidence
-
+uint32 viewpoints_requested
+uint32 viewpoints_captured
+sensor_msgs/PointCloud2 kerf_cloud
+KerfEvidence evidence
+string message
 ---
-# Feedback
 uint32 current_viewpoint
+uint32 total_viewpoints
+string feature_name
 geometry_msgs/Pose current_pose
-uint8 samples_acquired
+uint32 samples_acquired

@@ -16,6 +16,9 @@
 #include "hb_robot_perception/profile_library.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <atomic>
+#include <hb_robot_interfaces/recovery.hpp>
+#include <hb_robot_interfaces/action/escape.hpp>
+#include <std_msgs/msg/u_int64.hpp>
 #include <condition_variable>
 #include <unordered_map>
 #include <string>
@@ -151,6 +154,40 @@ namespace hb_robot_skills{
             const moveit::core::RobotState& target_state
         );
         
+        using TaskState = hb_robot::recovery::State;
+        struct StoredPlan {
+            motion::ExecutablePlan executable;
+            hb_perception::ProfileModel geometry;
+            TaskState versions;
+            std::string cut_id, parent_id;
+            std::vector<hb_robot::recovery::Interval> intervals;
+            bool consumed=false;
+        };
+        std::unordered_map<std::string, StoredPlan> stored_plans_;
+        std::unordered_map<std::string, std::vector<hb_robot::recovery::Interval>> attempted_;
+        uint64_t next_plan_=0, execution_version_=0;
+        uint32_t completed_segments_=0;
+        std::string active_segment_;
+        mutable std::mutex task_mutex_;
+        TaskState task_state_, execution_state_;
+        std::chrono::steady_clock::time_point task_received_{};
+        std::atomic<bool> motion_active_{false}, retreat_active_{false}, busy_{false};
+        bool process_enabled_=false;
+        rclcpp::Subscription<TaskState>::SharedPtr task_sub_;
+        rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr execution_pub_;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr invalidate_pose_pub_;
+        rclcpp::TimerBase::SharedPtr supervision_timer_;
+        rclcpp_action::Server<hb_robot_interfaces::action::Escape>::SharedPtr escape_server_;
+        std::thread worker_, escape_worker_;
+        std::atomic<bool> escape_busy_{false};
+        bool taskPermitsExecution(TaskState* snapshot=nullptr) const;
+        void executeStored(const std::string& id,
+            const std::shared_ptr<GoalHandleCutProfile>& handle);
+        void escape(const std::shared_ptr<rclcpp_action::ServerGoalHandle<
+            hb_robot_interfaces::action::Escape>>& handle);
+        public:
+        ~CutProfileServer() override;
+        private:
         std::string planning_group_;
         std::string plasma_link_;
         double planning_time_;

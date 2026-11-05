@@ -1,0 +1,16 @@
+# False always contains the fault without attempting motion.
+bool allow_retreat
+float64 retreat_distance
+---
+uint8 RETRACTED=0
+uint8 STOPPED_IN_PLACE=1
+uint8 MOTION_NOT_PERMITTED=2
+uint8 NO_SAFE_PATH=3
+uint8 EXECUTION_FAILED=4
+uint8 status
+bool torch_confirmed_off
+bool robot_stationary
+bool pose_requires_revalidation
+string message
+---
+string stage

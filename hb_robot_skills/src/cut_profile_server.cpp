@@ -1,3 +1,4 @@
+#include <set>
 #include "hb_robot_skills/cut_profile_server.hpp"
 #include <chrono>
 #include <thread>
@@ -45,7 +46,54 @@ namespace hb_robot_skills{
         }
         get_parameter("skip_cutting_motion",skip_motion_);
 
+        // A restarted cutting server must not reuse an earlier evidence epoch.
+        execution_version_=static_cast<uint64_t>(now().nanoseconds());
+        process_enabled_=declare_parameter<bool>("enable_cutting_process",false);
+        task_sub_=create_subscription<TaskState>("/task_state",rclcpp::QoS(1).transient_local(),
+          [this](TaskState::ConstSharedPtr msg) {std::lock_guard<std::mutex> lock(task_mutex_);
+            task_state_=*msg;task_received_=std::chrono::steady_clock::now();});
+        invalidate_pose_pub_=create_publisher<std_msgs::msg::Bool>("/workpiece_pose_invalidated",10);
+        execution_pub_=create_publisher<std_msgs::msg::UInt64>(
+          "/cut_profile/execution_version",rclcpp::QoS(1).transient_local());
+        supervision_timer_=create_wall_timer(20ms,[this]{
+          if(retreat_active_) {
+            TaskState state;
+            {std::lock_guard<std::mutex> lock(task_mutex_);state=task_state_;
+              if(std::chrono::steady_clock::now()-task_received_>500ms) state.supervision_valid=false;}
+            const auto t=torch_controller_->snapshot();
+            if(!state.supervision_valid || !state.imu_stable || !state.workpiece_pose_valid ||
+               state.motion_fault_active || !torch_controller_->hasFreshIO() ||
+               t.output_on!=std::optional<bool>(false) ||
+               t.transfer_detected!=std::optional<bool>(false) ||
+               !hb_robot::recovery::sameVersions(state,execution_state_)) {
+              cut_stop_requested_=true;torch_controller_->emergencyShutdown("Retreat supervision lost");
+              if(move_group_) move_group_->stop();
+            }
+          }
+          if(!motion_active_) return;
+          TaskState current;
+          if(!taskPermitsExecution(&current) ||
+             !hb_robot::recovery::sameVersions(current,execution_state_)) {
+            cut_stop_requested_=true;
+            torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
+            if(move_group_) move_group_->stop();
+          }
+        });
+        using Escape=hb_robot_interfaces::action::Escape;
+        escape_server_=rclcpp_action::create_server<Escape>(this,"escape",
+          [this](const auto&,auto goal) {
+            if(!std::isfinite(goal->retreat_distance) || goal->retreat_distance<0 ||
+               goal->retreat_distance>0.10) return rclcpp_action::GoalResponse::REJECT;
+            bool idle=false;
+            if(!escape_busy_.compare_exchange_strong(idle,true)) return rclcpp_action::GoalResponse::REJECT;
+            requestCutStop(); return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+          },
+          [this](auto){requestCutStop();return rclcpp_action::CancelResponse::ACCEPT;},
+          [this](auto h){if(escape_worker_.joinable()) escape_worker_.join();
+            escape_worker_=std::thread([this,h]{escape(h);escape_busy_=false;});});
+
         TorchIOConfig torch_config_;
+        torch_config_.ignition_enabled=process_enabled_;
 
         if(!has_parameter("torch_output_pin")){
             torch_config_.torch_output_pin = declare_parameter<int>("torch_output_pin",1);
@@ -69,6 +117,7 @@ namespace hb_robot_skills{
         torch_controller_->setFaultCallback([this](const std::string& reason){
             RCLCPP_ERROR(get_logger(), "TORCH PROCESS FAULT %s", reason.c_str());
             cut_stop_requested_.store(true);
+            torch_controller_->emergencyShutdown(reason);
             if(move_group_){
                 move_group_->stop();
             }
@@ -302,28 +351,29 @@ namespace hb_robot_skills{
     rclcpp_action::GoalResponse CutProfileServer::handleGoal(const rclcpp_action::GoalUUID & , 
     std::shared_ptr<const CutProfile::Goal> goal){
         
-        // RCLCPP_INFO(get_logger(),"recieved inspection goal with %zu viewpoints", goal->viewpoints.size());
-        // if (goal-> < 1){
-        //     RCLCPP_WARN(get_logger(), "Rejecting, no viewpoints");
-        //     return rclcpp_action::GoalResponse::REJECT;
-        // }
+        if(escape_busy_ || goal->cut_id.empty() ||
+           !std::isfinite(goal->standoff) || goal->standoff<0 ||
+           !std::isfinite(goal->pos_tol) || goal->pos_tol<=0 ||
+           !std::isfinite(goal->ang_tol) || goal->ang_tol<=0)
+          return rclcpp_action::GoalResponse::REJECT;
+        for(const auto& i:goal->intervals)
+          if(!hb_robot::recovery::validInterval(i)) return rclcpp_action::GoalResponse::REJECT;
+        if(!goal->intervals.empty() && goal->parent_plan_id.empty())
+          return rclcpp_action::GoalResponse::REJECT;
+        bool idle=false;
+        if(!busy_.compare_exchange_strong(idle,true)) return rclcpp_action::GoalResponse::REJECT;
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-
     }
 
     void CutProfileServer::requestCutStop(){
 
         cut_stop_requested_.store(true);
-        if(torch_controller_){
-            torch_controller_->requestShutdown(std::chrono::milliseconds(1500));
-        }
-
-        if(move_group_){
-            move_group_->stop();
-        }
-
-
+        // Stop requests precede any feedback wait and never wait for a BT tick.
+        if(torch_controller_) torch_controller_->emergencyShutdown("Cut stop requested");
+        if(move_group_) move_group_->stop();
+        approval_cv_.notify_all();
     }
+
     rclcpp_action::CancelResponse CutProfileServer::handleCancel(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
         RCLCPP_INFO(get_logger(),"cancel requested");
 
@@ -338,12 +388,18 @@ namespace hb_robot_skills{
     }
 
     void CutProfileServer::handleAccepted(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
-        std::thread{
-            std::bind(&CutProfileServer::execute,
-            this,
-            goal_handle        
-            )
-        }.detach();
+        if(worker_.joinable()) worker_.join();
+        worker_=std::thread([this,goal_handle]{
+          try { execute(goal_handle); }
+          catch(const std::exception& e) {
+            requestCutStop();
+            auto result=std::make_shared<CutProfile::Result>();result->message=e.what();
+            result->interrupted=motion_active_;motion_active_=false;
+            if(goal_handle->is_canceling()) goal_handle->canceled(result);
+            else goal_handle->abort(result);
+          }
+          busy_=false;
+        });
     }
 
     void CutProfileServer::profileEstimateCallback(
@@ -628,18 +684,18 @@ namespace hb_robot_skills{
 
                 std::unique_lock<std::mutex> lock(approval_mutex_);
 
-                approval_cv_.wait(lock, [&]() {
-                    return motion_approved_ ||
-                        motion_rejected_ ||
-                        goal_handle->is_canceling() ||
-                        !rclcpp::ok();
-                });
+                // Poll validity as well as approval: Escape must not wait behind
+                // an indefinitely blocked approval on the shared execution mutex.
+                while(!motion_approved_ && !motion_rejected_ &&
+                      !goal_handle->is_canceling() && !cut_stop_requested_ &&
+                      !escape_busy_ && rclcpp::ok() && taskPermitsExecution())
+                    approval_cv_.wait_for(lock, std::chrono::milliseconds(100));
 
                 if (goal_handle->is_canceling()) {
                     return MotionOutcome::CANCELED;
                 }
 
-                if (!rclcpp::ok()) {
+                if (!rclcpp::ok() || cut_stop_requested_ || escape_busy_ || !taskPermitsExecution()) {
                     return MotionOutcome::FAILED;
                 }
 
@@ -657,9 +713,8 @@ namespace hb_robot_skills{
         const std::string& description
     ){
 
-        if(goal_handle->is_canceling()){
-            return MotionOutcome::CANCELED;
-        }
+        if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
+        if(cut_stop_requested_ || !taskPermitsExecution()) return MotionOutcome::FAILED;
         RCLCPP_INFO(
         get_logger(),
         "Executing: %s",
@@ -672,6 +727,7 @@ namespace hb_robot_skills{
     if(goal_handle->is_canceling()){
         return MotionOutcome::CANCELED;
     }
+    if(cut_stop_requested_ || !taskPermitsExecution()) return MotionOutcome::FAILED;
     if(!static_cast<bool>(execution_result)){
         
         RCLCPP_ERROR(
@@ -779,6 +835,7 @@ namespace hb_robot_skills{
                 const std::shared_ptr<GoalHandleCutProfile>goal_handle){
 
         for (const auto& cut: executable_plan_.cuts){
+            active_segment_=cut.name;
             RCLCPP_INFO(
             get_logger(),
             "Starting cut: %s",
@@ -799,8 +856,7 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
-            outcome = run(cut.process.cut,"cut");
-            // outcome = executeCut(cut,goal_handle);
+            outcome = process_enabled_ ? executeCut(cut,goal_handle) : run(cut.process.cut,"cut (torch disabled)");
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
@@ -809,6 +865,7 @@ namespace hb_robot_skills{
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
+            ++completed_segments_;
             if (cut.transit_out) {
                 outcome = run(*cut.transit_out, "return home");
                 if (outcome != MotionOutcome::SUCCESS) return outcome;
@@ -827,6 +884,8 @@ namespace hb_robot_skills{
 
         //un pack / get the goal
         auto const goal = goal_handle->get_goal();
+
+        if(!goal->plan_id.empty()) {executeStored(goal->plan_id,goal_handle);return;}
 
         //make empty result
         auto result = std::make_shared<CutProfile::Result>();
@@ -858,6 +917,13 @@ namespace hb_robot_skills{
             return true;
         };
 
+        TaskState planning_versions;
+        if(!taskPermitsExecution(&planning_versions) ||
+           goal->geometry_version!=planning_versions.geometry_version ||
+           goal->pose_version!=planning_versions.pose_version ||
+           goal->scene_version!=planning_versions.scene_version) {
+          fail(0,"Fresh validated geometry and matching task versions required");return;
+        }
         publishFeedback(goal_handle,"acquiring estimate");
 
         const auto estimate_opt = latestProfileEstimate();
@@ -1024,7 +1090,45 @@ namespace hb_robot_skills{
             return;
         }
         RCLCPP_INFO(get_logger(), "cut entering geo planner");
-        const auto plan_opt = cut_planner_->plan(estimate,*profile_opt,request,*current_state,scene_snapshot);
+        auto geometry=*profile_opt;
+        if(!goal->intervals.empty()) {
+          const auto parent=stored_plans_.find(goal->parent_plan_id);
+          if(parent==stored_plans_.end() || parent->second.cut_id!=goal->cut_id ||
+             parent->second.versions.geometry_version!=planning_versions.geometry_version) {
+            fail(0,"Unknown parent cut or changed reference geometry");return;
+          }
+          // Regenerate process entry/exit from original geometry. Never execute a
+          // trajectory slice: piercing, standoff, IK and collision checks run again.
+          geometry=parent->second.geometry;
+          std::vector<hb_perception::ProfileCutFeature> selected;
+          std::set<std::string> seen;
+          for(const auto& interval:goal->intervals) {
+            if(!seen.insert(interval.segment_id).second) {fail(0,"Merge residual bins per feature first");return;}
+            auto feature=std::find_if(geometry.cut_features.begin(),geometry.cut_features.end(),
+              [&](const auto& f){return f.name==interval.segment_id;});
+            const auto executed_feature=std::find_if(parent->second.executable.cuts.begin(),
+              parent->second.executable.cuts.end(),[&](const auto& c){return c.name==interval.segment_id;});
+            if(feature==geometry.cut_features.end() ||
+               executed_feature==parent->second.executable.cuts.end()) {
+              fail(0,"Residual feature not in original planned path");return;
+            }
+            for(const auto& used:attempted_[goal->cut_id])
+              if(hb_robot::recovery::overlaps(interval,used)) {fail(0,"Residual region already attempted");return;}
+            auto part=*feature;
+            if(part.type==hb_perception::ProfileCutFeatureType::Web) {
+              const Eigen::Vector2f tangent=(part.end-part.start).normalized();
+              part.start+=0.5f*request.torch_diameter*tangent;
+              part.end-=0.5f*request.torch_diameter*tangent;
+            }
+            const Eigen::Vector2f delta=part.end-part.start;
+            part.end=part.start+static_cast<float>(interval.s1)*delta;
+            part.start+=static_cast<float>(interval.s0)*delta;
+            selected.push_back(part);
+          }
+          geometry.cut_features=std::move(selected);
+          request.torch_diameter=0; // End clearance was applied before interval slicing.
+        }
+        const auto plan_opt = cut_planner_->plan(estimate,geometry,request,*current_state,scene_snapshot);
         if(!plan_opt){
             result->success = false;
             result->message= "planner failed";
@@ -1055,6 +1159,32 @@ namespace hb_robot_skills{
                    generated.stats.attempts, generated.stats.ik_failures, generated.stats.collision_failures,
                    generated.stats.joint_limit_failures, generated.stats.joint_jump_failures,
                    generated.stats.tcp_error_failures, generated.stats.duplicate_candidates);
+               if(!goal->intervals.empty()) {
+                 const auto& parent=stored_plans_.at(goal->parent_plan_id);
+                 const auto old=std::find_if(parent.executable.cuts.begin(),parent.executable.cuts.end(),
+                   [&](const auto& c){return c.name==segment.name;});
+                 const auto interval=std::find_if(goal->intervals.begin(),goal->intervals.end(),
+                   [&](const auto& i){return i.segment_id==segment.name;});
+                 if(old!=parent.executable.cuts.end() && interval!=goal->intervals.end()) {
+                   const auto& trajectory=old->process.cut.trajectory_.joint_trajectory;
+                   if(!trajectory.points.empty()) {
+                     // Sample index is only a warm-start heuristic, not a claim
+                     // that time or joint distance equals Cartesian arc length.
+                     const size_t index=static_cast<size_t>(interval->s0*(trajectory.points.size()-1));
+                     const auto& positions=trajectory.points[index].positions;
+                     if(positions.size()==trajectory.joint_names.size()) {
+                       auto seeded=segment;
+                       seeded.start_state=std::make_shared<moveit::core::RobotState>(arbitrary_start_state);
+                       for(size_t j=0;j<positions.size();++j)
+                         seeded.start_state->setVariablePosition(trajectory.joint_names[j],positions[j]);
+                       seeded.start_state->update();
+                       auto warm=process_generator_->generate(seeded,arbitrary_start_state,scene_snapshot);
+                       generated.candidates.insert(generated.candidates.end(),
+                         std::make_move_iterator(warm.candidates.begin()),std::make_move_iterator(warm.candidates.end()));
+                     }
+                   }
+                 }
+               }
                if(generated.candidates.empty()){
                 fail(0,"no process candidates generated");
                 return;
@@ -1199,58 +1329,24 @@ namespace hb_robot_skills{
         publishVisualization(plan,estimate.header.frame_id);
         publishFeedback(goal_handle,"visualizing, cut plan ready");
 
-            // cutting actions happen below now that cuts are planned
-        if(skip_motion_ ||  !goal->execute){
-            result->success = true;
-            result->message= "skipping motion, dry run planned not executed";
-            goal_handle->succeed(result);
-            return;
-
+        TaskState current_versions;
+        if(!taskPermitsExecution(&current_versions) ||
+           !hb_robot::recovery::sameVersions(planning_versions,current_versions) || canceled()) {
+          if(!goal_handle->is_canceling()) fail(0,"State changed during planning");return;
         }
-
-        if(canceled()){
-            return;
-        }
-        const auto approval = waitForPlanApproval(goal_handle);
-        if(approval != MotionOutcome::SUCCESS){
-            if(approval == MotionOutcome::CANCELED){
-                canceled();
-                return;
-            }
-            fail(
-                0,
-                approval == MotionOutcome::REJECTED
-            ? "Cutting plan rejected"
-            : "Cutting plan approval failed"
-            );
-            return;  
-        }
-        // maybe revalidate scene planning here
-        
-        const auto execution_success = executeCuttingPlan(executable_plan_,goal_handle);
-        
-        switch (execution_success) {
-            case MotionOutcome::SUCCESS:
-                result->success = true;
-                result->message = "Cutting job completed";
-                goal_handle->succeed(result);
-                return;
-
-            case MotionOutcome::CANCELED:
-                canceled();
-                return;
-
-            case MotionOutcome::REJECTED:
-                fail(0, "Cutting execution rejected");
-                return;
-
-            case MotionOutcome::FAILED:
-                fail(0, "Cutting execution failed");
-                return;
-        }
+        const auto id="cut_plan_"+std::to_string(++next_plan_);
+        // Keep original geometry even for a recovery plan, so future interval
+        // coordinates always refer to the initial feature, never to a prior slice.
+        stored_plans_[id]=StoredPlan{executable_plan_,*profile_opt,planning_versions,
+          goal->cut_id,goal->parent_plan_id,goal->intervals,false};
+        for(const auto& segment:plan.segments) result->required_segments.push_back(segment.name);
+        result->plan_id=id;result->cut_id=goal->cut_id;result->parent_plan_id=goal->parent_plan_id;
+        if(goal->execute && !skip_motion_) {executeStored(id,goal_handle);return;}
+        result->success=true;result->message="Validated plan stored; no motion executed";
+        goal_handle->succeed(result);
     }
 
-    
+
     void CutProfileServer::clearCollisionDebug()
 {
     visualization_msgs::msg::MarkerArray array;

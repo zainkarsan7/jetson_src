@@ -20,3 +20,23 @@ bool path_valid
 bool cut_complete
 uint8 retry_count
 string status_message
+
+# Recovery validity is independent of task phase. Default values deny execution.
+std_msgs/Header header
+uint64 geometry_version
+uint64 pose_version
+uint64 scene_version
+uint64 execution_version
+bool workpiece_pose_valid
+bool imu_stable
+bool process_fault_active
+bool motion_fault_active
+bool supervision_valid
+string active_cut_id
+string active_plan_id
+uint8 INVALID_OBSERVATION=0
+uint8 INCONCLUSIVE=1
+uint8 VERIFIED=2
+uint8 RESIDUAL_MATERIAL=3
+uint8 kerf_status
+CutInterval[] residual_intervals

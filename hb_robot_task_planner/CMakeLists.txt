@@ -32,6 +32,10 @@ DESTINATION share/${PROJECT_NAME})
 
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(recovery_tree_test test/recovery_tree_test.cpp)
+  ament_target_dependencies(recovery_tree_test behaviortree_cpp_v3)
+  target_compile_definitions(recovery_tree_test PRIVATE TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/behavior_trees/cut_profile.xml")
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

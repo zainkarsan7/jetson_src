@@ -576,7 +576,7 @@ std::optional<CutPlan> CutPlanner::plan(
         debug_segments.insert(debug_segments.end(),web_segments.begin(),web_segments.end());
 
         auto best_web_segment = selectWebCandidate(web_segments,current_state,p_scene);
-        if(!best_web_segment){
+        if(!web_segments.empty() && !best_web_segment){
             return std::nullopt;
         }
 
@@ -591,7 +591,7 @@ std::optional<CutPlan> CutPlanner::plan(
             plan.segments.push_back(flange);
         }
 
-        plan.segments.push_back(*best_web_segment);
+        if(best_web_segment) plan.segments.push_back(*best_web_segment);
        
   
         if (plan.segments.empty()){
