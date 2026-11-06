@@ -463,6 +463,27 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
         result.cuts.push_back(std::move(cut));
         ++statistics_.accepted_candidates;
     }
+
+    for (const auto id : selected.edges) {
+            const auto& edge = graph.edge(id);
+
+            if (edge.status != TransitStatus::Valid)
+                continue;
+
+            const auto it = transits.find(id);
+            if (it == transits.end())
+                continue;  // Logical terminal edge, no trajectory.
+
+            const auto m = jointMotionMetrics(it->second);
+
+            std::cout
+                << "[FINAL TRANSIT] edge=" << id
+                << " total=" << m.total_travel
+                << " max_joint=" << m.maximum_joint_travel
+                << " cost=" << edge.actual_cost
+                << '\n';
+        }
+
     if (result.cuts.size() != count) return std::nullopt;
     return result;
 }

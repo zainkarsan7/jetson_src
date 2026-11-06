@@ -6,8 +6,11 @@ request_adapters: >-
   default_planner_request_adapters/FixStartStateBounds
   default_planner_request_adapters/FixStartStateCollision
   default_planner_request_adapters/FixStartStatePathConstraints
+  chomp/OptimizerAdapter
 start_state_max_bounds_error: 0.1
 planner_configs:
+  APSConfigDefault:
+    type: geometric::AnytimePathShortening
   SBLkConfigDefault:
     type: geometric::SBL
     range: 0.0  # Max motion added to tree. ==> maxDistance_ default: 0.0, if 0.0, set on setup()
@@ -138,6 +141,7 @@ manipulator:
   enforce_constrained_state_space: false
   projection_evaluator: joints(ur10e_shoulder_pan_joint,ur10e_shoulder_lift_joint)
   planner_configs:
+    - APSConfigDefault
     - SBLkConfigDefault
     - ESTkConfigDefault
     - LBKPIECEkConfigDefault

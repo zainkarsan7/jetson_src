@@ -5,6 +5,15 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
@@ -579,65 +588,282 @@ namespace hb_robot_skills{
 
             }
 
-   
-
-    std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
-            const moveit::core::RobotState& start_state,
-            const moveit::core::RobotState& target_state
-    ){
-
+    
+    std::optional<moveit::planning_interface::MoveGroupInterface::Plan>
+    CutProfileServer::planToState(
+        const moveit::core::RobotState& start_state,
+        const moveit::core::RobotState& target_state)
+    {
         using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
 
-
-        move_group_->clearPoseTargets();
-        move_group_->clearPathConstraints();
-        move_group_->setPlanningTime(planning_time_);
-        move_group_->setMaxVelocityScalingFactor(0.1);
-        move_group_->setMaxAccelerationScalingFactor(0.1);
-        move_group_->setStartState(start_state);
-        move_group_->setJointValueTarget(target_state);
+        struct Metrics {
+            double total = 0.0;
+            double max_joint = 0.0;
+            double max_step = 0.0;
+            double cost = std::numeric_limits<double>::infinity();
+        };
 
 
-        move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
-        move_group_->setPlannerId("PTP");
+        struct PlannerChoice {
+            const char* pipeline;
+            const char* planner;
+            double time_s;
+            int planning_attempts;
+        };
 
+        const std::vector<PlannerChoice> fallback = {
+            {"ompl", "RRTConnectkConfigDefault", 2.0, 4},
+            {"ompl", "APSConfigDefault",        5.0, 1},
+            {"ompl", "BiTRRTkConfigDefault",    3.0, 3},
+            {"ompl", "LBKPIECEkConfigDefault",  3.0, 3},
+            {"ompl", "LazyPRMkConfigDefault",   3.0, 3},
+            {"ompl", "RRTstarkConfigDefault",   5.0, 3},
+        };
+
+        // Match CutGraphPlanner::transitCost().
+        // Later, these can be read from shared configuration.
+        constexpr double preferred_travel = 1.0;
+        constexpr double excess_weight = 8.0;
+
+        // Quality triggers, not hard safety constraints.
+        constexpr double good_cost = 75.0;
+        constexpr double good_max_joint =3.0;
+
+
+        const auto score = [&](const Plan& plan)
+            -> std::optional<Metrics>
         {
-            planning_scene_monitor::LockedPlanningSceneRO locked(
-                planning_scene_monitor_);
+            const auto& jt = plan.trajectory_.joint_trajectory;
 
-            const auto& scene = *locked;
+            if (jt.points.empty() || jt.joint_names.empty())
+                return std::nullopt;
 
-            const bool start_collision =
-                scene.isStateColliding(start_state, planning_group_);
+            const auto& first = jt.points.front().positions;
+            const auto& last = jt.points.back().positions;
 
-            const bool goal_collision =
-                scene.isStateColliding(target_state, planning_group_);
+            if (first.size() != jt.joint_names.size() ||
+                last.size() != jt.joint_names.size())
+                return std::nullopt;
 
-            RCLCPP_WARN(
+            Metrics m;
+
+            for (std::size_t j = 0; j < jt.joint_names.size(); ++j) {
+                const auto& name = jt.joint_names[j];
+
+                // Reject a trajectory whose actual endpoints do not
+                // match the requested joint configurations.
+                const double endpoint_tol = options_.boundary_tol;
+
+                const double q_start = start_state.getVariablePosition(name);
+                const double q_goal  = target_state.getVariablePosition(name);
+
+                if (!std::isfinite(first[j]) ||
+                    !std::isfinite(last[j]) ||
+                    !std::isfinite(q_start) ||
+                    !std::isfinite(q_goal) ||
+                    std::abs(first[j] - q_start) > endpoint_tol ||
+                    std::abs(last[j] - q_goal) > endpoint_tol)
+                {
+                    return std::nullopt;
+}
+
+                double travel = 0.0;
+
+                for (std::size_t i = 1; i < jt.points.size(); ++i) {
+                    const auto& prev = jt.points[i - 1].positions;
+                    const auto& curr = jt.points[i].positions;
+
+                    if (prev.size() != jt.joint_names.size() ||
+                        curr.size() != jt.joint_names.size())
+                        return std::nullopt;
+
+                    const double delta =
+                        std::abs(curr[j] - prev[j]);
+
+                    if (!std::isfinite(delta))
+                        return std::nullopt;
+
+                    travel += delta;
+                    m.max_step = std::max(m.max_step, delta);
+                }
+
+                m.total += travel;
+                m.max_joint = std::max(m.max_joint, travel);
+            }
+
+            const double excess =
+                std::max(0.0, m.max_joint - preferred_travel);
+
+            m.cost = m.total
+                + 2.0 * m.max_joint
+                + excess_weight * excess * excess;
+
+            if (!std::isfinite(m.cost))
+                return std::nullopt;
+
+            return m;
+        };
+
+        std::optional<Plan> best;
+        Metrics best_metrics;
+        std::string best_planner;
+        int successful = 0;
+        int attempts = 0;
+
+        const auto tryPlanner = [&](const std::string& pipeline,
+                                    const std::string& planner,
+                                    double planning_time,
+                                    unsigned int planning_attempts = 1
+                                ) -> bool
+        {
+            ++attempts;
+
+            move_group_->clearPoseTargets();
+            move_group_->clearPathConstraints();
+
+            move_group_->setStartState(start_state);
+            move_group_->setJointValueTarget(target_state);
+
+            move_group_->setPlanningPipelineId(pipeline);
+            move_group_->setPlannerId(planner);
+            move_group_->setPlanningTime(planning_time);
+
+            move_group_->setMaxVelocityScalingFactor(0.1);
+            move_group_->setMaxAccelerationScalingFactor(0.1);
+            move_group_->setNumPlanningAttempts(planning_attempts);
+
+            Plan candidate;
+
+            if (move_group_->plan(candidate) !=
+                moveit::core::MoveItErrorCode::SUCCESS)
+                return false;
+
+            auto metrics = score(candidate);
+
+            if (!metrics)
+                return false;
+
+            ++successful;
+
+            if (!best || metrics->cost < best_metrics.cost) {
+                best = std::move(candidate);
+                best_metrics = *metrics;
+                best_planner = pipeline + "/" + planner;
+            }
+
+            return true;
+        };
+
+        const auto goodEnough = [&]() {
+            return best &&
+                best_metrics.cost <= good_cost &&
+                best_metrics.max_joint <= good_max_joint;
+        };
+
+        // 1. Fast, deterministic joint-space motion.
+        tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0);
+
+        // Successful, good-quality PTP: stop immediately.
+        if (!goodEnough()) {
+
+            for (const auto& choice : fallback) {
+                tryPlanner(
+                    choice.pipeline,
+                    choice.planner,
+                    choice.time_s,
+                    choice.planning_attempts
+                );
+
+                if (goodEnough())
+                    break;
+            }
+        }
+
+        // One summary per transit planning call.
+        if (best) {
+            RCLCPP_INFO(
                 get_logger(),
-                "TRANSIT ENDPOINTS: start_collision=%d goal_collision=%d",
-                start_collision,
-                goal_collision);
+                "[TRANSIT SELECT] planner=%s attempts=%d success=%d "
+                "total=%.3f max_joint=%.3f max_step=%.3f "
+                "raw_cost=%.2f weighted_cost=%.2f",
+                best_planner.c_str(),
+                attempts,
+                successful,
+                best_metrics.total,
+                best_metrics.max_joint,
+                best_metrics.max_step,
+                best_metrics.cost,
+                3.0 * best_metrics.cost);
+
+            return best;
         }
 
+        RCLCPP_WARN(
+            get_logger(),
+            "[TRANSIT SELECT] no valid plan after %d attempts",
+            attempts);
 
-        Plan ptp_plan;
-        if(move_group_->plan(ptp_plan)==moveit::core::MoveItErrorCode::SUCCESS){
-            RCLCPP_INFO(get_logger(),"ptp worked with pilz");
-            return ptp_plan;
-        }
-        RCLCPP_INFO(get_logger(),"pilz ptp failed, try omply");
-        move_group_->setPlanningPipelineId("ompl");
-        move_group_->setPlannerId("RRTConnectkConfigDefault");
-        
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        if(!static_cast<bool>(move_group_->plan(plan))){
-            RCLCPP_ERROR(get_logger(), "failed to plan joint motion");
-            return std::nullopt;
-        }
-        
-        return plan;
+        return std::nullopt;
     }
+
+
+    // std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::planToState(
+    //         const moveit::core::RobotState& start_state,
+    //         const moveit::core::RobotState& target_state
+    // ){
+
+    //     using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
+
+    //     struct Metrics {
+    //     double total = 0.0;
+    //     double max_joint = 0.0;
+    //     double max_step = 0.0;
+    //     double cost = std::numeric_limits<double>::infinity();
+    // };
+
+
+
+    //     move_group_->clearPoseTargets();
+    //     move_group_->clearPathConstraints();
+    //     move_group_->setPlanningTime(planning_time_);
+    //     move_group_->setMaxVelocityScalingFactor(0.1);
+    //     move_group_->setMaxAccelerationScalingFactor(0.1);
+    //     move_group_->setStartState(start_state);
+    //     move_group_->setJointValueTarget(target_state);
+
+
+    //     move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
+    //     move_group_->setPlannerId("PTP");
+
+    //     Plan ptp_plan;
+    //     if(move_group_->plan(ptp_plan)==moveit::core::MoveItErrorCode::SUCCESS){
+    //         RCLCPP_INFO(get_logger(),"ptp worked with pilz");
+    //         return ptp_plan;
+    //     }
+    //     RCLCPP_INFO(get_logger(),"pilz ptp failed, try omply");
+
+    //     move_group_->clearPoseTargets();
+    //     move_group_->clearPathConstraints();
+    //     move_group_->setPlanningTime(planning_time_);
+    //     move_group_->setMaxVelocityScalingFactor(0.1);
+    //     move_group_->setMaxAccelerationScalingFactor(0.1);
+    //     move_group_->setStartState(start_state);
+    //     move_group_->setJointValueTarget(target_state);
+
+    //     move_group_->setPlanningPipelineId("ompl");
+    //     move_group_->setPlannerId("RRTConnectkConfigDefault");
+    //     // move_group_->setPlannerId("RRTstarkConfigDefault");
+    //     move_group_->setPlanningTime(5.0);
+
+        
+    //     moveit::planning_interface::MoveGroupInterface::Plan plan;
+    //     if(!static_cast<bool>(move_group_->plan(plan))){
+    //         RCLCPP_ERROR(get_logger(), "failed to plan joint motion");
+    //         return std::nullopt;
+    //     }
+        
+    //     return plan;
+    // }
 
     moveit::core::RobotState CutProfileServer::getFinalState(const moveit::planning_interface::MoveGroupInterface::Plan& plan){
         moveit::core::RobotState ref_state (move_group_->getRobotModel());

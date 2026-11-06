@@ -67,22 +67,22 @@ def generate_launch_description():
         "cut_geometry.ik_timeout_s": 0.05,
         "cut_geometry.waypoint_beam_width": 3,
         "cut_geometry.explore_ik_branches": True,
-        "cut_sampling.max_candidates_per_roll": 2,
+        "cut_sampling.max_candidates_per_roll": 3,
         # Geometric seed + reference seed + bounded local perturbations;
         # only the final two attempts per roll explore globally.
-        "cut_sampling.roll_samples": 12,
+        "cut_sampling.roll_samples": 8,
         "cut_sampling.seeds_per_roll": 12,
         "cut_sampling.global_seeds_per_roll": 3,
         "cut_sampling.local_seed_radius_rad": 0.35,
         "cut_sampling.local_ik_consistency_rad": 0.75,
-        "cut_sampling.max_candidates": 48,
+        "cut_sampling.max_candidates": 32,
         "cut_cost.transit_weight": 3.0,
         "cut_cost.process_weight": 1.0,
         "cut_cost.preferred_joint_travel_rad": 1.0,
         "cut_cost.excess_travel_weight": 8.0,
         # Optional hard limit on accumulated travel of any joint per transit.
         # Zero keeps large but necessary transits available at a higher cost.
-        "cut_cost.max_transit_joint_travel_rad": 3.14,
+        "cut_cost.max_transit_joint_travel_rad": 0.0,
         },]
         ,
     )
