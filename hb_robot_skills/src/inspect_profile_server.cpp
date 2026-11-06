@@ -50,7 +50,10 @@ namespace hb_robot_skills{
     rms_target_ = declare_parameter<float>("rms_target",0.01);
     inlier_fraction_target_ = declare_parameter<float>("inlier_fraction_target", 0.4);
     coverage_target_ = declare_parameter<float>("coverage_target",0.4);
-    
+    if(!has_parameter("platform_imu_topic")){
+        platform_stability_topic_ = declare_parameter<std::string>("platform_imu_topic","hb_robot_lidar/imu");
+    }
+    get_parameter("platform_imu_topic",platform_stability_topic_);
     
 }
     void InspectProfileServer::initialize(){

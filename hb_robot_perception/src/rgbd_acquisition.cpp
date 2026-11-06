@@ -68,23 +68,23 @@ namespace hb_perception{
                 const rclcpp::Time depth_t = depth->header.stamp;
                 const rclcpp::Time obs_stamp = rgb_t;
                 
-
+                 if(!camera_info_){
+                    RCLCPP_WARN_THROTTLE(node_->get_logger(),
+                    *node_->get_clock(),2000,"couldnt get camera info");
+                    return;
+                }
                 geometry_msgs::msg::TransformStamped cam_pose;
                 try{
-                cam_pose = tf_buffer_->lookupTransform(target_frame_,rgb->header.frame_id,obs_stamp);
+                cam_pose = tf_buffer_->lookupTransform(target_frame_,rgb->header.frame_id,obs_stamp,rclcpp::Duration::from_seconds(0.05));
                 }
                 catch(const tf2::TransformException &ex){
-                    RCLCPP_WARN_THROTTLE(node_->get_logger(),*node_->get_clock(),1000,
+                    RCLCPP_DEBUG_THROTTLE(node_->get_logger(),*node_->get_clock(),5000,
                 "couldnt get %s to %s transform at timestamp %s",
             rgb->header.frame_id.c_str(),target_frame_.c_str(),ex.what());
                     return;
                 }
 
-                if(!camera_info_){
-                    RCLCPP_WARN_THROTTLE(node_->get_logger(),
-                    *node_->get_clock(),2000,"couldnt get camera info");
-                    return;
-                }
+               
 
                 Observation ob;
                 ob.rgb = rgb;

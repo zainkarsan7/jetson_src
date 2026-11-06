@@ -6,7 +6,7 @@
     output="screen"
     >
     <!-- <param name="color_format" value="jpeg"/> -->
-    <param name="tree_file" value="$(find-pkg-share hb_robot_task_planner)/behavior_trees/cut_profile.xml"/>
+    <param name="tree_file" value="$(find-pkg-share hb_robot_task_planner)/behavior_trees/baseline.xml"/>
     
     </node>
 </launch>

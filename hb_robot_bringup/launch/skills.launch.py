@@ -55,7 +55,9 @@ def generate_launch_description():
         # parameters = [moveit_config.robot_description,
         # moveit_config.robot_description_semantic,
         # moveit_config.robot_description_kinematics,
-        parameters = [moveit_config.to_dict(),{"skip_cutting_motion": False,
+        parameters = [moveit_config.to_dict(),{
+        "skip_cutting_motion": False,
+        "enable_cutting_process": False,
         "require_plan_approval": True,
         "cut_transit.return_home_between_cuts": ParameterValue(LaunchConfiguration("return_home_between_cuts"), value_type=bool),
         "cut_transit.return_home_after_last_cut": ParameterValue(LaunchConfiguration("return_home_after_last_cut"), value_type=bool),

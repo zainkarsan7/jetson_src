@@ -48,7 +48,10 @@ namespace hb_robot_skills{
 
         // A restarted cutting server must not reuse an earlier evidence epoch.
         execution_version_=static_cast<uint64_t>(now().nanoseconds());
-        process_enabled_=declare_parameter<bool>("enable_cutting_process",false);
+        if(!has_parameter("enable_cutting_process")){
+            process_enabled_=declare_parameter<bool>("enable_cutting_process",false);
+        }
+        get_parameter("enable_cutting_process",process_enabled_);
         task_sub_=create_subscription<TaskState>("/task_state",rclcpp::QoS(1).transient_local(),
           [this](TaskState::ConstSharedPtr msg) {std::lock_guard<std::mutex> lock(task_mutex_);
             task_state_=*msg;task_received_=std::chrono::steady_clock::now();});
@@ -886,7 +889,10 @@ namespace hb_robot_skills{
         //un pack / get the goal
         auto const goal = goal_handle->get_goal();
 
-        if(!goal->plan_id.empty()) {executeStored(goal->plan_id,goal_handle);return;}
+        if(!goal->plan_id.empty()) {
+            executeStored(goal->plan_id,goal_handle); // stored plan id 
+            return;
+        }
 
         //make empty result
         auto result = std::make_shared<CutProfile::Result>();
