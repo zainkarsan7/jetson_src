@@ -6,6 +6,10 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int64.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <cmath>
+#include <sstream>
+#include <iomanip>
+#include <stdexcept>
 
 using State=hb_robot_interfaces::msg::TaskState;
 // Single writer for versions. The executor is single threaded, so reference commits,
@@ -15,8 +19,28 @@ class TaskStateServer : public rclcpp::Node {
   TaskStateServer():Node("task_state_server") {
     state_.geometry_version=static_cast<uint64_t>(now().nanoseconds());
     state_.pose_version=state_.geometry_version;
-    imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,
-      declare_parameter<std::string>("platform_imu_topic","/hb_robot_lidar/imu"));
+    // Platform noise limits are distinct from camera-settling and telemetry
+    // settings. Keep existing defaults; calibration must be an explicit choice.
+    // Read-only parameters avoid accepting ros2 param set without updating the
+    // already constructed monitor. Set overrides at node startup and restart.
+    hb_perception::ImuStabilityConfig config;
+    rcl_interfaces::msg::ParameterDescriptor descriptor;
+    descriptor.read_only=true;
+    auto limit=[&](const std::string& name,double fallback) {
+      const double value=declare_parameter<double>(name,fallback,descriptor);
+      if(!std::isfinite(value) || value<=0)
+        throw std::invalid_argument(name+" must be finite and positive");
+      return value;
+    };
+    config.max_ang_vel_rms=limit("platform_imu.max_gyro_rms",config.max_ang_vel_rms);
+    config.max_lin_acc_rms=limit("platform_imu.max_accel_rms",config.max_lin_acc_rms);
+    config.max_mean_ang_vel=limit("platform_imu.max_mean_gyro",config.max_mean_ang_vel);
+    const auto topic=declare_parameter<std::string>("platform_imu_topic","/hb_robot_lidar/imu");
+    imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,topic,config);
+    RCLCPP_INFO(get_logger(),
+      "Platform supervision: %s; gyro RMS < %.6f rad/s, accel RMS < %.6f m/s^2, "
+      "mean gyro < %.6f rad/s; independent of platform_telemetry settings",
+      topic.c_str(),config.max_ang_vel_rms,config.max_lin_acc_rms,config.max_mean_ang_vel);
     pub_=create_publisher<State>("/task_state",rclcpp::QoS(1).transient_local());
     ref_=create_subscription<hb_robot_interfaces::msg::WorkpieceReference>(
       "/workpiece_reference",rclcpp::QoS(1).transient_local(),[this](hb_robot_interfaces::msg::WorkpieceReference::ConstSharedPtr m){
@@ -30,6 +54,8 @@ class TaskStateServer : public rclcpp::Node {
             "Restore supervision and acquire a fresh reference; rejected references are not queued.",
             age, metrics.valid, metrics.stable, metrics.samples_count, metrics.sample_age_s,
             m->cloud.data.empty(), m->estimate.header.frame_id.empty());
+          RCLCPP_WARN(get_logger(),"Reference stability diagnostics: %s",
+            stabilitySummary(metrics).c_str());
           return;
         }
         if(m->relocalized && m->expected_pose_version!=state_.pose_version) return;
@@ -67,7 +93,7 @@ class TaskStateServer : public rclcpp::Node {
         state_.status_message="Platform IMU invalid: samples=" + std::to_string(m.samples_count) +
           ", age_s=" + std::to_string(m.sample_age_s) +
           "; requires fresh samples spanning the configured window";
-      else if(!m.stable) state_.status_message="Platform IMU valid but motion exceeds stability thresholds";
+      else if(!m.stable) state_.status_message=stabilitySummary(m);
       else if(!state_.workpiece_pose_valid)
         state_.status_message="Platform stable; waiting for a new accepted reference or revalidation";
       else if(state_.process_fault_active || state_.motion_fault_active)
@@ -77,6 +103,22 @@ class TaskStateServer : public rclcpp::Node {
     });
   }
  private:
+  std::string stabilitySummary(const hb_perception::ImuStabilityMetrics& m) {
+    if(!m.valid) return "Platform IMU window invalid; stability statistics are not actionable";
+    const auto& config=imu_->config();
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6) << "Platform stability: ";
+    auto check=[&](const char* name,double value,double limit,const char* unit) {
+      out << name << "=" << value << " < " << limit << " " << unit
+          << (value<limit ? " [PASS]; " : " [FAIL]; ");
+    };
+    // Both RMS values are vector RMS about the window mean, not absolute
+    // acceleration and not the latest sample. A constant sensor bias cancels.
+    check("gyro_rms",m.ang_vel_rms_rad_s,config.max_ang_vel_rms,"rad/s");
+    check("accel_rms",m.lin_acc_rms_m_s2,config.max_lin_acc_rms,"m/s^2");
+    check("mean_gyro",m.mean_ang_vel_rad_s,config.max_mean_ang_vel,"rad/s");
+    return out.str();
+  }
   void invalidate() {
     if(state_.workpiece_pose_valid) ++state_.pose_version;
     state_.workpiece_pose_valid=false; state_.path_valid=false;
