@@ -54,6 +54,22 @@ namespace hb_robot_skills{
         platform_stability_topic_ = declare_parameter<std::string>("platform_imu_topic","hb_robot_lidar/imu");
     }
     get_parameter("platform_imu_topic",platform_stability_topic_);
+     
+
+    if(!has_parameter("platform_imu.max_gyro_rms")){
+        max_ang_vel_rms_ = declare_parameter<double>("platform_imu.max_gyro_rms",0.01);
+    }
+    get_parameter("platform_imu.max_gyro_rms",max_ang_vel_rms_);
+    
+    if(!has_parameter("platform_imu.max_accel_rms")){
+        max_lin_acc_rms_ = declare_parameter<double>("platform_imu.max_accel_rms",0.2);
+    }
+    get_parameter("platform_imu.max_accel_rms",max_lin_acc_rms_);
+    
+    if(!has_parameter("platform_imu.max_mean_gyro")){
+        max_mean_ang_vel_ = declare_parameter<double>("platform_imu.max_mean_gyro",0.03);
+    }
+    get_parameter("platform_imu.max_mean_gyro",max_mean_ang_vel_);
     
 }
     void InspectProfileServer::initialize(){
@@ -81,6 +97,9 @@ namespace hb_robot_skills{
 
 
         hb_perception::ImuStabilityConfig config;
+        config.max_ang_vel_rms =max_ang_vel_rms_ ;
+        config.max_lin_acc_rms =max_lin_acc_rms_ ;
+        config.max_mean_ang_vel=max_mean_ang_vel_;
         
         imu_stability_monitor_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
             *this,

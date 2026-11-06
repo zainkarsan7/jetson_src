@@ -230,7 +230,7 @@ namespace hb_robot_skills{
         geometry_options.repair_roll_step_rad = double_parameter("cut_geometry.repair_roll_step_rad", 0.15);
         cut_planner_ = std::make_unique<motion::CutPlanner>(robot_model, planning_group_, plasma_link_, geometry_options);
         motion::CutGraphPlanner::Options graph_options;
-        graph_options.return_home_between_cuts = bool_parameter("cut_transit.return_home_between_cuts", false);
+        graph_options.return_home_between_cuts = bool_parameter("cut_transit.return_home_between_cuts", true);
         graph_options.return_home_after_last_cut = bool_parameter("cut_transit.return_home_after_last_cut", true);
         graph_options.tcp_link = plasma_link_;
         graph_options.max_candidates_per_segment = count_parameter("cut_sampling.max_candidates", 32);
@@ -600,6 +600,26 @@ namespace hb_robot_skills{
 
         move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
         move_group_->setPlannerId("PTP");
+
+        {
+            planning_scene_monitor::LockedPlanningSceneRO locked(
+                planning_scene_monitor_);
+
+            const auto& scene = *locked;
+
+            const bool start_collision =
+                scene.isStateColliding(start_state, planning_group_);
+
+            const bool goal_collision =
+                scene.isStateColliding(target_state, planning_group_);
+
+            RCLCPP_WARN(
+                get_logger(),
+                "TRANSIT ENDPOINTS: start_collision=%d goal_collision=%d",
+                start_collision,
+                goal_collision);
+        }
+
 
         Plan ptp_plan;
         if(move_group_->plan(ptp_plan)==moveit::core::MoveItErrorCode::SUCCESS){

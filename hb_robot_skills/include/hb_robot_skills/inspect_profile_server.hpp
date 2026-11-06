@@ -202,6 +202,11 @@ class InspectProfileServer: public rclcpp::Node{
         float inlier_fraction_target_=  0.8;
         float coverage_target_ = 0.65;
 
+        double max_ang_vel_rms_ =0.01;
+        double max_lin_acc_rms_ =0.2;
+        double max_mean_ang_vel_=0.03;
+        
+        
         // tf buffer stuff
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
