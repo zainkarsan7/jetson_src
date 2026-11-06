@@ -54,6 +54,8 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             return result_;
 
         }
+        result_.sample_age_s = std::chrono::duration<double>(
+            now - samples_.back().recieved_at).count();
         if(now - samples_.back().recieved_at > config_.max_sample_age){
             return result_;
         }
@@ -96,6 +98,11 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         if(span < 0.9 * config_.window){
             return result_;
         }
+        // Validity means enough finite, fresh samples spanning the observation
+        // window. It does NOT imply stability: valid motion must remain observable.
+        // Recovery guards require both flags; leaving valid at its default false
+        // silently rejects every workpiece reference regardless of IMU quality.
+        result_.valid = true;
         const double n = static_cast<double>(result_.samples_count);
         const double m_wx = sum_wx/n;
         const double m_wy = sum_wy/n;
@@ -150,6 +157,13 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         result_.ang_vel_rms_rad_s = std::sqrt(var_ang_vel/n);
         result_.lin_acc_rms_m_s2 = std::sqrt(var_lin_acc/n);
         result_.mean_ang_vel_rad_s = std::sqrt(norm_ang_vel);
+        const auto& latest = samples_.back();
+        result_.latest_ang_vel_rad_s = std::sqrt(
+            latest.wx*latest.wx + latest.wy*latest.wy + latest.wz*latest.wz);
+        result_.latest_acc_deviation_m_s2 = std::sqrt(
+            (latest.ax-m_ax)*(latest.ax-m_ax) +
+            (latest.ay-m_ay)*(latest.ay-m_ay) +
+            (latest.az-m_az)*(latest.az-m_az));
         result_.peak_acc_deviation_m_s2 = peak_acc_deviation;
         result_.peak_ang_vel_rad_s = peak_omega;
         result_.stable = 

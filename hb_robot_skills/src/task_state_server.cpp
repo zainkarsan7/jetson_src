@@ -23,7 +23,15 @@ class TaskStateServer : public rclcpp::Node {
         const auto metrics=imu_->metrics();
         const double age=(now()-rclcpp::Time(m->estimate.header.stamp)).seconds();
         if(age<0 || age>5 || !metrics.valid || !metrics.stable || m->cloud.data.empty() ||
-           m->estimate.header.frame_id.empty()) return;
+           m->estimate.header.frame_id.empty()) {
+          RCLCPP_WARN(get_logger(),
+            "Reference rejected: age=%.3fs (allowed 0..5), imu_valid=%d imu_stable=%d "
+            "samples=%zu sample_age=%.3fs cloud_empty=%d frame_empty=%d. "
+            "Restore supervision and acquire a fresh reference; rejected references are not queued.",
+            age, metrics.valid, metrics.stable, metrics.samples_count, metrics.sample_age_s,
+            m->cloud.data.empty(), m->estimate.header.frame_id.empty());
+          return;
+        }
         if(m->relocalized && m->expected_pose_version!=state_.pose_version) return;
         if(!m->relocalized) ++state_.geometry_version;
         ++state_.pose_version;
@@ -55,6 +63,16 @@ class TaskStateServer : public rclcpp::Node {
       const auto m=imu_->metrics();
       state_.supervision_valid=m.valid; state_.imu_stable=m.valid && m.stable;
       if(!state_.imu_stable) invalidate();
+      if(!m.valid)
+        state_.status_message="Platform IMU invalid: samples=" + std::to_string(m.samples_count) +
+          ", age_s=" + std::to_string(m.sample_age_s) +
+          "; requires fresh samples spanning the configured window";
+      else if(!m.stable) state_.status_message="Platform IMU valid but motion exceeds stability thresholds";
+      else if(!state_.workpiece_pose_valid)
+        state_.status_message="Platform stable; waiting for a new accepted reference or revalidation";
+      else if(state_.process_fault_active || state_.motion_fault_active)
+        state_.status_message="Geometry valid; execution blocked by active fault";
+      else state_.status_message="Geometry valid; platform supervision stable";
       state_.header.stamp=now(); pub_->publish(state_);
     });
   }

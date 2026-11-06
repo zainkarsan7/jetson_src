@@ -5,6 +5,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <chrono>
 #include <deque>
+#include <limits>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
 namespace hb_perception{
 
 
@@ -27,7 +31,7 @@ struct ImuStabilityMetrics{
     std::size_t samples_count=0;
 
     bool valid = false;
-    double sample_age_s;
+    double sample_age_s = std::numeric_limits<double>::infinity();
     double peak_ang_vel_rad_s = 0.0;
     double peak_acc_deviation_m_s2 = 0.0;
 

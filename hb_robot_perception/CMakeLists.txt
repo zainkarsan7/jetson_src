@@ -174,6 +174,9 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(imu_stability_monitor_test test/imu_stability_monitor_test.cpp)
+  target_link_libraries(imu_stability_monitor_test hb_perception)
+  ament_target_dependencies(imu_stability_monitor_test rclcpp sensor_msgs)
   ament_add_gtest(profile_pose_test test/profile_pose_test.cpp)
   target_link_libraries(profile_pose_test hb_perception)
   ament_target_dependencies(profile_pose_test tf2_eigen hb_robot_interfaces)

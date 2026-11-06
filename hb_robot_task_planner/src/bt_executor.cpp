@@ -114,8 +114,15 @@ class AwaitGeometry : public BT::StatefulActionNode {
   static BT::PortsList providedPorts(){return {};}
   BT::NodeStatus onStart() override {start_=std::chrono::steady_clock::now();return onRunning();}
   BT::NodeStatus onRunning() override {
-    if(recovery::geometryPermitted(context_->snapshot())) return BT::NodeStatus::SUCCESS;
-    return std::chrono::steady_clock::now()-start_>3s?BT::NodeStatus::FAILURE:BT::NodeStatus::RUNNING;
+    const auto state=context_->snapshot();
+    if(recovery::geometryPermitted(state)) return BT::NodeStatus::SUCCESS;
+    if(std::chrono::steady_clock::now()-start_<=3s) return BT::NodeStatus::RUNNING;
+    RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
+      "AwaitGeometry timed out: supervision_valid=%d imu_stable=%d pose_valid=%d "
+      "process_fault=%d motion_fault=%d; task_state: %s",
+      state.supervision_valid,state.imu_stable,state.workpiece_pose_valid,
+      state.process_fault_active,state.motion_fault_active,state.status_message.c_str());
+    return BT::NodeStatus::FAILURE;
   }
   void onHalted() override {}
  private:
