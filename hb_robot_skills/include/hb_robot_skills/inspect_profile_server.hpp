@@ -179,6 +179,7 @@ class InspectProfileServer: public rclcpp::Node{
     
         std::string planning_group_;
         std::string camera_link_;
+        std::string platform_stability_topic_;
         double planning_time_;
         double stability_timeout_;
         std::mutex execution_mutex_;

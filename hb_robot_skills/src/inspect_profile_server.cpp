@@ -84,7 +84,7 @@ namespace hb_robot_skills{
         
         imu_stability_monitor_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
             *this,
-            "/k4a/imu",
+            platform_stability_topic_,
             config
         );
 
