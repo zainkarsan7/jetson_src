@@ -1,0 +1,75 @@
+<root main_tree_to_execute="MainTree">
+  <!-- The server's supervision callback requests OFF/stop independently of ticks.
+       The fallback below handles containment outcomes, never automatic resumption. -->
+  <BehaviorTree ID="MainTree">
+    <Fallback>
+      <ReactiveSequence>
+        <Inverter><FaultActive/></Inverter>
+        <Sequence>
+          <Fallback>
+            <Sequence><ReferenceExists/><SubTree ID="EnsureGeometryValid"/></Sequence>
+            <Sequence><Inverter><ReferenceExists/></Inverter><InspectProfile/><AwaitGeometry/></Sequence>
+          </Fallback>
+          <SubTree ID="EnsureGeometryValid"/>
+          <PlanCut/>
+          <ValidateTaskState/>
+          <ExecuteCut/>
+          <SubTree ID="EnsureSeparationVerified"/>
+        </Sequence>
+      </ReactiveSequence>
+      <Sequence><Escape/><AlwaysFailure/></Sequence>
+    </Fallback>
+  </BehaviorTree>
+  <BehaviorTree ID="EnsureGeometryValid">
+    <Fallback>
+      <WorkpiecePoseValid/>
+      <Sequence><RevalidateWorkpiece/><AwaitGeometry/></Sequence>
+    </Fallback>
+  </BehaviorTree>
+  <BehaviorTree ID="ObserveAndEvaluate">
+    <Sequence><InspectKerf/><ValidateKerf/></Sequence>
+  </BehaviorTree>
+  <BehaviorTree ID="EnsureSeparationVerified">
+    <Sequence>
+      <SubTree ID="ObserveAndEvaluate"/>
+      <Fallback>
+        <KerfVerified/>
+        <Sequence>
+          <KerfInconclusive/>
+          <SubTree ID="ObserveAndEvaluate"/>
+          <KerfVerified/>
+        </Sequence>
+        <Sequence>
+          <ResidualDetected/>
+          <SubTree ID="EnsureGeometryValid"/>
+          <PlanRecut/>
+          <ValidateTaskState/>
+          <ExecuteRecut/>
+          <SubTree ID="ObserveAndEvaluate"/>
+          <KerfVerified/>
+        </Sequence>
+      </Fallback>
+    </Sequence>
+  </BehaviorTree>
+  <TreeNodesModel>
+    <Condition ID="FaultActive"/>
+    <Condition ID="ReferenceExists"/>
+    <Condition ID="WorkpiecePoseValid"/>
+    <Condition ID="ValidateTaskState"/>
+    <Condition ID="KerfVerified"/>
+    <Condition ID="KerfInconclusive"/>
+    <Condition ID="ResidualDetected"/>
+    <Condition ID="ValidateKerf"/>
+
+    <Action ID="InspectProfile"/>
+    <Action ID="AwaitGeometry"/>
+    <Action ID="RevalidateWorkpiece"/>
+    <Action ID="PlanCut"/>
+    <Action ID="ExecuteCut"/>
+    <Action ID="InspectKerf"/>
+    <Action ID="PlanRecut"/>
+    <Action ID="ExecuteRecut"/>
+    <Action ID="Escape"/>
+  </TreeNodesModel>
+
+</root>

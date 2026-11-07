@@ -12,6 +12,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
@@ -78,7 +79,6 @@ add_executable(perception_node
 src/perception_node.cpp
 )
 
-
 ament_target_dependencies(perception_node
   rclcpp
   sensor_msgs
@@ -94,6 +94,27 @@ ament_target_dependencies(perception_node
 )
 target_link_libraries(perception_node
 hb_perception
+)
+
+add_executable(lidar_extrinsic_calibrator
+src/lidar_extrinsic_calibrator.cpp
+)
+
+target_link_libraries(lidar_extrinsic_calibrator 
+hb_perception
+)
+ament_target_dependencies(lidar_extrinsic_calibrator
+  rclcpp
+  sensor_msgs
+  std_srvs
+  visualization_msgs
+  pcl_conversions
+  tf2_ros
+  hb_robot_interfaces
+  tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
+  
 )
 
 add_executable(collision_publisher_node
@@ -138,6 +159,7 @@ install(
   perception_node
   collision_publisher_node
   platform_telemetry_node
+  lidar_extrinsic_calibrator
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
