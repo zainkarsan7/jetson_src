@@ -46,6 +46,19 @@ TEST_F(ImuMonitorTest, FreshStationaryWindowIsValidAndStable) {
   EXPECT_TRUE(metrics.valid);EXPECT_TRUE(metrics.stable);
   EXPECT_GE(metrics.samples_count,5u);EXPECT_LT(metrics.sample_age_s,0.1);
 }
+TEST_F(ImuMonitorTest, DelayedReadPreservesFreshStationaryWindow) {
+  stream(0);
+  const auto before=monitor->metrics();
+  ASSERT_TRUE(before.valid);
+  // With a 100 ms window and 90% coverage, a read 35 ms later used to
+  // invalidate the pose even though the same samples were still fresh.
+  std::this_thread::sleep_for(35ms);
+  const auto after=monitor->metrics();
+  ASSERT_LT(after.sample_age_s,0.1);
+  EXPECT_TRUE(after.valid);
+  EXPECT_TRUE(after.stable);
+  EXPECT_EQ(after.samples_count,before.samples_count);
+}
 TEST_F(ImuMonitorTest, MotionIsValidButNotStable) {
   stream(0.2);
   const auto metrics=monitor->metrics();

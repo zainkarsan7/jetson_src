@@ -38,6 +38,12 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                    }
                 {
                 std::lock_guard<std::mutex>lock(mutex_);
+                    // After a stale interval, require a new observation window before
+                    // declaring stability again, even if no timer ran during the gap.
+                    if (!samples_.empty() &&
+                        s.recieved_at - samples_.back().recieved_at > config_.max_sample_age) {
+                        samples_.clear();
+                    }
                     samples_.push_back(s);
                     const auto cutoff = s.recieved_at - config_.window;
                     while(!samples_.empty() && 
@@ -59,7 +65,10 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         if(now - samples_.back().recieved_at > config_.max_sample_age){
             return result_;
         }
-        const auto cutoff = now - config_.window;
+        // Freshness is measured from the reader to the latest received sample above.
+        // Coverage and motion statistics describe the window ending at that sample.
+        // A delayed timer read must not discard the start of an otherwise fresh window.
+        const auto cutoff = samples_.back().recieved_at - config_.window;
 
         double sum_wx = 0.0;
         double sum_wy = 0.0;
