@@ -63,6 +63,7 @@ class TaskStateServer : public rclcpp::Node {
         if(!m->relocalized) ++state_.geometry_version;
         ++state_.pose_version;
         state_.workpiece_pose_valid=true;
+        invalidation_reason_.clear();
         state_.path_valid=false;
       });
     scene_=create_subscription<moveit_msgs::msg::PlanningScene>("/monitored_planning_scene",10,[this](moveit_msgs::msg::PlanningScene::ConstSharedPtr m){
@@ -95,10 +96,10 @@ class TaskStateServer : public rclcpp::Node {
     });
     fault_=create_subscription<std_msgs::msg::Bool>("/motion_fault",10,[this](std_msgs::msg::Bool::ConstSharedPtr m){
       state_.motion_fault_active=m->data;
-      if(m->data) invalidate();
+      if(m->data) invalidate("/motion_fault asserted");
     });
     invalidation_=create_subscription<std_msgs::msg::Bool>("/workpiece_pose_invalidated",10,
-      [this](std_msgs::msg::Bool::ConstSharedPtr m){if(m->data) invalidate();});
+      [this](std_msgs::msg::Bool::ConstSharedPtr m){if(m->data) invalidate("/workpiece_pose_invalidated asserted");});
     execution_=create_subscription<std_msgs::msg::UInt64>("/cut_profile/execution_version",
       rclcpp::QoS(1).transient_local(),[this](std_msgs::msg::UInt64::ConstSharedPtr m){
         state_.execution_version=m->data; state_.kerf_status=State::INVALID_OBSERVATION;
@@ -106,7 +107,7 @@ class TaskStateServer : public rclcpp::Node {
     timer_=create_wall_timer(std::chrono::milliseconds(50),[this]{
       const auto m=imu_->metrics();
       state_.supervision_valid=m.valid; state_.imu_stable=m.valid && m.stable;
-      if(!state_.imu_stable) invalidate();
+
       if(!m.valid)
         state_.status_message="Platform IMU invalid: samples=" + std::to_string(m.samples_count) +
           ", age_s=" + std::to_string(m.sample_age_s) +
@@ -117,6 +118,9 @@ class TaskStateServer : public rclcpp::Node {
       else if(state_.process_fault_active || state_.motion_fault_active)
         state_.status_message="Geometry valid; execution blocked by active fault";
       else state_.status_message="Geometry valid; platform supervision stable";
+      if(!state_.imu_stable) invalidate(state_.status_message);
+      else if(!state_.workpiece_pose_valid && !invalidation_reason_.empty())
+        state_.status_message += ". Pose invalidated by " + invalidation_reason_;
       state_.header.stamp=now(); pub_->publish(state_);
     });
   }
@@ -137,8 +141,16 @@ class TaskStateServer : public rclcpp::Node {
     check("mean_gyro",m.mean_ang_vel_rad_s,config.max_mean_ang_vel,"rad/s");
     return out.str();
   }
-  void invalidate() {
-    if(state_.workpiece_pose_valid) ++state_.pose_version;
+  // Preserve the first cause until a fresh reference is accepted. The platform
+  // can settle again before PlanCut checks the state at the end of planning.
+  std::string invalidation_reason_;
+  void invalidate(const std::string& reason) {
+    if(state_.workpiece_pose_valid) {
+      ++state_.pose_version;
+      invalidation_reason_=reason;
+      RCLCPP_WARN(get_logger(),"Workpiece pose invalidated (pose_version=%llu): %s",
+        static_cast<unsigned long long>(state_.pose_version),reason.c_str());
+    }
     state_.workpiece_pose_valid=false; state_.path_valid=false;
     state_.kerf_status=State::INVALID_OBSERVATION;
   }
