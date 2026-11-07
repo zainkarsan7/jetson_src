@@ -613,8 +613,8 @@ namespace hb_robot_skills{
 
         const std::vector<PlannerChoice> fallback = {
             {"ompl", "RRTConnectkConfigDefault", 2.0, 4},
-            {"ompl", "APSConfigDefault",        5.0, 1},
             {"ompl", "BiTRRTkConfigDefault",    3.0, 3},
+            {"ompl", "APSConfigDefault",        5.0, 1},
             {"ompl", "LBKPIECEkConfigDefault",  3.0, 3},
             {"ompl", "LazyPRMkConfigDefault",   3.0, 3},
             {"ompl", "RRTstarkConfigDefault",   5.0, 3},
@@ -652,7 +652,7 @@ namespace hb_robot_skills{
 
                 // Reject a trajectory whose actual endpoints do not
                 // match the requested joint configurations.
-                const double endpoint_tol = options_.boundary_tol;
+                const double endpoint_tol = 1e-3;
 
                 const double q_start = start_state.getVariablePosition(name);
                 const double q_goal  = target_state.getVariablePosition(name);
@@ -716,6 +716,7 @@ namespace hb_robot_skills{
                                     unsigned int planning_attempts = 1
                                 ) -> bool
         {
+
             ++attempts;
 
             move_group_->clearPoseTargets();
@@ -731,17 +732,38 @@ namespace hb_robot_skills{
             move_group_->setMaxVelocityScalingFactor(0.1);
             move_group_->setMaxAccelerationScalingFactor(0.1);
             move_group_->setNumPlanningAttempts(planning_attempts);
+                const auto t0 = std::chrono::steady_clock::now();
 
-            Plan candidate;
+                Plan candidate;
+                const auto result = move_group_->plan(candidate);
 
-            if (move_group_->plan(candidate) !=
-                moveit::core::MoveItErrorCode::SUCCESS)
-                return false;
+                const double elapsed_s =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - t0).count();
 
-            auto metrics = score(candidate);
+                if (result != moveit::core::MoveItErrorCode::SUCCESS) {
+                    RCLCPP_DEBUG(
+                        get_logger(),
+                        "[TRANSIT TRY] %s/%s failed time=%.2fs",
+                        pipeline.c_str(), planner.c_str(), elapsed_s);
+                    return false;
+                }
 
-            if (!metrics)
-                return false;
+                auto metrics = score(candidate);
+
+                if (!metrics) {
+                    RCLCPP_DEBUG(
+                        get_logger(),
+                        "[TRANSIT TRY] %s/%s rejected by scoring time=%.2fs",
+                        pipeline.c_str(), planner.c_str(), elapsed_s);
+                    return false;
+                }
+
+                RCLCPP_DEBUG(
+                    get_logger(),
+                    "[TRANSIT TRY] %s/%s cost=%.2f max_joint=%.3f time=%.2fs",
+                    pipeline.c_str(), planner.c_str(),
+                    metrics->cost, metrics->max_joint, elapsed_s);
 
             ++successful;
 
@@ -1593,9 +1615,15 @@ namespace hb_robot_skills{
         stored_plans_[id]=StoredPlan{executable_plan_,*profile_opt,planning_versions,
           goal->cut_id,goal->parent_plan_id,goal->intervals,false};
         for(const auto& segment:plan.segments) result->required_segments.push_back(segment.name);
-        result->plan_id=id;result->cut_id=goal->cut_id;result->parent_plan_id=goal->parent_plan_id;
-        if(goal->execute && !skip_motion_) {executeStored(id,goal_handle);return;}
-        result->success=true;result->message="Validated plan stored; no motion executed";
+        result->plan_id=id;
+        result->cut_id=goal->cut_id;
+        result->parent_plan_id=goal->parent_plan_id;
+        if(goal->execute && !skip_motion_) {
+            executeStored(id,goal_handle);
+            return;
+        }
+        result->success=true;
+        result->message="Validated plan stored; no motion executed";
         goal_handle->succeed(result);
     }
 

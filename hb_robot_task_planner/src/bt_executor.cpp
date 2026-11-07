@@ -88,9 +88,28 @@ class ActionNode : public BT::StatefulActionNode {
     }
     if(result_.wait_for(0s)!=std::future_status::ready) return BT::NodeStatus::RUNNING;
     const auto wrapped=result_.get();
-    return wrapped.code==rclcpp_action::ResultCode::SUCCEEDED && wrapped.result && finish_(*wrapped.result)?
-      BT::NodeStatus::SUCCESS:BT::NodeStatus::FAILURE;
-  }
+    
+    if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
+          !wrapped.result)
+      {
+          RCLCPP_ERROR(
+              rclcpp::get_logger("bt_executor"),
+              "Action '%s' failed: ROS result code=%d, has_result=%d",
+              name().c_str(),
+              static_cast<int>(wrapped.code),
+              static_cast<bool>(wrapped.result)
+          );
+          return BT::NodeStatus::FAILURE;
+      }
+
+      return finish_(*wrapped.result)
+          ? BT::NodeStatus::SUCCESS
+          : BT::NodeStatus::FAILURE;
+
+
+  } 
+
+  
   void onHalted() override {
     if(cancel_) *cancel_=true;
     if(handle_) client_->async_cancel_goal(handle_);
@@ -185,10 +204,17 @@ int main(int argc,char** argv) {
     goal.expected_pose_version=context->snapshot().pose_version;return true;
   },[](const auto& result){return result.localized && !result.poorly_constrained;});
   auto planGoal=[=](auto& goal,bool recut) {
-    const auto state=context->snapshot();if(!recovery::geometryPermitted(state)) return false;
-    goal.standoff=standoff;goal.pos_tol=pos_tol;goal.ang_tol=ang_tol;
-    goal.cut_id=context->cut_id;goal.geometry_version=state.geometry_version;
-    goal.pose_version=state.pose_version;goal.scene_version=state.scene_version;
+    const auto state=context->snapshot();
+    if(!recovery::geometryPermitted(state)) return false;
+    goal.standoff=standoff;
+    goal.pos_tol=pos_tol;
+    goal.ang_tol=ang_tol;
+    goal.cut_id=context->cut_id;
+    goal.geometry_version=state.geometry_version;
+    goal.pose_version=state.pose_version;
+    goal.scene_version=state.scene_version;
+    goal.execute = false;
+    goal.plan_id.clear();
     if(recut) {
       if(context->verdict.status!=recovery::State::RESIDUAL_MATERIAL) return false;
       goal.parent_plan_id=context->parent_id;
@@ -206,6 +232,16 @@ int main(int argc,char** argv) {
     return true;
   };
   auto planResult=[=](const auto& result){
+        RCLCPP_INFO(
+        node->get_logger(),
+        "PlanCut result: success=%d executed=%d interrupted=%d "
+        "plan_id='%s' message='%s'",
+        result.success,
+        result.executed,
+        result.interrupted,
+        result.plan_id.c_str(),
+        result.message.c_str()
+    );
     if(!result.success || result.plan_id.empty() || result.executed) return false;
     context->plan_id=result.plan_id;
     if(context->parent_id.empty()) {

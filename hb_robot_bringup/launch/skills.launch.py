@@ -51,6 +51,10 @@ def generate_launch_description():
         executable = "cut_profile_server",
         name = "cut_profile_server",
         output="screen",
+        ros_arguments=[
+        "--log-level",
+        "move_group_interface:=warn",
+    ],
         # prefix = ["gdb -ex run --args"],
         # parameters = [moveit_config.robot_description,
         # moveit_config.robot_description_semantic,

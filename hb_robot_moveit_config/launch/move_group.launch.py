@@ -7,3 +7,4 @@ def generate_launch_description():
             pipelines=["ompl", "chomp", "pilz_industrial_motion_planner","isaac_ros_cumotion"]
         ).to_moveit_configs() #sensors_3d().
     return generate_move_group_launch(moveit_config)
+
