@@ -240,3 +240,9 @@ ssh -N \
   -L 1666:127.0.0.1:1666 \
   -L 1667:127.0.0.1:1667 \
   zk-pac@192.168.200.150
+
+when fastdds fails 
+fastdds shm clean
+
+
+ros2 bag record <topic_name>

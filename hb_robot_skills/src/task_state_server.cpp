@@ -67,7 +67,27 @@ class TaskStateServer : public rclcpp::Node {
       });
     scene_=create_subscription<moveit_msgs::msg::PlanningScene>("/monitored_planning_scene",10,[this](moveit_msgs::msg::PlanningScene::ConstSharedPtr m){
       if(scene_revisions_.changed(*m)) {
-        ++state_.scene_version; state_.path_valid=false;
+        ++state_.scene_version; 
+        state_.path_valid=false;
+    RCLCPP_INFO_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        2000,
+        "Scene revision=%lu is_diff=%d "
+        "world_objects=%zu attached=%zu "
+        "octomap_bytes=%zu "
+        "fixed_tf=%zu acm_entries=%zu "
+        "robot_state_diff=%d",
+        static_cast<unsigned long>(state_.scene_version),
+        m->is_diff,
+        m->world.collision_objects.size(),
+        m->robot_state.attached_collision_objects.size(),
+        m->world.octomap.octomap.data.size(),
+        m->fixed_frame_transforms.size(),
+        m->allowed_collision_matrix.entry_names.size(),
+        m->robot_state.is_diff
+    );
+
       }
     });
     torch_=create_subscription<hb_robot_interfaces::msg::TorchStatus>("/cut_profile/torch_status",10,[this](hb_robot_interfaces::msg::TorchStatus::ConstSharedPtr m){
