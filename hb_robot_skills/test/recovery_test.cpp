@@ -1,3 +1,4 @@
+#include "hb_robot_skills/scene_revision_tracker.hpp"
 #include <gtest/gtest.h>
 #include <hb_robot_interfaces/recovery.hpp>
 #include <hb_robot_skills/kerf_evidence.hpp>
@@ -78,4 +79,56 @@ TEST(Rays, PolygonThicknessIntersection) {
     model.boundary.push_back(hb_perception::LineSegment2D{ab.first,ab.second});
   const auto interval=hb_robot_skills::materialRayInterval(model,{-1,.5,0},{1,0,0});
   ASSERT_TRUE(interval);EXPECT_DOUBLE_EQ(interval->first,1);EXPECT_DOUBLE_EQ(interval->second,2);
+}
+
+TEST(SceneRevision, JointFeedbackAndRepublishedSnapshotPreservePlan) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene scene;
+  scene.world.collision_objects.resize(1);
+  scene.world.collision_objects.front().id = "workpiece";
+  scene.fixed_frame_transforms.resize(1);
+  ASSERT_TRUE(tracker.changed(scene));
+  scene.robot_state.joint_state.position = {0.4};
+  ++scene.fixed_frame_transforms.front().header.stamp.sec;
+  EXPECT_FALSE(tracker.changed(scene));
+  moveit_msgs::msg::PlanningScene joints;
+  joints.is_diff = true;
+  joints.robot_state.is_diff = true;
+  joints.robot_state.joint_state.name = {"joint"};
+  EXPECT_FALSE(tracker.changed(joints));
+  EXPECT_FALSE(tracker.changed(scene));
+  scene.world.collision_objects.front().pose.position.x += 0.001;
+  EXPECT_TRUE(tracker.changed(scene));
+  scene.world.collision_objects.clear();
+  EXPECT_TRUE(tracker.changed(scene));
+}
+
+TEST(SceneRevision, RelativeEditsAndChangedCollisionPolicyInvalidate) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene edit;
+  edit.is_diff = true;
+  edit.world.collision_objects.resize(1);
+  edit.world.collision_objects.front().operation = moveit_msgs::msg::CollisionObject::APPEND;
+  EXPECT_TRUE(tracker.changed(edit));
+  EXPECT_TRUE(tracker.changed(edit));
+  edit.world.collision_objects.clear();
+  edit.allowed_collision_matrix.default_entry_names = {"torch"};
+  edit.allowed_collision_matrix.default_entry_values = {false};
+  EXPECT_TRUE(tracker.changed(edit));
+  EXPECT_FALSE(tracker.changed(edit));
+  edit.allowed_collision_matrix.default_entry_values = {true};
+  EXPECT_TRUE(tracker.changed(edit));
+}
+
+TEST(SceneRevision, ReplacingAttachedBodyStateInvalidates) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene scene;
+  scene.robot_state.attached_collision_objects.resize(1);
+  ASSERT_TRUE(tracker.changed(scene));
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  diff.robot_state.is_diff = false;
+  diff.robot_state.joint_state.name = {"joint"};
+  EXPECT_TRUE(tracker.changed(diff));
+  EXPECT_FALSE(tracker.changed(diff));
 }

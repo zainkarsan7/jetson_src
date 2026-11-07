@@ -99,6 +99,11 @@ def generate_launch_description():
             description="Preview inspection views; false permits post-cut camera motion."),
         DeclareLaunchArgument("platform_imu_topic", default_value="/hb_robot_lidar/imu",
             description="Independent platform-fixed IMU; never use robot-mounted /k4a/imu here."),
+        # Lidar IMU noise is higher than camera-settling noise. This initial
+        # platform-only allowance matches platform_telemetry's existing default;
+        # validate it against stationary AND disturbed recordings before cutting.
+        DeclareLaunchArgument("platform_imu_max_accel_rms", default_value="0.2",
+            description="Platform acceleration vector RMS about the window mean, in m/s^2; startup calibration setting."),
         Node(package="hb_robot_skills", executable="task_state_server", output="screen",
              parameters=[{"platform_imu_topic": LaunchConfiguration("platform_imu_topic"),
              "platform_imu.max_gyro_rms": 0.010,

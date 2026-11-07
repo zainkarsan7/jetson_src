@@ -1,3 +1,4 @@
+#include "hb_robot_skills/scene_revision_tracker.hpp"
 #include <hb_robot_interfaces/recovery.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <hb_robot_interfaces/msg/torch_status.hpp>
@@ -65,10 +66,7 @@ class TaskStateServer : public rclcpp::Node {
         state_.path_valid=false;
       });
     scene_=create_subscription<moveit_msgs::msg::PlanningScene>("/monitored_planning_scene",10,[this](moveit_msgs::msg::PlanningScene::ConstSharedPtr m){
-      // Robot state updates are not environment changes. Collision and ACM changes are.
-      if(!m->is_diff || !m->world.collision_objects.empty() || !m->world.octomap.octomap.data.empty() ||
-         !m->robot_state.attached_collision_objects.empty() ||
-         !m->allowed_collision_matrix.entry_names.empty()) {
+      if(scene_revisions_.changed(*m)) {
         ++state_.scene_version; state_.path_valid=false;
       }
     });
@@ -124,6 +122,7 @@ class TaskStateServer : public rclcpp::Node {
     state_.workpiece_pose_valid=false; state_.path_valid=false;
     state_.kerf_status=State::INVALID_OBSERVATION;
   }
+  hb_robot_skills::SceneRevisionTracker scene_revisions_;
   State state_;
   std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_;
   rclcpp::Publisher<State>::SharedPtr pub_;

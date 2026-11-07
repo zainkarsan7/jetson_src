@@ -1604,10 +1604,26 @@ namespace hb_robot_skills{
         publishVisualization(plan,estimate.header.frame_id);
         publishFeedback(goal_handle,"visualizing, cut plan ready");
 
+        if(canceled()) return;
         TaskState current_versions;
-        if(!taskPermitsExecution(&current_versions) ||
-           !hb_robot::recovery::sameVersions(planning_versions,current_versions) || canceled()) {
-          if(!goal_handle->is_canceling()) fail(0,"State changed during planning");return;
+        std::chrono::milliseconds heartbeat_age{};
+        const bool permitted = taskPermitsExecution(&current_versions, &heartbeat_age);
+        if(!permitted || !hb_robot::recovery::sameVersions(planning_versions,current_versions)) {
+            std::ostringstream reason;
+            reason << "PlanCut refused to store preview: geometry_version "
+                   << planning_versions.geometry_version << " -> " << current_versions.geometry_version
+                   << ", pose_version " << planning_versions.pose_version << " -> " << current_versions.pose_version
+                   << ", scene_version " << planning_versions.scene_version << " -> " << current_versions.scene_version
+                   << ", heartbeat_age_ms=" << heartbeat_age.count()
+                   << ", supervision_valid=" << current_versions.supervision_valid
+                   << ", imu_stable=" << current_versions.imu_stable
+                   << ", pose_valid=" << current_versions.workpiece_pose_valid
+                   << ", process_fault=" << current_versions.process_fault_active
+                   << ", motion_fault=" << current_versions.motion_fault_active
+                   << ", task_state: " << current_versions.status_message;
+            RCLCPP_WARN(get_logger(), "%s", reason.str().c_str());
+            fail(0,reason.str());
+            return;
         }
         const auto id="cut_plan_"+std::to_string(++next_plan_);
         // Keep original geometry even for a recovery plan, so future interval

@@ -3,10 +3,10 @@
     <!-- ////////// -->
     <BehaviorTree ID="BehaviorTree">
         <Sequence name="BaselineInspectPlanCut">
-            <Action ID="InspectProfile" name=""/>
-            <Action ID="AwaitGeometry" name=""/>
-            <Action ID="PlanCut" name=""/>
-            <Action ID="ExecuteCut" name=""/>
+            <Action ID="InspectProfile"/>
+            <Action ID="AwaitGeometry"/>
+            <Action ID="PlanCut"/>
+            <Action ID="ExecuteCut"/>
         </Sequence>
     </BehaviorTree>
     <!-- ////////// -->

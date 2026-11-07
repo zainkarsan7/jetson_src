@@ -37,8 +37,9 @@ pose and advances its epoch once. Returning stable does not restore pose validit
 
 A new full reference advances geometry and pose. Relocalization preserves geometry
 identity and advances pose. Environment changes advance scene; robot-state-only updates
-do not. Full scene snapshots and ACM updates conservatively invalidate plans even when
-they might be equivalent. This may cause unnecessary replanning.
+do not. Repeated full snapshots with equivalent collision data preserve the scene version.
+Collision-object and octomap diffs conservatively invalidate the plan. The server
+reports the planning and current epochs if it refuses to store a preview.
 
 State-manager restart begins a new timestamp-based epoch. A reference more than five
 seconds old cannot establish validity on restart; a latched old reference can still
@@ -222,3 +223,31 @@ Humble in this workspace. The selected regression run passed 40 assertions/tests
 22 existing cut-graph tests. Launch syntax and git diff whitespace checks also passed.
 These are software checks; physical registration accuracy, ray-model calibration,
 controller-fault wiring and measured stop latency remain hardware experiments.
+
+## Platform acceleration noise allowance
+
+The skills launch exposes platform_imu_max_accel_rms, default 0.2 m/s², passed as
+the startup parameter platform_imu.max_accel_rms on task_state_server.
+This platform-only initial allowance matches platform_telemetry's existing default.
+It was introduced after a lidar window reported acceleration RMS 0.121934 m/s²,
+gyro RMS 0.007499 rad/s and mean gyro 0.011361 rad/s: only acceleration failed
+the former 0.1 m/s² launch behavior. Camera settling, gyro thresholds, freshness,
+sample coverage and reference validation rules are unchanged. The standalone
+task_state_server default remains 0.1 unless explicitly overridden.
+
+The reported window would pass at 0.2; this does not establish a calibrated motion
+boundary. Measure longer known-stationary recordings and deliberate platform
+disturbances before selecting the operational limit. The statistic is vector RMS
+about the window mean, not absolute acceleration or peak acceleration.
+
+Example override for the skills launch:
+
+    ros2 launch hb_robot_bringup skills.launch.py platform_imu_max_accel_rms:=0.2
+
+The parameter is read-only after startup. Restart the node/launch to apply it.
+Confirm with:
+
+    ros2 param get /task_state_server platform_imu.max_accel_rms
+
+A rejected reference is not queued: after stable supervision is established,
+rerun inspection or explicitly revalidate an existing reference.

@@ -94,17 +94,20 @@ class ActionNode : public BT::StatefulActionNode {
       {
           RCLCPP_ERROR(
               rclcpp::get_logger("bt_executor"),
-              "Action '%s' failed: ROS result code=%d, has_result=%d",
-              name().c_str(),
+              "Action '%s' failed: ROS result code=%d, has_result=%d, server message: %s",
+              registrationName().c_str(),
               static_cast<int>(wrapped.code),
-              static_cast<bool>(wrapped.result)
+              static_cast<bool>(wrapped.result),
+              wrapped.result ? wrapped.result->message.c_str() : "(no result)"
           );
           return BT::NodeStatus::FAILURE;
       }
 
-      return finish_(*wrapped.result)
-          ? BT::NodeStatus::SUCCESS
-          : BT::NodeStatus::FAILURE;
+      if (finish_(*wrapped.result)) return BT::NodeStatus::SUCCESS;
+      RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
+          "Action '%s' returned SUCCEEDED but its result failed the BT check: %s",
+          registrationName().c_str(), wrapped.result->message.c_str());
+      return BT::NodeStatus::FAILURE;
 
 
   } 
@@ -312,7 +315,8 @@ int main(int argc,char** argv) {
     }
     tree.haltTree();
     code=status==BT::NodeStatus::SUCCESS?0:1;
-    RCLCPP_INFO(node->get_logger(),"Recovery tree finished: %s",code?"unverified / intervention required":"separation verified");
+    RCLCPP_INFO(node->get_logger(), "Tree '%s' finished with %s", file.c_str(),
+        status == BT::NodeStatus::RUNNING ? "INTERRUPTED" : (code ? "FAILURE" : "SUCCESS"));
   } catch(const std::exception& e){
     RCLCPP_ERROR(node->get_logger(),"%s",e.what());}
   executor.cancel();

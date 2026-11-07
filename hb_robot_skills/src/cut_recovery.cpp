@@ -8,10 +8,12 @@ CutProfileServer::~CutProfileServer() {
   if(worker_.joinable()) worker_.join();
   if(escape_worker_.joinable()) escape_worker_.join();
 }
-bool CutProfileServer::taskPermitsExecution(TaskState* snapshot) const {
+bool CutProfileServer::taskPermitsExecution(TaskState* snapshot, std::chrono::milliseconds* age) const {
   std::lock_guard<std::mutex> lock(task_mutex_);
   if(snapshot) *snapshot=task_state_;
-  return std::chrono::steady_clock::now()-task_received_<std::chrono::milliseconds(500) &&
+  const auto elapsed=std::chrono::steady_clock::now()-task_received_;
+  if(age) *age=std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+  return elapsed<std::chrono::milliseconds(500) &&
     hb_robot::recovery::geometryPermitted(task_state_);
 }
 void CutProfileServer::executeStored(const std::string& id,

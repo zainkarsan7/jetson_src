@@ -180,7 +180,7 @@ namespace hb_robot_skills{
         rclcpp_action::Server<hb_robot_interfaces::action::Escape>::SharedPtr escape_server_;
         std::thread worker_, escape_worker_;
         std::atomic<bool> escape_busy_{false};
-        bool taskPermitsExecution(TaskState* snapshot=nullptr) const;
+        bool taskPermitsExecution(TaskState* snapshot=nullptr, std::chrono::milliseconds* age=nullptr) const;
         void executeStored(const std::string& id,
             const std::shared_ptr<GoalHandleCutProfile>& handle);
         void escape(const std::shared_ptr<rclcpp_action::ServerGoalHandle<
