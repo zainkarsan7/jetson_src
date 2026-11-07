@@ -37,11 +37,8 @@ class SceneRevisionTracker {
       for (auto& object : objects) object.header.stamp = builtin_interfaces::msg::Time{};
       dirty |= replace(objects_, objects);
       have_world_ = true;
-    } else if (!world.collision_objects.empty()) {
-      // These are operations (including relative APPEND), not a world snapshot.
-      // Invalidate immediately and resynchronize at the next full scene.
-      have_world_ = false;
-      dirty = true;
+    } else {
+      for (const auto& edit : world.collision_objects) dirty |= applyObjectEdit(edit);
     }
 
     if (full || !world.octomap.octomap.id.empty() || !world.octomap.octomap.data.empty()) {
@@ -89,6 +86,31 @@ class SceneRevisionTracker {
   }
 
  private:
+  bool applyObjectEdit(Object edit) {
+    // For a known world, absolute ADD/REMOVE operations have a predictable
+    // result. Updating the baseline also makes the confirming full scene a no-op.
+    // Relative edits and bulk operations still require a full resynchronization.
+    if (!have_world_ || edit.id.empty() ||
+        (edit.operation != Object::ADD && edit.operation != Object::REMOVE)) {
+      have_world_ = false;
+      return true;
+    }
+    auto pos = std::lower_bound(objects_.begin(), objects_.end(), edit.id,
+        [](const Object& obj, const std::string& id) { return obj.id < id; });
+    const bool exists = pos != objects_.end() && pos->id == edit.id;
+    if (edit.operation == Object::REMOVE) {
+      if (exists) objects_.erase(pos);
+      return exists;
+    }
+    edit.header.stamp = builtin_interfaces::msg::Time{};
+    if (exists) {
+      if (samePose(edit.pose, pos->pose)) edit.pose = pos->pose;
+      return replace(*pos, edit);
+    }
+    objects_.insert(pos, std::move(edit));
+    return true;
+  }
+
   template <typename T>
   static bool replace(T& previous, const T& value) {
     if (previous == value) return false;

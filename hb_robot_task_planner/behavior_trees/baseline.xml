@@ -4,15 +4,24 @@
     <BehaviorTree ID="BehaviorTree">
         <Sequence name="BaselineInspectPlanCut">
             <Action ID="InspectProfile"/>
-            <Action ID="AwaitGeometry"/>
+            <Action ID="AwaitPlanningReference"/>
             <Action ID="PlanCut"/>
-            <!-- Recheck the live task state after a preview has been stored. -->
+            <!-- A candidate already exists here. At most one fresh camera observation
+                 may confirm its pose. A changed fit requires a new plan. -->
+            <Fallback>
+                <Condition ID="WorkpiecePoseValid"/>
+                <Sequence>
+                    <Action ID="RevalidateWorkpiece"/>
+                    <Action ID="AwaitGeometry"/>
+                </Sequence>
+            </Fallback>
             <Condition ID="ValidateTaskState"/>
             <Action ID="ExecuteCut"/>
         </Sequence>
     </BehaviorTree>
     <!-- ////////// -->
     <TreeNodesModel>
+        <Action ID="AwaitPlanningReference"/>
         <Action ID="AwaitGeometry"/>
         <Action ID="Escape"/>
         <Action ID="ExecuteCut"/>

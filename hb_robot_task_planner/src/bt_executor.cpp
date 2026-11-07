@@ -28,11 +28,11 @@ using Escape=hb_robot_interfaces::action::Escape;
 // state is changed on the tick thread after an action result has been received.
 struct Context {
   std::mutex mutex;
-  recovery::State state;
+  recovery::State state,requested_plan_state;
   hb_robot_interfaces::msg::ProfileEstimate estimate;
   recovery::Evidence evidence;
   std::chrono::steady_clock::time_point received{};
-  std::string cut_id,plan_id,parent_id;
+  std::string cut_id,plan_id,parent_id,inspection_reference_id;
   std::vector<std::string> required_segments;
   recovery::Verdict verdict;
   uint64_t execution_version=0;
@@ -41,7 +41,10 @@ struct Context {
   recovery::State snapshot() {
     std::lock_guard<std::mutex> lock(mutex);
     auto result=state;
-    if(std::chrono::steady_clock::now()-received>500ms) result.supervision_valid=false;
+    if(std::chrono::steady_clock::now()-received>500ms) {
+      result.supervision_valid=false;
+      result.scene_valid=false;
+    }
     return result;
   }
 };
@@ -131,14 +134,24 @@ class ActionNode : public BT::StatefulActionNode {
 };
 class AwaitGeometry : public BT::StatefulActionNode {
  public:
-  AwaitGeometry(const std::string& n,const BT::NodeConfiguration& c,std::shared_ptr<Context> context):
-    BT::StatefulActionNode(n,c),context_(context){}
+  AwaitGeometry(const std::string& n,const BT::NodeConfiguration& c,std::shared_ptr<Context> context,bool planning=false):
+    BT::StatefulActionNode(n,c),context_(context),planning_(planning){}
   static BT::PortsList providedPorts(){return {};}
   BT::NodeStatus onStart() override {start_=std::chrono::steady_clock::now();return onRunning();}
   BT::NodeStatus onRunning() override {
     const auto state=context_->snapshot();
-    if(recovery::geometryPermitted(state)) return BT::NodeStatus::SUCCESS;
+    if(planning_) {
+      if(state.scene_valid && state.scene_id==context_->inspection_reference_id)
+        return BT::NodeStatus::SUCCESS;
+    } else if(recovery::geometryPermitted(state) && state.scene_id==context_->inspection_reference_id)
+      return BT::NodeStatus::SUCCESS;
     if(std::chrono::steady_clock::now()-start_<=3s) return BT::NodeStatus::RUNNING;
+    if(planning_) {
+      RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
+        "Inspection reference %s was not acknowledged for planning (latest accepted=%s)",
+        context_->inspection_reference_id.c_str(),state.scene_id.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
     RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
       "AwaitGeometry timed out: supervision_valid=%d imu_stable=%d pose_valid=%d "
       "process_fault=%d motion_fault=%d; task_state: %s",
@@ -148,7 +161,7 @@ class AwaitGeometry : public BT::StatefulActionNode {
   }
   void onHalted() override {}
  private:
-  std::shared_ptr<Context> context_;std::chrono::steady_clock::time_point start_;
+  std::shared_ptr<Context> context_;bool planning_;std::chrono::steady_clock::time_point start_;
 };
 template<class Action,class Goal,class Result>
 void action(BT::BehaviorTreeFactory& factory,const std::string& name,
@@ -182,7 +195,13 @@ int main(int argc,char** argv) {
     std::lock_guard<std::mutex> lock(context->mutex);return !context->estimate.profile_name.empty();
   });
   condition("WorkpiecePoseValid",[=]{return recovery::geometryPermitted(context->snapshot());});
-  condition("ValidateTaskState",[=]{return recovery::geometryPermitted(context->snapshot());});
+  condition("ValidateTaskState",[=]{
+    const auto state=context->snapshot();
+    if(recovery::geometryPermitted(state) && recovery::sameVersions(state,context->requested_plan_state)) return true;
+    RCLCPP_WARN(node->get_logger(),"Execution blocked for candidate %s (requires live permission and matching versions): %s",
+                context->plan_id.c_str(),state.status_message.c_str());
+    return false;
+  });
   condition("FaultActive",[=]{const auto s=context->snapshot();
     return s.process_fault_active || s.motion_fault_active || (context->executed && (!s.supervision_valid || !s.imu_stable));});
   condition("KerfVerified",[=]{return context->verdict.status==recovery::State::VERIFIED;});
@@ -197,22 +216,29 @@ int main(int argc,char** argv) {
   });
   factory.registerBuilder<AwaitGeometry>("AwaitGeometry",[=](const auto& n,const auto& c){
     return std::make_unique<AwaitGeometry>(n,c,context);});
+  factory.registerBuilder<AwaitGeometry>("AwaitPlanningReference",[=](const auto& n,const auto& c){
+    return std::make_unique<AwaitGeometry>(n,c,context,true);});
   action<Inspect>(factory,"InspectProfile",node,"inspect_profile",[](auto& goal){
     goal.max_views=10;goal.samples_per_view=3;goal.depth_range=0.75;goal.camera_standoff=0.4;return true;
   },[=](const auto& result){
+    context->inspection_reference_id=std::to_string(rclcpp::Time(result.profile_pose.header.stamp).nanoseconds());
     return result.success && std::isfinite(result.rms_error) && result.rms_error<0.01 &&
       result.inlier_fraction>0.3 && result.coverage>0.2;
   });
   action<Revalidate>(factory,"RevalidateWorkpiece",node,"revalidate_workpiece",[=](auto& goal){
     goal.expected_pose_version=context->snapshot().pose_version;return true;
-  },[](const auto& result){return result.localized && !result.poorly_constrained;});
+  },[=](const auto& result){
+    context->inspection_reference_id=std::to_string(rclcpp::Time(result.estimate.header.stamp).nanoseconds());
+    return result.localized && !result.poorly_constrained;
+  });
   auto planGoal=[=](auto& goal,bool recut) {
     const auto state=context->snapshot();
-    if(!recovery::geometryPermitted(state)) return false;
+    if(!state.scene_valid || (recut && !recovery::geometryPermitted(state))) return false;
     goal.standoff=standoff;
     goal.pos_tol=pos_tol;
     goal.ang_tol=ang_tol;
     goal.cut_id=context->cut_id;
+    context->requested_plan_state=state;
     goal.geometry_version=state.geometry_version;
     goal.pose_version=state.pose_version;
     goal.scene_version=state.scene_version;

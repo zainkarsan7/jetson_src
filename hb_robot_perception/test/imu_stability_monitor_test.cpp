@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <hb_robot_perception/imu_stability_monitor.hpp>
 #include <thread>
+#include <future>
 #include <cmath>
 #include <limits>
 
@@ -82,4 +83,36 @@ TEST_F(ImuMonitorTest, NonfiniteSamplesCannotEstablishValidity) {
   stream(std::numeric_limits<double>::quiet_NaN());
   EXPECT_FALSE(monitor->metrics().valid);EXPECT_FALSE(monitor->metrics().stable);
   EXPECT_EQ(monitor->metrics().samples_count,0u);
+}
+
+TEST_F(ImuMonitorTest, PlatformReceptionContinuesDuringBusyStateCallback) {
+  executor->remove_node(node);
+  auto group=node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  monitor=std::make_unique<hb_perception::ImuStabilityMonitor>(
+      *node,"/test/recovery_imu",hb_perception::ImuStabilityConfig{},group);
+  std::promise<void> entered,release;
+  auto started=entered.get_future();
+  auto resume=release.get_future().share();
+  std::atomic<bool> first{true};
+  auto busy=node->create_wall_timer(10ms,[&] {
+    if(first.exchange(false)) {
+      entered.set_value();
+      resume.wait();
+    }
+  });
+  rclcpp::executors::MultiThreadedExecutor workers(rclcpp::ExecutorOptions{},2);
+  workers.add_node(node);
+  std::thread spin([&] { workers.spin(); });
+  EXPECT_EQ(started.wait_for(2s),std::future_status::ready);
+  const auto end=std::chrono::steady_clock::now()+1500ms;
+  while(std::chrono::steady_clock::now()<end) {
+    pub->publish(sensor_msgs::msg::Imu{});
+    std::this_thread::sleep_for(4ms);
+  }
+  EXPECT_TRUE(monitor->metrics().stable);
+  release.set_value();
+  workers.cancel();
+  spin.join();
+  workers.remove_node(node);
+  executor->add_node(node);
 }

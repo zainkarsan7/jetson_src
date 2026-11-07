@@ -5,16 +5,23 @@
 
 namespace hb_perception{
 
+ImuStabilityMonitor::ImuStabilityMonitor(rclcpp::Node& node, const std::string& topic,
+                                         ImuStabilityConfig config)
+    : ImuStabilityMonitor(node, topic, config, nullptr) {}
+
 ImuStabilityMonitor::ImuStabilityMonitor(
             rclcpp::Node& node,
             const std::string& imu_topic,
-            ImuStabilityConfig config):
+            ImuStabilityConfig config,
+            rclcpp::CallbackGroup::SharedPtr callback_group):
             config_(config){
             auto qos = rclcpp::SensorDataQoS();
+            rclcpp::SubscriptionOptions options;
+            options.callback_group = callback_group;
             sub_ = node.create_subscription<sensor_msgs::msg::Imu>(imu_topic,qos,
             [this](const sensor_msgs::msg::Imu::SharedPtr msg){
                 onImu(msg);
-            });
+            }, options);
             }
 
 

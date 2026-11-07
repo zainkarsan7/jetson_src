@@ -1193,11 +1193,11 @@ namespace hb_robot_skills{
         };
 
         TaskState planning_versions;
-        if(!taskPermitsExecution(&planning_versions) ||
+        if(!readFreshTaskState(planning_versions) || !planning_versions.scene_valid ||
            goal->geometry_version!=planning_versions.geometry_version ||
            goal->pose_version!=planning_versions.pose_version ||
            goal->scene_version!=planning_versions.scene_version) {
-          fail(0,"Fresh validated geometry and matching task versions required");return;
+          fail(0,"Planning needs a fresh task heartbeat, a measured reference and matching snapshot versions");return;
         }
         publishFeedback(goal_handle,"acquiring estimate");
 
@@ -1606,25 +1606,11 @@ namespace hb_robot_skills{
 
         if(canceled()) return;
         TaskState current_versions;
-        std::chrono::milliseconds heartbeat_age{};
-        const bool permitted = taskPermitsExecution(&current_versions, &heartbeat_age);
-        if(!permitted || !hb_robot::recovery::sameVersions(planning_versions,current_versions)) {
-            std::ostringstream reason;
-            reason << "PlanCut refused to store preview: geometry_version "
-                   << planning_versions.geometry_version << " -> " << current_versions.geometry_version
-                   << ", pose_version " << planning_versions.pose_version << " -> " << current_versions.pose_version
-                   << ", scene_version " << planning_versions.scene_version << " -> " << current_versions.scene_version
-                   << ", heartbeat_age_ms=" << heartbeat_age.count()
-                   << ", supervision_valid=" << current_versions.supervision_valid
-                   << ", imu_stable=" << current_versions.imu_stable
-                   << ", pose_valid=" << current_versions.workpiece_pose_valid
-                   << ", process_fault=" << current_versions.process_fault_active
-                   << ", motion_fault=" << current_versions.motion_fault_active
-                   << ", task_state: " << current_versions.status_message;
-            RCLCPP_WARN(get_logger(), "%s", reason.str().c_str());
-            fail(0,reason.str());
-            return;
-        }
+        const bool permitted = taskPermitsExecution(&current_versions);
+        // The stored versions describe the detached scene used to plan. A candidate
+        // can be inspected after a gap or a scene edit. executeStored independently
+        // requires live permission, the same versions, matching joints and collision checks.
+        const bool current=permitted && hb_robot::recovery::sameVersions(planning_versions,current_versions);
         const auto id="cut_plan_"+std::to_string(++next_plan_);
         // Keep original geometry even for a recovery plan, so future interval
         // coordinates always refer to the initial feature, never to a prior slice.
@@ -1639,7 +1625,14 @@ namespace hb_robot_skills{
             return;
         }
         result->success=true;
-        result->message="Validated plan stored; no motion executed";
+        std::ostringstream summary;
+        summary << "Candidate stored for geometry=" << planning_versions.geometry_version
+                << ", pose=" << planning_versions.pose_version << ", scene=" << planning_versions.scene_version;
+        if(current) summary << "; execution requires live checks";
+        else summary << "; execution blocked at preview completion (current geometry="
+                     << current_versions.geometry_version << ", pose=" << current_versions.pose_version
+                     << ", scene=" << current_versions.scene_version << ", " << current_versions.status_message << ")";
+        result->message=summary.str();
         goal_handle->succeed(result);
     }
 

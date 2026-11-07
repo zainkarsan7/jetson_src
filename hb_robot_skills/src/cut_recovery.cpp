@@ -8,13 +8,16 @@ CutProfileServer::~CutProfileServer() {
   if(worker_.joinable()) worker_.join();
   if(escape_worker_.joinable()) escape_worker_.join();
 }
-bool CutProfileServer::taskPermitsExecution(TaskState* snapshot, std::chrono::milliseconds* age) const {
+bool CutProfileServer::readFreshTaskState(TaskState& snapshot) const {
   std::lock_guard<std::mutex> lock(task_mutex_);
-  if(snapshot) *snapshot=task_state_;
-  const auto elapsed=std::chrono::steady_clock::now()-task_received_;
-  if(age) *age=std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
-  return elapsed<std::chrono::milliseconds(500) &&
-    hb_robot::recovery::geometryPermitted(task_state_);
+  snapshot=task_state_;
+  return std::chrono::steady_clock::now()-task_received_<std::chrono::milliseconds(500);
+}
+bool CutProfileServer::taskPermitsExecution(TaskState* snapshot) const {
+  TaskState state;
+  const bool fresh=readFreshTaskState(state);
+  if(snapshot) *snapshot=state;
+  return fresh && hb_robot::recovery::geometryPermitted(state);
 }
 void CutProfileServer::executeStored(const std::string& id,
     const std::shared_ptr<GoalHandleCutProfile>& h) {
@@ -53,11 +56,11 @@ void CutProfileServer::executeStored(const std::string& id,
   auto actual=move_group_->getCurrentState(2.0);
   if(!actual || stored.executable.cuts.empty()) {finish("Missing current robot state");return;}
   const auto& start=stored.executable.cuts.front().transit_in.trajectory_.joint_trajectory;
-  if(start.points.empty() || start.points.front().positions.size()!=start.joint_names.size()) {
+  if(start.joint_names.empty() || start.points.empty() || start.points.front().positions.size()!=start.joint_names.size()) {
     finish("Invalid trajectory start");return;
   }
   for(size_t j=0;j<start.joint_names.size();++j)
-    if(std::abs(actual->getVariablePosition(start.joint_names[j])-start.points.front().positions[j])>0.02) {
+    if(!(std::abs(actual->getVariablePosition(start.joint_names[j])-start.points.front().positions[j])<=0.02)) {
       finish("Robot moved since planning; request a new plan");return;
     }
   // Current scene validation is independent of the optimizer and stored versions.

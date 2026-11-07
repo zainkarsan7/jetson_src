@@ -53,6 +53,10 @@ class ImuStabilityMonitor{
             rclcpp::Node& node,
             const std::string& imu_topic,
             ImuStabilityConfig config = {}
+        );
+        ImuStabilityMonitor(
+            rclcpp::Node& node, const std::string& imu_topic, ImuStabilityConfig config,
+            rclcpp::CallbackGroup::SharedPtr callback_group
 
         );
         bool waitForStable(

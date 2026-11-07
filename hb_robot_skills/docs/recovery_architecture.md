@@ -31,20 +31,36 @@ WorkpieceReference binds an estimate and its extracted cloud in the planning fra
 Intermediate estimates remain available for visualization but never restore validity.
 TaskState extends the original phase interface with explicit validity and epochs.
 
-The state server publishes every 50 ms. Clients deny execution if delivery is absent
-for 500 ms. Platform disturbance or missing IMU data invalidates a previously valid
-pose and advances its epoch once. Returning stable does not restore pose validity.
+The state server publishes every 50 ms. A fresh, well-formed full inspection creates
+a measured reference. `scene_valid` reports that a planning reference exists and
+`scene_id` identifies the accepted publication by its timestamp in nanoseconds.
+`AwaitPlanningReference` matches this ID against the actual inspection result so a
+latched reference from a previous run cannot satisfy the baseline.
 
-A new full reference advances geometry and pose. Relocalization preserves geometry
-identity and advances pose. Environment changes advance scene; robot-state-only updates
-do not. Repeated full snapshots with equivalent collision data preserve the scene version.
-Collision-object and octomap diffs conservatively invalidate the plan. The server
-reports the planning and current epochs if it refuses to store a preview.
+The reference estimate carries publication time. Its cloud carries the earliest
+integrated observation time for a full inspection, or the new image time for
+relocalization. Live supervision, observation history and motion faults determine
+`workpiece_pose_valid`. A platform outage or measured disturbance clears execution
+confirmation and retains the measured pose and its version. Stable IMU readings alone
+cannot confirm a reference after an outage.
 
-State-manager restart begins a new timestamp-based epoch. A reference more than five
-seconds old cannot establish validity on restart; a latched old reference can still
-serve as registration input. Execution epochs advance before plan movement, preventing
-evidence from an earlier attempt from validating a later attempt.
+A full inspection advances geometry and pose versions. Fresh registration can confirm
+the same pose or commit a correction. The former preserves the baseline coordinates,
+cloud and versions. The latter advances the pose version and requires a new candidate.
+The reuse threshold is 0.1 mm of fitted displacement at every extrusion vertex. This
+threshold is a numerical comparison between estimates, not a sensor accuracy claim.
+
+PlanCut needs a measured reference, a fresh task heartbeat and matching versions at
+entry. It stores a candidate against the detached scene it used even if supervision
+or scene versions change during computation. The baseline allows one fresh camera
+localization if execution confirmation is missing. Execution requires the original
+versions, a heartbeat younger than 500 ms, healthy platform supervision, a confirmed
+pose and clear faults. The server also checks the actual robot start joints and tests
+the stored trajectory against the current collision scene.
+
+A state-manager restart creates a new version epoch. A reference publication older
+than five seconds cannot initialize planning after restart. Execution epochs advance
+before movement so evidence belongs to a specific attempt.
 
 ## ValidateKerf and evidence
 
@@ -108,8 +124,8 @@ The action takes an expected pose epoch and requires a stored reference.
    50 mm or rotation above 0.10 rad.
 5. Restart registration from ±15 mm axial offsets. Comparably good solutions that remain
    displaced by over 5 mm report poorly_constrained.
-6. Recheck platform/camera stability, heartbeat and expected epoch. Update existing
-   collision objects with the rigid correction, then publish the estimate/reference.
+6. Recheck platform/camera stability, heartbeat and expected epoch. Apply a material
+   correction to the collision objects, then publish the reference for confirmation.
 
 The axial restart test is an ambiguity heuristic, not a full observability proof.
 Uniform sections may correctly refuse localization and require distinctive geometry.

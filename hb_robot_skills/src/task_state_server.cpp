@@ -13,8 +13,8 @@
 #include <stdexcept>
 
 using State=hb_robot_interfaces::msg::TaskState;
-// Single writer for versions. The executor is single threaded, so reference commits,
-// disturbance invalidation and publication cannot interleave half an update.
+// All state writers stay in the default mutually exclusive callback group.
+// Only IMU reception runs concurrently; the monitor protects its own sample buffer.
 class TaskStateServer : public rclcpp::Node {
  public:
   TaskStateServer():Node("task_state_server") {
@@ -37,7 +37,8 @@ class TaskStateServer : public rclcpp::Node {
     config.max_lin_acc_rms=limit("platform_imu.max_accel_rms",config.max_lin_acc_rms);
     config.max_mean_ang_vel=limit("platform_imu.max_mean_gyro",config.max_mean_ang_vel);
     const auto topic=declare_parameter<std::string>("platform_imu_topic","/hb_robot_lidar/imu");
-    imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,topic,config);
+    imu_callbacks_=create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,topic,config,imu_callbacks_);
     RCLCPP_INFO(get_logger(),
       "Platform supervision: %s; gyro RMS < %.6f rad/s, accel RMS < %.6f m/s^2, "
       "mean gyro < %.6f rad/s; independent of platform_telemetry settings",
@@ -47,49 +48,46 @@ class TaskStateServer : public rclcpp::Node {
       "/workpiece_reference",rclcpp::QoS(1).transient_local(),[this](hb_robot_interfaces::msg::WorkpieceReference::ConstSharedPtr m){
         const auto metrics=imu_->metrics();
         const double age=(now()-rclcpp::Time(m->estimate.header.stamp)).seconds();
-        if(age<0 || age>5 || !metrics.valid || !metrics.stable || m->cloud.data.empty() ||
-           m->estimate.header.frame_id.empty()) {
-          RCLCPP_WARN(get_logger(),
-            "Reference rejected: age=%.3fs (allowed 0..5), imu_valid=%d imu_stable=%d "
-            "samples=%zu sample_age=%.3fs cloud_empty=%d frame_empty=%d. "
-            "Restore supervision and acquire a fresh reference; rejected references are not queued.",
-            age, metrics.valid, metrics.stable, metrics.samples_count, metrics.sample_age_s,
-            m->cloud.data.empty(), m->estimate.header.frame_id.empty());
-          RCLCPP_WARN(get_logger(),"Reference stability diagnostics: %s",
-            stabilitySummary(metrics).c_str());
+        const auto published=rclcpp::Time(m->estimate.header.stamp).nanoseconds();
+        const auto observed=rclcpp::Time(m->cloud.header.stamp).nanoseconds();
+        if(age<0 || age>5 || published<=last_publication_ || observed<=0 ||
+           observed>published || m->cloud.data.empty() || m->estimate.profile_name.empty() ||
+           m->estimate.header.frame_id.empty() || m->estimate.header.frame_id!=m->cloud.header.frame_id) {
+          RCLCPP_WARN(get_logger(),"Rejected malformed, expired or superseded workpiece reference");
           return;
         }
-        if(m->relocalized && m->expected_pose_version!=state_.pose_version) return;
+        if(m->relocalized && (!state_.scene_valid || m->expected_pose_version!=state_.pose_version)) return;
+        // A measured fit can support a candidate even when its observation interval
+        // cannot support execution. Never promote it just because the IMU recovers.
+        const bool confirmed=metrics.valid && metrics.stable && observed>last_untrusted_ &&
+            metrics.reception_gaps==last_seen_gaps_ && !state_.motion_fault_active;
         if(!m->relocalized) ++state_.geometry_version;
-        ++state_.pose_version;
-        reference_reception_gaps_=metrics.reception_gaps;
-        state_.workpiece_pose_valid=true;
-        invalidation_reason_.clear();
+        if(!m->relocalized || m->estimate.pose!=measured_pose_) ++state_.pose_version;
+        measured_pose_=m->estimate.pose;
+        last_publication_=published;
+        state_.scene_valid=true;
+        state_.scene_id=std::to_string(published);
+        state_.workpiece_pose_valid=confirmed;
+        invalidation_reason_=confirmed ? "" : "reference requires a fresh supervised observation";
+        RCLCPP_INFO(get_logger(),"Reference %s accepted for planning; execution pose confirmed=%d",
+                    state_.scene_id.c_str(),confirmed);
         state_.path_valid=false;
       });
     scene_=create_subscription<moveit_msgs::msg::PlanningScene>("/monitored_planning_scene",10,[this](moveit_msgs::msg::PlanningScene::ConstSharedPtr m){
       if(scene_revisions_.changed(*m)) {
-        ++state_.scene_version; 
+        ++state_.scene_version;
         state_.path_valid=false;
-    RCLCPP_INFO_THROTTLE(
-        get_logger(),
-        *get_clock(),
-        2000,
-        "Scene revision=%lu is_diff=%d "
-        "world_objects=%zu attached=%zu "
-        "octomap_bytes=%zu "
-        "fixed_tf=%zu acm_entries=%zu "
-        "robot_state_diff=%d",
-        static_cast<unsigned long>(state_.scene_version),
-        m->is_diff,
-        m->world.collision_objects.size(),
-        m->robot_state.attached_collision_objects.size(),
-        m->world.octomap.octomap.data.size(),
-        m->fixed_frame_transforms.size(),
-        m->allowed_collision_matrix.entry_names.size(),
-        m->robot_state.is_diff
-    );
-
+        // Each revision can retire a plan. Keep both messages if an edit and a
+        // snapshot arrive back-to-back; throttling hides that sequence.
+        std::ostringstream objects;
+        for(const auto& object:m->world.collision_objects)
+          objects << " " << object.id << "(op=" << static_cast<int>(object.operation) << ")";
+        RCLCPP_INFO(get_logger(),
+          "Scene revision=%lu is_diff=%d objects=[%s] attached=%zu octomap_bytes=%zu "
+          "fixed_tf=%zu acm_entries=%zu",
+          static_cast<unsigned long>(state_.scene_version),m->is_diff,objects.str().c_str(),
+          m->robot_state.attached_collision_objects.size(),m->world.octomap.octomap.data.size(),
+          m->fixed_frame_transforms.size(),m->allowed_collision_matrix.entry_names.size());
       }
     });
     torch_=create_subscription<hb_robot_interfaces::msg::TorchStatus>("/cut_profile/torch_status",10,[this](hb_robot_interfaces::msg::TorchStatus::ConstSharedPtr m){
@@ -124,10 +122,12 @@ class TaskStateServer : public rclcpp::Node {
       // reference only for measured instability or an actual supervision outage.
       // The counter catches a gap even if the executor missed the stale interval.
       if(m.sample_age_s > std::chrono::duration<double>(imu_->config().max_sample_age).count() ||
-         m.reception_gaps != reference_reception_gaps_)
+         m.reception_gaps != last_seen_gaps_)
         invalidate("platform IMU reception gap exceeded max_sample_age");
       else if(m.valid && !m.stable)
         invalidate(state_.status_message);
+      last_seen_gaps_=m.reception_gaps;
+      if(!m.valid) last_untrusted_=now().nanoseconds();
       if(state_.imu_stable && !state_.workpiece_pose_valid && !invalidation_reason_.empty())
         state_.status_message += ". Pose invalidated by " + invalidation_reason_;
       state_.header.stamp=now(); pub_->publish(state_);
@@ -153,10 +153,12 @@ class TaskStateServer : public rclcpp::Node {
   // Preserve the first cause until a fresh reference is accepted. The platform
   // can settle again before PlanCut checks the state at the end of planning.
   std::string invalidation_reason_;
-  std::uint64_t reference_reception_gaps_=0;
+  std::uint64_t last_seen_gaps_=0;
+  int64_t last_publication_=0, last_untrusted_=now().nanoseconds();
+  geometry_msgs::msg::Pose measured_pose_;
   void invalidate(const std::string& reason) {
+    last_untrusted_=now().nanoseconds();
     if(state_.workpiece_pose_valid) {
-      ++state_.pose_version;
       invalidation_reason_=reason;
       RCLCPP_WARN(get_logger(),"Workpiece pose invalidated (pose_version=%llu): %s",
         static_cast<unsigned long long>(state_.pose_version),reason.c_str());
@@ -166,6 +168,7 @@ class TaskStateServer : public rclcpp::Node {
   }
   hb_robot_skills::SceneRevisionTracker scene_revisions_;
   State state_;
+  rclcpp::CallbackGroup::SharedPtr imu_callbacks_;
   std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_;
   rclcpp::Publisher<State>::SharedPtr pub_;
   rclcpp::Subscription<hb_robot_interfaces::msg::WorkpieceReference>::SharedPtr ref_;
@@ -176,5 +179,10 @@ class TaskStateServer : public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr timer_;
 };
 int main(int argc,char** argv) {
-  rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<TaskStateServer>());rclcpp::shutdown();
+  rclcpp::init(argc,argv);
+  auto node=std::make_shared<TaskStateServer>();
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{},2);
+  executor.add_node(node);
+  executor.spin();
+  rclcpp::shutdown();
 }

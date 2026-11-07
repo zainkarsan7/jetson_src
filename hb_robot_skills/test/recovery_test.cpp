@@ -185,3 +185,24 @@ TEST(SceneRevision, TransformChangesInvalidateExternallyFramedGeometry) {
   tf.transform.translation.x += 0.001;
   EXPECT_TRUE(tracker.changed(diff));
 }
+
+TEST(SceneRevision, AbsoluteEditAndConfirmingSnapshotCountOnce) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene full;
+  ASSERT_TRUE(tracker.changed(full));
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  auto& object = diff.world.collision_objects.emplace_back();
+  object.id = "beam";
+  object.header.frame_id = "world";
+  object.meshes.resize(1);
+  full.world.collision_objects = {object};
+  EXPECT_TRUE(tracker.changed(diff));
+  EXPECT_FALSE(tracker.changed(full));
+  EXPECT_FALSE(tracker.changed(diff));
+  object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+  EXPECT_TRUE(tracker.changed(diff));
+  EXPECT_FALSE(tracker.changed(diff));
+  full.world.collision_objects.clear();
+  EXPECT_FALSE(tracker.changed(full));
+}

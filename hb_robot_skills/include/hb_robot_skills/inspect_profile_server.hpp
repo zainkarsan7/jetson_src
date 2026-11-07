@@ -187,6 +187,7 @@ class InspectProfileServer: public rclcpp::Node{
         bool require_plan_approval_{false};
         bool motion_rejected_{false};
 
+        std::optional<rclcpp::Time> first_observation_;
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
         std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_stability_monitor_;
         std::unique_ptr<hb_perception::PlatformMotionSupervisor> platform_motion_supervisor_;

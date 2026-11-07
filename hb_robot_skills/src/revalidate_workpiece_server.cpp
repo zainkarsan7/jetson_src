@@ -58,6 +58,24 @@ class RevalidateServer : public rclcpp::Node {
       {std::lock_guard<std::mutex> lock(mutex_);reference=reference_;}
       if(reference.cloud.data.empty() || reference.cloud.header.frame_id!=frame_ ||
          reference.estimate.header.frame_id!=frame_) {finish("No matching stored reference");return;}
+      // Wait briefly for LIVE platform supervision before taking a new image.
+      // Settling alone never confirms a pose. The image and registration below do.
+      const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+      while(!canceled()) {
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if(state_.pose_version!=h->get_goal()->expected_pose_version ||
+             state_.scene_id!=std::to_string(rclcpp::Time(reference.estimate.header.stamp).nanoseconds()) ||
+             state_.motion_fault_active || state_.process_fault_active) {
+            finish("Reference superseded or fault active before localization");return;
+          }
+          if(state_.supervision_valid && state_.imu_stable &&
+             std::chrono::steady_clock::now()-received_<std::chrono::milliseconds(500)) break;
+        }
+        if(std::chrono::steady_clock::now()>=deadline) {finish("Platform supervision unavailable");return;}
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      if(canceled()) {finish("Localization canceled");return;}
       if(!imu_->waitForStable(std::chrono::seconds(10),canceled)) {finish("No stable observation window");return;}
       const auto observation=acquisition_->acquireAfter(now(),std::chrono::seconds(3));
       if(!observation || canceled()) {finish("Fresh acquisition failed");return;}
@@ -104,6 +122,21 @@ class RevalidateServer : public rclcpp::Node {
       moveit::planning_interface::PlanningSceneInterface scene;
       auto objects=scene.getObjects({"wk_workpiece_collision","wk_section_collision"});
       if(!objects.count("wk_workpiece_collision")) {finish("Stored workpiece collision missing");return;}
+      // Bound displacement over the entire planned extrusion, including rotation
+      // about a distant origin. Use the existing 0.1 mm mesh consistency scale.
+      // Unknown geometry always takes the conservative update-and-replan path.
+      const auto& beam=objects.at("wk_workpiece_collision");
+      bool unchanged=beam.meshes.size()==1 && beam.mesh_poses.size()==1 &&
+                     !beam.meshes.front().vertices.empty() && beam.header.frame_id==frame_;
+      if(unchanged) {
+        Eigen::Isometry3d object_pose,mesh_pose;
+        tf2::fromMsg(beam.pose,object_pose);tf2::fromMsg(beam.mesh_poses.front(),mesh_pose);
+        const Eigen::Isometry3d world_from_mesh=object_pose*mesh_pose;
+        for(const auto& vertex:beam.meshes.front().vertices) {
+          const Eigen::Vector3d point=world_from_mesh*Eigen::Vector3d(vertex.x,vertex.y,vertex.z);
+          if(!((delta*point-point).norm()<=1e-4)) {unchanged=false;break;}
+        }
+      }
       std::vector<moveit_msgs::msg::CollisionObject> updates;
       for(auto& pair:objects) {
         auto object=pair.second;
@@ -111,15 +144,22 @@ class RevalidateServer : public rclcpp::Node {
         Eigen::Isometry3d pose;tf2::fromMsg(object.pose,pose);object.pose=tf2::toMsg(delta*pose);
         object.operation=moveit_msgs::msg::CollisionObject::ADD;updates.push_back(object);
       }
-      if(!scene.applyCollisionObjects(updates)) {finish("Collision scene update failed");return;}
+      if(!unchanged && !scene.applyCollisionObjects(updates)) {finish("Collision scene update failed");return;}
       if(canceled() || !imu_->metrics().stable) {finish("Interrupted before pose commit");return;}
-      reference.estimate.pose=tf2::toMsg(delta*original);reference.estimate.header.stamp=now();
-      pcl::transformPointCloud(reference_cloud,world,registration.correction);
-      pcl::toROSMsg(world,reference.cloud);reference.cloud.header=reference.estimate.header;
+      if(!unchanged) reference.estimate.pose=tf2::toMsg(delta*original);
+      reference.estimate.header.stamp=now();
+      // Keep the baseline cloud as well as its pose when confirming; repeated
+      // sub-tolerance registrations must never accumulate into reference drift.
+      if(!unchanged) {
+        pcl::transformPointCloud(reference_cloud,world,registration.correction);
+        pcl::toROSMsg(world,reference.cloud);
+      }
+      reference.cloud.header=reference.estimate.header;
+      reference.cloud.header.stamp=observation->stamp;
       reference.relocalized=true;reference.expected_pose_version=h->get_goal()->expected_pose_version;
       result->estimate=reference.estimate;result->localized=true;
       estimate_pub_->publish(reference.estimate);ref_pub_->publish(reference);
-      finish("Reference localized; old plans invalidated");
+      finish("Fresh localization published for task-state confirmation");
     } catch(const std::exception& e){finish(e.what());}
   }
   std::string frame_;double range_;

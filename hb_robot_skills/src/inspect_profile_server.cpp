@@ -853,6 +853,7 @@ bool InspectProfileServer::acquireSamples(
         if (scene_model_->addObservation(
                 std::move(*observation), depth_range))
         {
+            if(!first_observation_) first_observation_=stamp;
             ++integrated;
         }
     }
@@ -1076,6 +1077,7 @@ void InspectProfileServer::execute(
     result->success = false;
     result->viewpoints_captured = 0;
 
+    first_observation_.reset();
     scene_model_->clear();
     observation_model_.reset();
 
@@ -1542,6 +1544,11 @@ void InspectProfileServer::execute(
     reference.estimate.header.stamp = now();
     pcl::toROSMsg(*estimate->workpiece.cloud, reference.cloud);
     reference.cloud.header = reference.estimate.header;
+    if(!first_observation_) {fail(InspectProfile::Result::ACQUISITION_FAILED,"Missing observation timestamp");return;}
+    // The fit integrates several views. Confirm it only if the whole interval
+    // was supervised. The publication stamp identifies this particular fit.
+    reference.cloud.header.stamp=*first_observation_;
+    result->profile_pose.header=reference.estimate.header;
     reference_pub_->publish(reference);
     result->success= true;
     result->result_code =
