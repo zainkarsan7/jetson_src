@@ -42,6 +42,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                     // declaring stability again, even if no timer ran during the gap.
                     if (!samples_.empty() &&
                         s.recieved_at - samples_.back().recieved_at > config_.max_sample_age) {
+                        ++reception_gaps_;
                         samples_.clear();
                     }
                     samples_.push_back(s);
@@ -56,6 +57,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                 }
     ImuStabilityMetrics ImuStabilityMonitor::evaluateLocked(Clock::time_point now) const{
         ImuStabilityMetrics result_;
+        result_.reception_gaps = reception_gaps_;
         if(samples_.empty()){
             return result_;
 

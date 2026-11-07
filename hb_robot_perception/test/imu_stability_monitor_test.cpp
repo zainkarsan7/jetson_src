@@ -58,6 +58,7 @@ TEST_F(ImuMonitorTest, DelayedReadPreservesFreshStationaryWindow) {
   EXPECT_TRUE(after.valid);
   EXPECT_TRUE(after.stable);
   EXPECT_EQ(after.samples_count,before.samples_count);
+  EXPECT_EQ(after.reception_gaps,before.reception_gaps);
 }
 TEST_F(ImuMonitorTest, MotionIsValidButNotStable) {
   stream(0.2);
@@ -70,6 +71,10 @@ TEST_F(ImuMonitorTest, StaleAndResetWindowsLoseValidity) {
   std::this_thread::sleep_for(150ms);
   EXPECT_FALSE(monitor->metrics().valid);EXPECT_FALSE(monitor->metrics().stable);
   EXPECT_GE(monitor->metrics().sample_age_s,0.1);
+  const auto before_gap=monitor->metrics().reception_gaps;
+  stream(0);
+  ASSERT_TRUE(monitor->metrics().valid);
+  EXPECT_GT(monitor->metrics().reception_gaps,before_gap);
   monitor->reset();EXPECT_FALSE(monitor->metrics().valid);
   EXPECT_EQ(monitor->metrics().samples_count,0u);
 }

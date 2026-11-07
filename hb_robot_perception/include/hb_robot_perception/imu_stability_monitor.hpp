@@ -2,6 +2,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <vector>
 #include <cstddef>
+#include <cstdint>
 #include <rclcpp/rclcpp.hpp>
 #include <chrono>
 #include <deque>
@@ -31,6 +32,8 @@ struct ImuStabilityMetrics{
     std::size_t samples_count=0;
 
     bool valid = false;
+    // Monotonic count of reception gaps exceeding max_sample_age.
+    std::uint64_t reception_gaps = 0;
     double sample_age_s = std::numeric_limits<double>::infinity();
     double peak_ang_vel_rad_s = 0.0;
     double peak_acc_deviation_m_s2 = 0.0;
@@ -83,7 +86,7 @@ class ImuStabilityMonitor{
         std::condition_variable cv_;
         std::deque<Sample> samples_;
 
-        ImuStabilityMetrics metric_;
+        std::uint64_t reception_gaps_ = 0;
 };
 
 

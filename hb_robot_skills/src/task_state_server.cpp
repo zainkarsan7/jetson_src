@@ -62,6 +62,7 @@ class TaskStateServer : public rclcpp::Node {
         if(m->relocalized && m->expected_pose_version!=state_.pose_version) return;
         if(!m->relocalized) ++state_.geometry_version;
         ++state_.pose_version;
+        reference_reception_gaps_=metrics.reception_gaps;
         state_.workpiece_pose_valid=true;
         invalidation_reason_.clear();
         state_.path_valid=false;
@@ -118,8 +119,16 @@ class TaskStateServer : public rclcpp::Node {
       else if(state_.process_fault_active || state_.motion_fault_active)
         state_.status_message="Geometry valid; execution blocked by active fault";
       else state_.status_message="Geometry valid; platform supervision stable";
-      if(!state_.imu_stable) invalidate(state_.status_message);
-      else if(!state_.workpiece_pose_valid && !invalidation_reason_.empty())
+      // Coverage can briefly fall short while packets still arrive on time.
+      // Block motion through supervision_valid during that interval. Retire the
+      // reference only for measured instability or an actual supervision outage.
+      // The counter catches a gap even if the executor missed the stale interval.
+      if(m.sample_age_s > std::chrono::duration<double>(imu_->config().max_sample_age).count() ||
+         m.reception_gaps != reference_reception_gaps_)
+        invalidate("platform IMU reception gap exceeded max_sample_age");
+      else if(m.valid && !m.stable)
+        invalidate(state_.status_message);
+      if(state_.imu_stable && !state_.workpiece_pose_valid && !invalidation_reason_.empty())
         state_.status_message += ". Pose invalidated by " + invalidation_reason_;
       state_.header.stamp=now(); pub_->publish(state_);
     });
@@ -144,6 +153,7 @@ class TaskStateServer : public rclcpp::Node {
   // Preserve the first cause until a fresh reference is accepted. The platform
   // can settle again before PlanCut checks the state at the end of planning.
   std::string invalidation_reason_;
+  std::uint64_t reference_reception_gaps_=0;
   void invalidate(const std::string& reason) {
     if(state_.workpiece_pose_valid) {
       ++state_.pose_version;
