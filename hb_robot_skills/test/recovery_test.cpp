@@ -132,3 +132,56 @@ TEST(SceneRevision, ReplacingAttachedBodyStateInvalidates) {
   EXPECT_TRUE(tracker.changed(diff));
   EXPECT_FALSE(tracker.changed(diff));
 }
+
+TEST(SceneRevision, InterleavedMonitorDiffsPreserveWorldFrameCutScene) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene scene;
+  scene.world.collision_objects.resize(1);
+  auto& object = scene.world.collision_objects.front();
+  object.id = "wk_workpiece_collision";
+  object.header.frame_id = "world";
+  object.pose.orientation.w = 1.0;
+  scene.link_padding.resize(2);
+  scene.link_padding[0].link_name = "wrist";
+  scene.link_padding[1].link_name = "torch";
+  ASSERT_TRUE(tracker.changed(scene));
+
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  diff.link_padding = {scene.link_padding[0]};
+  EXPECT_FALSE(tracker.changed(diff));
+  diff.fixed_frame_transforms.resize(1);
+  diff.fixed_frame_transforms[0].header.frame_id = "unilidar_imu";
+  diff.fixed_frame_transforms[0].child_frame_id = "world";
+  diff.fixed_frame_transforms[0].transform.translation.x = 0.25;
+  EXPECT_FALSE(tracker.changed(diff));
+  object.pose.orientation.w = -1.0;
+  object.pose.orientation.x = 1e-16;
+  EXPECT_FALSE(tracker.changed(scene));
+
+  diff.link_padding[0].padding = 0.002;
+  EXPECT_TRUE(tracker.changed(diff));
+  EXPECT_FALSE(tracker.changed(diff));
+  EXPECT_TRUE(tracker.changed(scene));  // Full snapshot restores original padding.
+  object.meshes.resize(1);
+  EXPECT_TRUE(tracker.changed(scene));
+}
+
+TEST(SceneRevision, TransformChangesInvalidateExternallyFramedGeometry) {
+  hb_robot_skills::SceneRevisionTracker tracker;
+  moveit_msgs::msg::PlanningScene scene;
+  scene.world.collision_objects.resize(1);
+  scene.world.collision_objects[0].header.frame_id = "fixture";
+  ASSERT_TRUE(tracker.changed(scene));
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  diff.fixed_frame_transforms.resize(1);
+  auto& tf = diff.fixed_frame_transforms.front();
+  tf.header.frame_id = "fixture";
+  tf.child_frame_id = "world";
+  EXPECT_TRUE(tracker.changed(diff));
+  ++tf.header.stamp.sec;
+  EXPECT_FALSE(tracker.changed(diff));
+  tf.transform.translation.x += 0.001;
+  EXPECT_TRUE(tracker.changed(diff));
+}
