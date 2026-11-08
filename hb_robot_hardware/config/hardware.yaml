@@ -1,0 +1,11 @@
+nano_bridge:
+  ros__parameters:
+    port: /dev/serial/by-id/CHANGE_ME
+    baud: 230400
+    frame_id: awp_mpu6050
+    max_sample_age_s: 0.25
+    command_timeout_s: 1.0
+    flap_open_deg: 0
+    flap_closed_deg: 90
+    # Placeholder variance, replace with measured stationary variance.
+    accel_variance_m2_s4: 0.04

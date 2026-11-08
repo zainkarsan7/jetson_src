@@ -116,3 +116,59 @@ TEST_F(ImuMonitorTest, PlatformReceptionContinuesDuringBusyStateCallback) {
   workers.remove_node(node);
   executor->add_node(node);
 }
+
+TEST_F(ImuMonitorTest, UnavailableGyroCannotCountAsAStationarySample) {
+  sensor_msgs::msg::Imu msg;
+  msg.angular_velocity_covariance[0]=-1.0;
+  msg.linear_acceleration.z=9.81;
+  const auto end=std::chrono::steady_clock::now()+200ms;
+  while(std::chrono::steady_clock::now()<end) {
+    pub->publish(msg);
+    executor->spin_some();
+    std::this_thread::sleep_for(4ms);
+  }
+  executor->spin_some();
+  EXPECT_FALSE(monitor->metrics().valid);
+  EXPECT_EQ(monitor->metrics().samples_count,0u);
+}
+
+TEST_F(ImuMonitorTest, AuxiliaryAccelerometerMustBeFreshAndQuietAlongsideGyro) {
+  auto config = monitor->config();
+  config.auxiliary_accel_topic = "/test/adxl345";
+  monitor = std::make_unique<hb_perception::ImuStabilityMonitor>(*node, "/test/recovery_imu", config);
+  auto accel_pub = node->create_publisher<sensor_msgs::msg::Imu>(
+      config.auxiliary_accel_topic, rclcpp::SensorDataQoS());
+  stream(0);
+  EXPECT_FALSE(monitor->metrics().valid);
+  auto publish_pair = [&](bool shake, double gyro) {
+    sensor_msgs::msg::Imu lidar, accel;
+    lidar.linear_acceleration.z = 9.81;
+    lidar.angular_velocity.z = gyro;
+    accel.angular_velocity_covariance[0] = -1;
+    accel.angular_velocity.z = std::numeric_limits<double>::quiet_NaN();
+    accel.linear_acceleration.x = 9.81;  // Different mounting orientation
+    const auto end = std::chrono::steady_clock::now() + 350ms;
+    while (std::chrono::steady_clock::now() < end) {
+      accel.linear_acceleration.y = shake && accel.linear_acceleration.y == 0 ? 2 : 0;
+      pub->publish(lidar);
+      accel_pub->publish(accel);
+      executor->spin_some();
+      std::this_thread::sleep_for(4ms);
+    }
+    executor->spin_some();
+  };
+  publish_pair(false, 0);
+  EXPECT_TRUE(monitor->metrics().stable);
+  publish_pair(true, 0);
+  EXPECT_TRUE(monitor->metrics().valid);
+  EXPECT_FALSE(monitor->metrics().stable);
+  EXPECT_GT(monitor->metrics().lin_acc_rms_m_s2, 0.5);
+  publish_pair(false, 0.2);
+  EXPECT_FALSE(monitor->metrics().stable);
+  EXPECT_NEAR(monitor->metrics().mean_ang_vel_rad_s, 0.2, 1e-9);
+  stream(0);
+  EXPECT_FALSE(monitor->metrics().valid);
+  publish_pair(false, 0);
+  EXPECT_TRUE(monitor->metrics().stable);
+  EXPECT_GT(monitor->metrics().reception_gaps, 0u);
+}

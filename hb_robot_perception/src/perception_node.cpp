@@ -33,7 +33,7 @@ class PerceptionDebugNode : public rclcpp::Node {
             scene_frame_ = declare_parameter<std::string>("scene_frame", "world");
             rgb_topic_ = declare_parameter<std::string>("rgb_topic", "/k4a/rgb/image_raw");
             depth_topic_ = declare_parameter<std::string>("depth_topic", "/k4a/depth_to_rgb/image_raw");
-            camera_info_topic_ = declare_parameter<std::string>("info_topic","k4a/depth_to_rgb/camera_info");
+            camera_info_topic_ = declare_parameter<std::string>("info_topic","/k4a/depth_to_rgb/camera_info");
             depth_range_ = declare_parameter<double>("depth_range", 1.5);
             processing_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
             // make a buffer listener combo

@@ -1,136 +1,102 @@
 #include "hb_robot_perception/rgbd_acquisition.hpp"
-#include <cmath>
+
 #include <functional>
-#include <utility>
-#include <rmw/qos_profiles.h>
 #include <tf2/exceptions.h>
 
-namespace hb_perception{
+namespace hb_perception {
+using namespace std::chrono_literals;
 
-     RGBDAcquisition::RGBDAcquisition(rclcpp::Node * node, tf2_ros::Buffer* tf_buffer, 
-        const std::string& target_frame,
-        const std::string& rgb_topic, 
-        const std::string& depth_topic,
-        const std::string& camera_info_topic):
-        node_(node),tf_buffer_(tf_buffer),target_frame_(target_frame)
-        {
-            rgb_sub_.subscribe(node_,rgb_topic,rmw_qos_profile_sensor_data);
+RGBDAcquisition::RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
+    const std::string& target_frame, const std::string& rgb_topic,
+    const std::string& depth_topic, const std::string& camera_info_topic)
+    : node_(node), tf_buffer_(tf_buffer), target_frame_(target_frame)
+{
+    rgb_sub_.subscribe(node_, rgb_topic, rmw_qos_profile_sensor_data);
+    depth_sub_.subscribe(node_, depth_topic, rmw_qos_profile_sensor_data);
+    synchronizer_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+        SyncPolicy(5), rgb_sub_, depth_sub_);
+    // K4A runs at up to 30 Hz. Its depth and RGB exposure stamps can differ.
+    // A conservative lower bound lets ApproximateTime emit a close pair
+    // immediately, even if no subsequent capture arrives to prove the match.
+    synchronizer_->setMaxIntervalDuration(rclcpp::Duration(12ms));
+    synchronizer_->setInterMessageLowerBound(0, rclcpp::Duration(30ms));
+    synchronizer_->setInterMessageLowerBound(1, rclcpp::Duration(30ms));
+    synchronizer_->registerCallback(std::bind(&RGBDAcquisition::synchronizedCallback,
+        this, std::placeholders::_1, std::placeholders::_2));
 
-            depth_sub_.subscribe(node_,depth_topic,rmw_qos_profile_sensor_data);           
-
-            /**
-             * queue depth is the synchronizer queu not the ros dds queue
-             * smaller queue because kinect owns both these streams and 
-             * latest data more important than history transient local
-             */
-            synchronizer_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-                SyncPolicy(5), rgb_sub_,depth_sub_
-            );
-
-            synchronizer_->registerCallback(std::bind(&RGBDAcquisition::synchronizedCallback,this,
-            std::placeholders::_1,std::placeholders::_2));
-
-            camera_info_sub_ = node->create_subscription<CameraInfo>(camera_info_topic,
-                rclcpp::SensorDataQoS().keep_last(1),
-                std::bind(&RGBDAcquisition::cameraInfoCallback,this, std::placeholders::_1));
-
-            RCLCPP_INFO(node->get_logger(),"initialized RGBD Acquisition");
-            RCLCPP_INFO(node->get_logger(),"RGB: %s",rgb_topic.c_str());
-            RCLCPP_INFO(node->get_logger(),"Depth: %s",depth_topic.c_str());
-            RCLCPP_INFO(node->get_logger(),"Cam Info: %s",camera_info_topic.c_str());
-            RCLCPP_INFO(node->get_logger(),"Target: %s",target_frame.c_str());
-            
-        }
-
-
-        // void RGBDAcquisition::pointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud){
-        //         RCLCPP_INFO_THROTTLE(node_->get_logger(),
-        //         *node_->get_clock(),2000,
-        //             "Cloud Recieved : %u, x %u , %.1f MB",
-        //             cloud->width,cloud->height,
-        //             static_cast<double>(cloud->data.size())/1e6);
-
-        // }
-
-
-        void RGBDAcquisition::cameraInfoCallback(const CameraInfo::ConstSharedPtr& camera_info){
-            if (camera_info_){return;}
-            camera_info_ = camera_info;
-            RCLCPP_INFO(node_->get_logger(),"got camera info");
-            camera_info_sub_.reset(); 
-        }
-
-        void RGBDAcquisition::synchronizedCallback(const Image::ConstSharedPtr& rgb,
-            const Image::ConstSharedPtr& depth){
-                // decide a timestamp to choose
-
-                const rclcpp::Time rgb_t = rgb->header.stamp;
-                const rclcpp::Time depth_t = depth->header.stamp;
-                const rclcpp::Time obs_stamp = rgb_t;
-                
-                 if(!camera_info_){
-                    RCLCPP_WARN_THROTTLE(node_->get_logger(),
-                    *node_->get_clock(),2000,"couldnt get camera info");
-                    return;
-                }
-                geometry_msgs::msg::TransformStamped cam_pose;
-                try{
-                cam_pose = tf_buffer_->lookupTransform(target_frame_,rgb->header.frame_id,obs_stamp,rclcpp::Duration::from_seconds(0.05));
-                }
-                catch(const tf2::TransformException &ex){
-                    RCLCPP_DEBUG_THROTTLE(node_->get_logger(),*node_->get_clock(),5000,
-                "couldnt get %s to %s transform at timestamp %s",
-            rgb->header.frame_id.c_str(),target_frame_.c_str(),ex.what());
-                    return;
-                }
-
-               
-
-                Observation ob;
-                ob.rgb = rgb;
-                ob.depth_to_rgb = depth;
-                ob.stamp = rgb->header.stamp;
-                ob.camera_pose=std::move(cam_pose);
-                ob.rgb_camera_info = camera_info_;
-
-                {
-                    std::lock_guard<std::mutex> lock(observation_mutex_);
-                    latest_observation_ = std::move(ob);
-                }
-                observation_cv_.notify_all();
-            }
-        
-
-        std::optional<Observation> RGBDAcquisition::acquireAfter(const rclcpp::Time& min_stamp, std::chrono::milliseconds timeout){
-            // 
-            std::unique_lock<std::mutex> lock(observation_mutex_);
-            const bool recieved = observation_cv_.wait_for(lock,timeout,[this, &min_stamp](){
-                return latest_observation_.has_value() && latest_observation_->stamp>min_stamp;
-                // this is a snychronization trick to say consider this _cv_ which inspect and camera are 
-                //using to coordinate r/w of latest_observation_. the switch only happens if 
-                // the latest obs is new enough. when this function is called, it blocks rw access to 
-                // latest_observtaion_ . its basically a sleep until timeout function
-
-            });
-
-            if(!recieved){
-                RCLCPP_WARN(node_->get_logger(), "coudlnt get observation witihn timeout");
-                return std::nullopt;
-            }
-
-            RCLCPP_INFO(node_->get_logger(),"got a new obs at stamp : %.2f", latest_observation_->stamp.seconds());
-            return latest_observation_;
-
-        }
-        std::optional<Observation> RGBDAcquisition::latest() const{
-            std::lock_guard<std::mutex> lock(observation_mutex_);
-            if(!latest_observation_){
-                return std::nullopt;
-            }
-            return latest_observation_;
-        }
-
-
-
-
+    retry_timer_ = node_->create_wall_timer(10ms, [this] { resolvePending(); });
+    retry_timer_->cancel();
+    camera_info_sub_ = node_->create_subscription<CameraInfo>(camera_info_topic,
+        rclcpp::SensorDataQoS().keep_last(1), [this](CameraInfo::ConstSharedPtr info) {
+            camera_info_ = std::move(info);
+            camera_info_sub_.reset();
+            resolvePending();
+        });
 }
+
+void RGBDAcquisition::synchronizedCallback(const Image::ConstSharedPtr& rgb,
+    const Image::ConstSharedPtr& depth)
+{
+    // TF treats stamp zero as a request for the latest transform.
+    if (rclcpp::Time(rgb->header.stamp).nanoseconds() == 0 ||
+        rclcpp::Time(depth->header.stamp).nanoseconds() == 0) return;
+
+    if (pending_.size() == 8) pending_.pop_front();
+    pending_.push_back({rgb, depth, std::chrono::steady_clock::now()});
+    resolvePending();
+}
+
+void RGBDAcquisition::resolvePending()
+{
+    while (!pending_.empty() &&
+           std::chrono::steady_clock::now() - pending_.front().arrival > 500ms)
+        pending_.pop_front();
+
+    // Prefer the newest resolvable capture. TF may already cover an earlier
+    // pair while the newest still needs a future bracketing transform sample.
+    for (size_t i = pending_.size(); camera_info_ && i > 0; --i) {
+        const auto& pair = pending_[i - 1];
+        const rclcpp::Time stamp(pair.rgb->header.stamp);
+        geometry_msgs::msg::TransformStamped pose;
+        try {
+            pose = tf_buffer_->lookupTransform(target_frame_, pair.rgb->header.frame_id,
+                tf2_ros::fromRclcpp(stamp));
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_DEBUG_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+                "Waiting for RGB-D pose: %s", ex.what());
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(observation_mutex_);
+            latest_observation_ = Observation{pair.rgb, pair.depth, camera_info_, std::move(pose), stamp};
+        }
+        observation_cv_.notify_all();
+        pending_.erase(pending_.begin(), pending_.begin() + i);
+        break;
+    }
+    if (pending_.empty()) retry_timer_->cancel();
+    else if (retry_timer_->is_canceled()) retry_timer_->reset();
+}
+
+std::optional<Observation> RGBDAcquisition::acquireAfter(const rclcpp::Time& min_stamp,
+    std::chrono::milliseconds timeout)
+{
+    std::unique_lock<std::mutex> lock(observation_mutex_);
+    if (!observation_cv_.wait_for(lock, timeout, [&] {
+        return latest_observation_ && latest_observation_->stamp > min_stamp &&
+            rclcpp::Time(latest_observation_->depth_to_rgb->header.stamp) > min_stamp;
+    })) {
+        RCLCPP_WARN(node_->get_logger(), "No calibrated RGB-D pair with a pose after %.6f within %ld ms",
+            min_stamp.seconds(), static_cast<long>(timeout.count()));
+        return std::nullopt;
+    }
+    return latest_observation_;
+}
+
+std::optional<Observation> RGBDAcquisition::latest() const
+{
+    std::lock_guard<std::mutex> lock(observation_mutex_);
+    return latest_observation_;
+}
+
+}  // namespace hb_perception

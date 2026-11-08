@@ -20,6 +20,7 @@ struct ImuStabilityConfig{
     std::size_t min_samples=20;
     std::chrono::milliseconds window{500};
     std::chrono::milliseconds max_sample_age{200};
+    std::string auxiliary_accel_topic;
 };
 
 struct ImuStabilityMetrics{
@@ -82,9 +83,12 @@ class ImuStabilityMonitor{
         };
         
 
-        void onImu(const sensor_msgs::msg::Imu::SharedPtr msg);
+        void onImu(const sensor_msgs::msg::Imu::SharedPtr msg, bool acceleration_only);
+        ImuStabilityMetrics evaluateWindow(Clock::time_point now, const std::deque<Sample>& samples) const;
         ImuStabilityMetrics evaluateLocked(Clock::time_point now) const;
         rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_;
+        rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr accel_sub_;
+        std::deque<Sample> accel_samples_;
         ImuStabilityConfig config_;
         mutable std::mutex mutex_;
         std::condition_variable cv_;

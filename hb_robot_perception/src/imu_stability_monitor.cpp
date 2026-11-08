@@ -20,17 +20,26 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             options.callback_group = callback_group;
             sub_ = node.create_subscription<sensor_msgs::msg::Imu>(imu_topic,qos,
             [this](const sensor_msgs::msg::Imu::SharedPtr msg){
-                onImu(msg);
+                onImu(msg, false);
             }, options);
+            if (!config_.auxiliary_accel_topic.empty()) {
+                accel_sub_ = node.create_subscription<sensor_msgs::msg::Imu>(
+                    config_.auxiliary_accel_topic, qos,
+                    [this](sensor_msgs::msg::Imu::SharedPtr msg) { onImu(msg, true); }, options);
+            }
             }
 
 
-    void ImuStabilityMonitor::onImu(const sensor_msgs::msg::Imu::SharedPtr msg){
+    void ImuStabilityMonitor::onImu(const sensor_msgs::msg::Imu::SharedPtr msg, bool acceleration_only){
+                // ROS Imu uses -1 for an unavailable measurement. An accelerometer-only
+                // message cannot establish the gyro part of this six-axis stability test.
+                if ((!acceleration_only && msg->angular_velocity_covariance[0] == -1.0) ||
+                    msg->linear_acceleration_covariance[0] == -1.0) return;
                 Sample s;
                 s.recieved_at = Clock::now();
-                s.wx = msg->angular_velocity.x;
-                s.wy = msg->angular_velocity.y;
-                s.wz = msg->angular_velocity.z;
+                s.wx = acceleration_only ? 0.0 : msg->angular_velocity.x;
+                s.wy = acceleration_only ? 0.0 : msg->angular_velocity.y;
+                s.wz = acceleration_only ? 0.0 : msg->angular_velocity.z;
                 s.ax = msg->linear_acceleration.x;
                 s.ay = msg->linear_acceleration.y;
                 s.az = msg->linear_acceleration.z;
@@ -45,39 +54,56 @@ ImuStabilityMonitor::ImuStabilityMonitor(
                    }
                 {
                 std::lock_guard<std::mutex>lock(mutex_);
+                    auto& samples = acceleration_only ? accel_samples_ : samples_;
                     // After a stale interval, require a new observation window before
                     // declaring stability again, even if no timer ran during the gap.
-                    if (!samples_.empty() &&
-                        s.recieved_at - samples_.back().recieved_at > config_.max_sample_age) {
+                    if (!samples.empty() &&
+                        s.recieved_at - samples.back().recieved_at > config_.max_sample_age) {
                         ++reception_gaps_;
-                        samples_.clear();
+                        samples.clear();
                     }
-                    samples_.push_back(s);
+                    samples.push_back(s);
                     const auto cutoff = s.recieved_at - config_.window;
-                    while(!samples_.empty() && 
-                    samples_.front().recieved_at < cutoff
+                    while(!samples.empty() && 
+                    samples.front().recieved_at < cutoff
                 ){
-                    samples_.pop_front();
+                    samples.pop_front();
                 }
                 }
                 cv_.notify_all();
                 }
     ImuStabilityMetrics ImuStabilityMonitor::evaluateLocked(Clock::time_point now) const{
+        auto result = evaluateWindow(now, samples_);
+        if (accel_sub_) {
+            const auto accel = evaluateWindow(now, accel_samples_);
+            result.valid = result.valid && accel.valid;
+            result.stable = result.stable && accel.stable;
+            result.samples_count = std::min(result.samples_count, accel.samples_count);
+            result.sample_age_s = std::max(result.sample_age_s, accel.sample_age_s);
+            result.lin_acc_rms_m_s2 = std::max(result.lin_acc_rms_m_s2, accel.lin_acc_rms_m_s2);
+            result.latest_acc_deviation_m_s2 = std::max(result.latest_acc_deviation_m_s2, accel.latest_acc_deviation_m_s2);
+            result.peak_acc_deviation_m_s2 = std::max(result.peak_acc_deviation_m_s2, accel.peak_acc_deviation_m_s2);
+        }
+        return result;
+    }
+
+    ImuStabilityMetrics ImuStabilityMonitor::evaluateWindow(
+            Clock::time_point now, const std::deque<Sample>& samples) const {
         ImuStabilityMetrics result_;
         result_.reception_gaps = reception_gaps_;
-        if(samples_.empty()){
+        if(samples.empty()){
             return result_;
 
         }
         result_.sample_age_s = std::chrono::duration<double>(
-            now - samples_.back().recieved_at).count();
-        if(now - samples_.back().recieved_at > config_.max_sample_age){
+            now - samples.back().recieved_at).count();
+        if(now - samples.back().recieved_at > config_.max_sample_age){
             return result_;
         }
         // Freshness is measured from the reader to the latest received sample above.
         // Coverage and motion statistics describe the window ending at that sample.
         // A delayed timer read must not discard the start of an otherwise fresh window.
-        const auto cutoff = samples_.back().recieved_at - config_.window;
+        const auto cutoff = samples.back().recieved_at - config_.window;
 
         double sum_wx = 0.0;
         double sum_wy = 0.0;
@@ -91,7 +117,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
 
         double peak_omega = 0.0;
         double peak_acc_deviation = 0.0;
-        for(const auto& s :samples_){
+        for(const auto& s :samples){
             if(s.recieved_at < cutoff){
                 continue;
             }
@@ -112,7 +138,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
             return result_;
         }
         // some span of time should be within threshold
-        const auto span = samples_.back().recieved_at - first->recieved_at;
+        const auto span = samples.back().recieved_at - first->recieved_at;
         if(span < 0.9 * config_.window){
             return result_;
         }
@@ -143,7 +169,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         
         
         // covariance calc;
-        for(const auto & s: samples_){
+        for(const auto & s: samples){
             if(s.recieved_at < cutoff){
                 continue;
             }
@@ -175,7 +201,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         result_.ang_vel_rms_rad_s = std::sqrt(var_ang_vel/n);
         result_.lin_acc_rms_m_s2 = std::sqrt(var_lin_acc/n);
         result_.mean_ang_vel_rad_s = std::sqrt(norm_ang_vel);
-        const auto& latest = samples_.back();
+        const auto& latest = samples.back();
         result_.latest_ang_vel_rad_s = std::sqrt(
             latest.wx*latest.wx + latest.wy*latest.wy + latest.wz*latest.wz);
         result_.latest_acc_deviation_m_s2 = std::sqrt(
@@ -205,6 +231,7 @@ ImuStabilityMonitor::ImuStabilityMonitor(
         std::lock_guard<std::mutex>lock(mutex_);
 
         samples_.clear();
+        accel_samples_.clear();
 
         
     }

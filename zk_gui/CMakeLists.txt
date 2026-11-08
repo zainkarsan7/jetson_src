@@ -10,6 +10,8 @@ find_package(ament_cmake REQUIRED)
 
 find_package(ament_cmake_ros REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(hb_robot_interfaces REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_rendering REQUIRED)
@@ -18,13 +20,16 @@ set(CMAKE_AUTOMOC ON)
 qt5_wrap_cpp(MOC_FILES
 include/zk_gui/zk_panel.hpp
 )
-add_library(zk_panel src/zk_panel.cpp ${MOC_FILES})
+add_library(zk_panel SHARED src/zk_panel.cpp src/motion_approval_panel.cpp ${MOC_FILES})
 target_include_directories(zk_panel PUBLIC 
 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 $<INSTALL_INTERFACE:include>
 )
 
 ament_target_dependencies(zk_panel
+hb_robot_interfaces
+rclcpp
+sensor_msgs
 pluginlib
 rviz_common)
 

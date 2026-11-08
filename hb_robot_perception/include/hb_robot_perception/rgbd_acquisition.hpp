@@ -1,64 +1,63 @@
 #pragma once
+
 #include <chrono>
-#include <mutex>
 #include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <optional>
 #include <string>
-#include <tf2_eigen/tf2_eigen.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/image.hpp>
+
 #include <message_filters/subscriber.h>
-#include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
-#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <message_filters/synchronizer.h>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <tf2_ros/buffer.h>
 #include <hb_robot_perception/perception_types.hpp>
 
+namespace hb_perception {
 
-namespace hb_perception{
+class RGBDAcquisition {
+public:
+    using Image = sensor_msgs::msg::Image;
+    using CameraInfo = sensor_msgs::msg::CameraInfo;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<Image, Image>;
 
-class RGBDAcquisition{
-    public:
+    RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
+        const std::string& target_frame,
+        const std::string& rgb_topic = "/k4a/rgb/image_raw",
+        const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw",
+        const std::string& camera_info_topic = "/k4a/depth_to_rgb/camera_info");
 
-        using Image = sensor_msgs::msg::Image;
-        using CameraInfo = sensor_msgs::msg::CameraInfo;
+    // Both exposures must be strictly newer than min_stamp.
+    std::optional<Observation> acquireAfter(const rclcpp::Time& min_stamp,
+        std::chrono::milliseconds timeout);
+    std::optional<Observation> latest() const;
 
-        using SyncPolicy = message_filters::sync_policies::ApproximateTime<Image,Image>;
+private:
+    struct PendingPair {
+        Image::ConstSharedPtr rgb;
+        Image::ConstSharedPtr depth;
+        std::chrono::steady_clock::time_point arrival;
+    };
 
+    void synchronizedCallback(const Image::ConstSharedPtr& rgb, const Image::ConstSharedPtr& depth);
+    void resolvePending();
 
-        RGBDAcquisition(rclcpp::Node * node, tf2_ros::Buffer* tf_buffer, const std::string& target_frame, 
-        const std::string& rgb_topic = "/k4a/rgb/image_raw", 
-        const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw" ,
-        const std::string& camera_info_topic = "k4a/depth_to_rgb/camera_info");
+    rclcpp::Node* node_;
+    tf2_ros::Buffer* tf_buffer_;
+    const std::string target_frame_;
 
-        /**
-         * wait for RGBD observation captuered after min stamp and before timout may return nullopt
-         */
-        std::optional<Observation> acquireAfter(const rclcpp::Time& min_stamp,
-            std::chrono::milliseconds timeout);
-        std::optional<Observation> latest() const;
-    private:
-            // void pointCloudCallback(
-            //     const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
-            
-            void synchronizedCallback(const Image::ConstSharedPtr& rgb,
-            const Image::ConstSharedPtr& depth);
-            void cameraInfoCallback(const CameraInfo::ConstSharedPtr& camera_info);
+    // All subscriptions and the retry timer use the node's mutually exclusive default group.
+    std::deque<PendingPair> pending_;
+    CameraInfo::ConstSharedPtr camera_info_;
+    message_filters::Subscriber<Image> rgb_sub_, depth_sub_;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> synchronizer_;
+    rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
+    rclcpp::TimerBase::SharedPtr retry_timer_;
 
-            rclcpp::Node* node_;
-            tf2_ros::Buffer* tf_buffer_;
-            message_filters::Subscriber<Image> rgb_sub_;
-            message_filters::Subscriber<Image> depth_sub_;
-            // std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> pc_sub_;
-            // rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pc_sub_;
-            
-            const std::string target_frame_;
-
-            rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
-            std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> synchronizer_;
-            std::optional<Observation> latest_observation_;
-            mutable std::mutex observation_mutex_;
-            std::condition_variable observation_cv_;
-            CameraInfo::ConstSharedPtr camera_info_;
+    mutable std::mutex observation_mutex_;
+    std::condition_variable observation_cv_;
+    std::optional<Observation> latest_observation_;
 };
 
-}
+}  // namespace hb_perception

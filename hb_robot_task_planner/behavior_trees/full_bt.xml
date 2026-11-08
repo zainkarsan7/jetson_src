@@ -7,11 +7,12 @@
         <Inverter><FaultActive/></Inverter>
         <Sequence>
           <Fallback>
-            <Sequence><ReferenceExists/><SubTree ID="EnsureGeometryValid"/></Sequence>
-            <Sequence><Inverter><ReferenceExists/></Inverter><InspectProfile/><AwaitGeometry/></Sequence>
+            <ReferenceExists/>
+            <Sequence><Inverter><ReferenceExists/></Inverter><InspectProfile/><AwaitPlanningReference/></Sequence>
           </Fallback>
-          <SubTree ID="EnsureGeometryValid"/>
           <PlanCut/>
+          <!-- A candidate survives a supervision gap. Confirm the current pose before motion. -->
+          <SubTree ID="EnsureGeometryValid"/>
           <ValidateTaskState/>
           <ExecuteCut/>
           <SubTree ID="EnsureSeparationVerified"/>
@@ -43,6 +44,7 @@
           <ResidualDetected/>
           <SubTree ID="EnsureGeometryValid"/>
           <PlanRecut/>
+          <SubTree ID="EnsureGeometryValid"/>
           <ValidateTaskState/>
           <ExecuteRecut/>
           <SubTree ID="ObserveAndEvaluate"/>
@@ -62,6 +64,7 @@
     <Condition ID="ValidateKerf"/>
 
     <Action ID="InspectProfile"/>
+    <Action ID="AwaitPlanningReference"/>
     <Action ID="AwaitGeometry"/>
     <Action ID="RevalidateWorkpiece"/>
     <Action ID="PlanCut"/>
