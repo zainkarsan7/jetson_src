@@ -61,6 +61,10 @@ namespace hb_robot_skills{
             process_enabled_=declare_parameter<bool>("enable_cutting_process",false);
         }
         get_parameter("enable_cutting_process",process_enabled_);
+        if (!has_parameter("flap_travel_ms")) declare_parameter<int>("flap_travel_ms", 500);
+        flap_travel_time_ = std::chrono::milliseconds(get_parameter("flap_travel_ms").as_int());
+        if (flap_travel_time_.count() < 0) throw std::invalid_argument("flap_travel_ms must be nonnegative");
+        flap_client_ = create_client<std_srvs::srv::SetBool>("/camera_flap/set_closed");
         task_sub_=create_subscription<TaskState>("/task_state",rclcpp::QoS(1).transient_local(),
           [this](TaskState::ConstSharedPtr msg) {std::lock_guard<std::mutex> lock(task_mutex_);
             task_state_=*msg;task_received_=std::chrono::steady_clock::now();});
@@ -1012,6 +1016,35 @@ namespace hb_robot_skills{
     return MotionOutcome::SUCCESS;
     }
             
+    bool CutProfileServer::setFlapClosed(bool closed) {
+        using namespace std::chrono_literals;
+        const char* command = closed ? "close" : "open";
+        try {
+            if (!flap_client_->wait_for_service(1s)) {
+                RCLCPP_ERROR(get_logger(), "Flap service unavailable during %s", command);
+                return false;
+            }
+            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+            request->data = closed;
+            auto pending = flap_client_->async_send_request(request);
+            if (pending.wait_for(2s) != std::future_status::ready) {
+                flap_client_->remove_pending_request(pending);
+                RCLCPP_ERROR(get_logger(), "Flap %s acknowledgement timed out", command);
+                return false;
+            }
+            const auto response = pending.get();
+            if (!response->success) {
+                RCLCPP_ERROR(get_logger(), "Flap %s failed: %s", command, response->message.c_str());
+                return false;
+            }
+            std::this_thread::sleep_for(flap_travel_time_);
+            return true;
+        } catch (const std::exception& error) {
+            RCLCPP_ERROR(get_logger(), "Flap %s failed: %s", command, error.what());
+            return false;
+        }
+    }
+
     CutProfileServer::MotionOutcome CutProfileServer::executeCut(
                 const motion::ExecutableCut& cut,
                 const std::shared_ptr<GoalHandleCutProfile> goal_handle
@@ -1057,6 +1090,7 @@ namespace hb_robot_skills{
                     };
 
                     do{
+                        if (!setFlapClosed(true) || canceled()) break;
                         // request remote start on:
                         publishFeedback(goal_handle,cut.name + ":ignition");
                         const auto ignition = torch.requestIgnition(1500ms, canceled);
@@ -1095,7 +1129,7 @@ namespace hb_robot_skills{
                         const bool off_confirmed = shutdown();
 
                         torch.setActiveSegment("");
-                        if(!off_confirmed) return MotionOutcome::FAILED;
+                        if(!off_confirmed || !setFlapClosed(false)) return MotionOutcome::FAILED;
                         if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
                         if(cut_stop_requested_.load() || torch.hasFault()) return MotionOutcome::FAILED;
                         return outcome;

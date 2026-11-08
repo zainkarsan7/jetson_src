@@ -1,0 +1,22 @@
+<launch>
+  <arg name="device" description="Exact Windows DirectShow video device name"/>
+  <arg name="width" default="1920"/>
+  <arg name="height" default="1080"/>
+  <arg name="fps" default="30"/>
+  <arg name="marker_size_m" default="0.10"/>
+  <arg name="calibration" default=""/>
+  <node pkg="crane_cam" exec="windows_camera" namespace="innomaker" output="screen">
+    <param name="device" value="$(var device)" type="str"/>
+    <param name="width" value="$(var width)"/>
+    <param name="height" value="$(var height)"/>
+    <param name="fps" value="$(var fps)"/>
+    <param name="calibration" value="$(var calibration)" type="str"/>
+  </node>
+  <node pkg="crane_cam" exec="pose_est" name="aruco_pose" namespace="innomaker" output="screen">
+    <param name="individual_markers" value="true"/>
+    <param name="marker_size_m" value="$(var marker_size_m)" type="float"/>
+    <remap from="camera/image_raw" to="image_raw"/>
+    <remap from="/camera/camera_info" to="camera_info"/>
+    <remap from="camera/image_aruco" to="image_aruco"/>
+  </node>
+</launch>

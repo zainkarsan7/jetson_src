@@ -40,7 +40,7 @@ latched reference from a previous run cannot satisfy the baseline.
 The reference estimate carries publication time. Its cloud carries the earliest
 integrated observation time for a full inspection, or the new image time for
 relocalization. Live supervision, observation history and motion faults determine
-`workpiece_pose_valid`. A platform outage or measured disturbance clears execution
+`workpiece_pose_valid`. An incomplete IMU window, a reception gap or measured instability clears execution
 confirmation and retains the measured pose and its version. Stable IMU readings alone
 cannot confirm a reference after an outage.
 
@@ -52,10 +52,10 @@ threshold is a numerical comparison between estimates, not a sensor accuracy cla
 
 PlanCut needs a measured reference, a fresh task heartbeat and matching versions at
 entry. It stores a candidate against the detached scene it used even if supervision
-or scene versions change during computation. The baseline allows one fresh camera
+or scene versions change during computation. The baseline and the recovery trees allow one fresh camera
 localization if execution confirmation is missing. Execution requires the original
 versions, a heartbeat younger than 500 ms, healthy platform supervision, a confirmed
-pose and clear faults. The server also checks the actual robot start joints and tests
+pose and clear faults. A recovered IMU window alone leaves the confirmation latch set. The server also checks the actual robot start joints and tests
 the stored trajectory against the current collision scene.
 
 A state-manager restart creates a new version epoch. A reference publication older

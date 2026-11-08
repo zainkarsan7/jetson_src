@@ -38,6 +38,7 @@ struct Context {
   uint64_t execution_version=0;
   unsigned inspection_attempts=0;
   bool executed=false;
+  bool preparing_candidate=false; // Planning and stationary pose confirmation issue no cut motion.
   recovery::State snapshot() {
     std::lock_guard<std::mutex> lock(mutex);
     auto result=state;
@@ -192,7 +193,10 @@ int main(int argc,char** argv) {
     });
   };
   condition("ReferenceExists",[=]{
-    std::lock_guard<std::mutex> lock(context->mutex);return !context->estimate.profile_name.empty();
+    std::lock_guard<std::mutex> lock(context->mutex);
+    return std::chrono::steady_clock::now()-context->received<=500ms && context->state.scene_valid &&
+      !context->estimate.profile_name.empty() && context->state.scene_id==
+          std::to_string(rclcpp::Time(context->estimate.header.stamp).nanoseconds());
   });
   condition("WorkpiecePoseValid",[=]{return recovery::geometryPermitted(context->snapshot());});
   condition("ValidateTaskState",[=]{
@@ -203,7 +207,8 @@ int main(int argc,char** argv) {
     return false;
   });
   condition("FaultActive",[=]{const auto s=context->snapshot();
-    return s.process_fault_active || s.motion_fault_active || (context->executed && (!s.supervision_valid || !s.imu_stable));});
+    return s.process_fault_active || s.motion_fault_active || (context->executed && !context->preparing_candidate &&
+        (!s.supervision_valid || !s.imu_stable));});
   condition("KerfVerified",[=]{return context->verdict.status==recovery::State::VERIFIED;});
   condition("ResidualDetected",[=]{return context->verdict.status==recovery::State::RESIDUAL_MATERIAL;});
   condition("KerfInconclusive",[=]{return context->verdict.status==recovery::State::INCONCLUSIVE;});
@@ -258,6 +263,7 @@ int main(int argc,char** argv) {
       for(const auto& pair:merged) goal.intervals.push_back(pair.second);
       if(goal.intervals.empty()) return false;
     }
+    context->preparing_candidate=true;
     return true;
   };
   auto planResult=[=](const auto& result){
@@ -281,6 +287,7 @@ int main(int argc,char** argv) {
   action<Cut>(factory,"PlanCut",node,"cut_profile",[=](auto& g){return planGoal(g,false);},planResult);
   action<Cut>(factory,"PlanRecut",node,"cut_profile",[=](auto& g){return planGoal(g,true);},planResult);
   auto executeGoal=[=](auto& goal) {
+    context->preparing_candidate=false;
     if(!recovery::geometryPermitted(context->snapshot())) return false;
     goal.standoff=standoff;goal.pos_tol=pos_tol;goal.ang_tol=ang_tol;
     goal.cut_id=context->cut_id;goal.plan_id=context->plan_id;goal.execute=true;

@@ -13,6 +13,7 @@ find_package(hb_robot_interfaces REQUIRED)
 find_package(hb_robot_perception REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(ur_msgs REQUIRED)
@@ -156,7 +157,8 @@ target_link_libraries(revalidate_workpiece_server hb_robot_perception::hb_percep
 add_executable(cut_profile_server
 src/cut_profile_server.cpp src/cut_recovery.cpp)
 
-ament_target_dependencies(cut_profile_server 
+ament_target_dependencies(cut_profile_server
+  std_srvs
   rclcpp
   rclcpp_action
   geometry_msgs

@@ -555,30 +555,32 @@ void InspectSceneServer::publishViewpointMarker(const std::vector<geometry_msgs:
             
         }
         rclcpp::Time capture_boundary = now();
+        bool integrated = false;
 
         for (uint32_t i = 0; i<sample_count; i++){
             auto observation = rgbd_acquisition_->acquireAfter(capture_boundary,
                 std::chrono::milliseconds(static_cast<int64_t>(acquisition_timeout_*1000.0)));
 
             if(!observation){
-                RCLCPP_ERROR(get_logger(),"capture failed for sample %zu/%zu",i,sample_count);
+                RCLCPP_ERROR(get_logger(),"capture failed for sample %u/%u",i + 1,sample_count);
                 continue;    
             }
             capture_boundary = observation->stamp;
             // observation_buffer_.addObservation(std::move(*observation));
             if(!scene_model_->addObservation(std::move(*observation), depth_range)){
                 RCLCPP_ERROR(get_logger(),"Couldnt integrate point cloud");
-
+                continue;
             }
+            integrated = true;
             RCLCPP_INFO(get_logger(),"Captured sample %u/%u at %.6f",
-            i,sample_count, observation->stamp.seconds());
+            i + 1,sample_count, capture_boundary.seconds());
             publishSceneCloud();
 
 
 
         }
         RCLCPP_INFO(get_logger(),"observation buffer has %d captures",scene_model_->observationCount());
-        return true;
+        return integrated;
     }
     bool InspectSceneServer::registerView()
     {return true;

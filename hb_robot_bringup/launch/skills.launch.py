@@ -42,6 +42,8 @@ def generate_launch_description():
         moveit_config.robot_description_semantic,
         moveit_config.robot_description_kinematics,
         {"skip_inspection_motion": False,
+        "platform_imu_topic": LaunchConfiguration("platform_imu_topic"),
+        "platform_accel_topic": ParameterValue(LaunchConfiguration("platform_accel_topic"), value_type=str),
         "require_plan_approval": True },
         ],
     )
@@ -97,6 +99,8 @@ def generate_launch_description():
             description="Return to the initial robot state after the final retract."),
         DeclareLaunchArgument("inspect_cut_preview_only", default_value="true",
             description="Preview inspection views; false permits post-cut camera motion."),
+        DeclareLaunchArgument("platform_accel_topic", default_value="/mpu6050/imu",
+            description="Additional platform accelerometer. Set empty for lidar-only operation."),
         DeclareLaunchArgument("platform_imu_topic", default_value="/hb_robot_lidar/imu",
             description="Independent platform-fixed IMU; never use robot-mounted /k4a/imu here."),
         # Lidar IMU noise is higher than camera-settling noise. This initial
@@ -106,6 +110,7 @@ def generate_launch_description():
             description="Platform acceleration vector RMS about the window mean, in m/s^2; startup calibration setting."),
         Node(package="hb_robot_skills", executable="task_state_server", output="screen",
              parameters=[{"platform_imu_topic": LaunchConfiguration("platform_imu_topic"),
+             "platform_accel_topic": ParameterValue(LaunchConfiguration("platform_accel_topic"), value_type=str),
              "platform_imu.max_gyro_rms": 0.010,
              "platform_imu.max_accel_rms": 0.150,
              "platform_imu.max_mean_gyro": 0.030,

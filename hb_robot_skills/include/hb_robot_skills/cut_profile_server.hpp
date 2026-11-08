@@ -16,6 +16,7 @@
 #include "hb_robot_perception/profile_library.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <atomic>
+#include <std_srvs/srv/set_bool.hpp>
 #include <hb_robot_interfaces/recovery.hpp>
 #include <hb_robot_interfaces/action/escape.hpp>
 #include <std_msgs/msg/u_int64.hpp>
@@ -204,6 +205,9 @@ namespace hb_robot_skills{
         bool motion_rejected_{false};
 
         std::atomic<bool> cut_stop_requested_{false};
+        bool setFlapClosed(bool closed);
+        rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr flap_client_;
+        std::chrono::milliseconds flap_travel_time_{500};
         std::unique_ptr<TorchController> torch_controller_;
 
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;

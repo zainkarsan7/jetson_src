@@ -1,4 +1,6 @@
+#include <cmath>
 #include <functional>
+#include <stdexcept>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -24,7 +26,10 @@
 class ArucoNode: public rclcpp::Node{
     public:
     ArucoNode():Node("aruco_pose_node"){
-        // do stuff here, subscribe to camera/image_raw and camera/camera_info
+        individual_markers_ = declare_parameter("individual_markers", false);
+        marker_size_m_ = declare_parameter("marker_size_m", 0.1);
+        if (!std::isfinite(marker_size_m_) || marker_size_m_ <= 0.0)
+            throw std::invalid_argument("marker_size_m must be finite and positive");
         // call two callbacks, get the frame, detect aruco
         img_sub_ = image_transport::create_subscription(
             this,
@@ -122,10 +127,12 @@ class ArucoNode: public rclcpp::Node{
             }
         dist_coeffs = cv::Mat(msg->d).clone();
         cam_frame_id = msg->header.frame_id;
-        cam_info_received_ = true;
+        calibration_width_ = msg->width;
+        calibration_height_ = msg->height;
+        cam_info_received_ = msg->k[0] > 0 && msg->k[4] > 0;
     }
     void get_pose_callback(const sensor_msgs::msg::Image::ConstSharedPtr &msg){
-        if (!cam_info_received_) {
+        if (!individual_markers_ && !cam_info_received_) {
             RCLCPP_WARN_THROTTLE(
                 get_logger(),
                 *get_clock(),
@@ -150,21 +157,28 @@ class ArucoNode: public rclcpp::Node{
         if (mIds.size()>0){
 
             cv::aruco::drawDetectedMarkers(annotated_,mCorners,mIds);
-            cv::aruco::estimatePoseSingleMarkers(mCorners,0.1,cam_mat_,dist_coeffs,rvecs,tvecs);
+        }
+        const bool matching = cam_frame_id == msg->header.frame_id &&
+            calibration_width_ == msg->width && calibration_height_ == msg->height;
+        if (!mIds.empty() && cam_info_received_ && (!individual_markers_ || matching)) {
+            cv::aruco::estimatePoseSingleMarkers(mCorners,marker_size_m_,cam_mat_,dist_coeffs,rvecs,tvecs);
             for (size_t i=0; i<mIds.size(); i++){
                 cv::aruco::drawAxis(annotated_,cam_mat_,dist_coeffs,rvecs[i],tvecs[i],0.01);
-        //         RCLCPP_INFO_THROTTLE(
-        //     this->get_logger(),
-        //     *this->get_clock(),
-        //     1000,
-        //     "tvec = [%.4f, %.4f, %.4f]",
-        //     tvecs[i][0],tvecs[i][1],tvecs[i][2]
-        // );
+                if (individual_markers_) {
+                    geometry_msgs::msg::TransformStamped tag;
+                    tag.header = msg->header;
+                    tag.child_frame_id = "innomaker_aruco_" + std::to_string(mIds[i]);
+                    tf2::Quaternion q;
+                    get_tf2_quat(rvecs[i], q);
+                    tag.transform.rotation = tf2::toMsg(q);
+                    tag.transform.translation.x = tvecs[i][0];
+                    tag.transform.translation.y = tvecs[i][1];
+                    tag.transform.translation.z = tvecs[i][2];
+                    camera_pose_broadcaster_->sendTransform(tag);
+                }
             }
-        
-        // tf2::Quaternion quat;
-        // get_tf2_quat(rvecs.back(),quat);
-
+        }
+        if (!individual_markers_ && !mIds.empty()) {
         tf2::Transform T_measured_cam = invert_cv_pose(rvecs.back(),tvecs.back());
         tf2::Transform T_measured_spreader = get_Cam_to_Spreader(T_measured_cam);
         cam_transform.header.stamp = msg->header.stamp;
@@ -196,6 +210,9 @@ class ArucoNode: public rclcpp::Node{
     cv::Mat cam_mat_;
     cv::Mat dist_coeffs;
     std::string cam_frame_id;
+    bool individual_markers_;
+    double marker_size_m_;
+    uint32_t calibration_width_{0}, calibration_height_{0};
     bool cam_info_received_{false};
     geometry_msgs::msg::TransformStamped cam_transform;
     geometry_msgs::msg::TransformStamped spreader_transform;

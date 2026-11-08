@@ -37,6 +37,7 @@ class TaskStateServer : public rclcpp::Node {
     config.max_lin_acc_rms=limit("platform_imu.max_accel_rms",config.max_lin_acc_rms);
     config.max_mean_ang_vel=limit("platform_imu.max_mean_gyro",config.max_mean_ang_vel);
     const auto topic=declare_parameter<std::string>("platform_imu_topic","/hb_robot_lidar/imu");
+    config.auxiliary_accel_topic=declare_parameter<std::string>("platform_accel_topic","/mpu6050/imu",descriptor);
     imu_callbacks_=create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,topic,config,imu_callbacks_);
     RCLCPP_INFO(get_logger(),
@@ -117,17 +118,15 @@ class TaskStateServer : public rclcpp::Node {
       else if(state_.process_fault_active || state_.motion_fault_active)
         state_.status_message="Geometry valid; execution blocked by active fault";
       else state_.status_message="Geometry valid; platform supervision stable";
-      // Coverage can briefly fall short while packets still arrive on time.
-      // Block motion through supervision_valid during that interval. Retire the
-      // reference only for measured instability or an actual supervision outage.
-      // The counter catches a gap even if the executor missed the stale interval.
-      if(m.sample_age_s > std::chrono::duration<double>(imu_->config().max_sample_age).count() ||
-         m.reception_gaps != last_seen_gaps_)
+      // Loss of observation latches execution permission off, even when packets
+      // are fresh but the sample window is incomplete. The planning reference
+      // and its measured pose version survive. Only a supervised observation
+      // acquired after the last untrusted interval can clear this latch.
+      if(m.reception_gaps != last_seen_gaps_)
         invalidate("platform IMU reception gap exceeded max_sample_age");
-      else if(m.valid && !m.stable)
+      else if(!m.valid || !m.stable)
         invalidate(state_.status_message);
       last_seen_gaps_=m.reception_gaps;
-      if(!m.valid) last_untrusted_=now().nanoseconds();
       if(state_.imu_stable && !state_.workpiece_pose_valid && !invalidation_reason_.empty())
         state_.status_message += ". Pose invalidated by " + invalidation_reason_;
       state_.header.stamp=now(); pub_->publish(state_);

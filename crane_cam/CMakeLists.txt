@@ -51,6 +51,8 @@ pose_est
 beam_est
 DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS src/windows_camera.py DESTINATION lib/${PROJECT_NAME} RENAME windows_camera)
+
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}/

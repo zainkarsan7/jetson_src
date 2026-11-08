@@ -97,6 +97,9 @@ namespace hb_robot_skills{
 
 
         hb_perception::ImuStabilityConfig config;
+        if (!has_parameter("platform_accel_topic"))
+            declare_parameter<std::string>("platform_accel_topic", "/mpu6050/imu");
+        config.auxiliary_accel_topic = get_parameter("platform_accel_topic").as_string();
         config.max_ang_vel_rms =max_ang_vel_rms_ ;
         config.max_lin_acc_rms =max_lin_acc_rms_ ;
         config.max_mean_ang_vel=max_mean_ang_vel_;
@@ -845,7 +848,7 @@ bool InspectProfileServer::acquireSamples(
                         acquisition_timeout_ * 1000.0)));
 
         if (!observation)
-            continue;
+            break;
 
         const auto stamp = observation->stamp;
         boundary = stamp;
@@ -1222,22 +1225,13 @@ void InspectProfileServer::execute(
         }
 
 
-        bool acquired_ = false;
-        constexpr int max_acquisition_batches = 10;
-        for (int attempt = 1; attempt <= max_acquisition_batches; attempt++){
-            if(canceled()){
-                return;
-            }
-            if(acquireSamples(goal->samples_per_view,goal->depth_range)){
-                acquired_ = true;
-                break;
-            }
-            RCLCPP_WARN(get_logger(), "attempt %zu / %d failed", attempt, max_acquisition_batches);
-        }
+        if (canceled()) return;
+        const bool acquired = acquireSamples(goal->samples_per_view, goal->depth_range);
+        if (canceled()) return;
 
         // First iteration observes the current camera position.
         // Subsequent iterations arrive here after a completed move.
-        if (!acquired_)
+        if (!acquired)
         {
             fail(
                 InspectProfile::Result::ACQUISITION_FAILED,
