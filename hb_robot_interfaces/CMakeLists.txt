@@ -30,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GenerateExplorePath.srv"
   "srv/GenerateCutPath.srv"
   "srv/ApproveMotion.srv"
+  "srv/CaptureCutEnvironment.srv"
   "action/ExecuteCut.action"
   "action/InspectCut.action"
   "action/InspectProfile.action"

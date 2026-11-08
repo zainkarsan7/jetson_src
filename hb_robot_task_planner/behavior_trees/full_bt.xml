@@ -10,6 +10,7 @@
             <ReferenceExists/>
             <Sequence><Inverter><ReferenceExists/></Inverter><InspectProfile/><AwaitPlanningReference/></Sequence>
           </Fallback>
+          <CaptureCutEnvironment/>
           <PlanCut/>
           <!-- A candidate survives a supervision gap. Confirm the current pose before motion. -->
           <SubTree ID="EnsureGeometryValid"/>
@@ -43,6 +44,7 @@
         <Sequence>
           <ResidualDetected/>
           <SubTree ID="EnsureGeometryValid"/>
+          <CaptureCutEnvironment/>
           <PlanRecut/>
           <SubTree ID="EnsureGeometryValid"/>
           <ValidateTaskState/>
@@ -54,6 +56,7 @@
     </Sequence>
   </BehaviorTree>
   <TreeNodesModel>
+        <Action ID="CaptureCutEnvironment"/>
     <Condition ID="FaultActive"/>
     <Condition ID="ReferenceExists"/>
     <Condition ID="WorkpiecePoseValid"/>

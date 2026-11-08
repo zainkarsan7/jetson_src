@@ -45,6 +45,7 @@
     <param name="local_port" value="6201"/>
     <param name="local_ip" value="192.168.1.2"/>
 
+    <param name="publish_sensor_tf" value="false"/>
     <param name="cloud_frame" value="unilidar_lidar"/>
     <param name="cloud_topic" value="hb_robot_lidar/cloud"/>
     <param name="imu_frame" value="unilidar_imu"/>

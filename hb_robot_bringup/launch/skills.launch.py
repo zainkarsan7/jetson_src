@@ -115,6 +115,10 @@ def generate_launch_description():
              "platform_imu.max_accel_rms": 0.150,
              "platform_imu.max_mean_gyro": 0.030,
              }]),
+        Node(package="hb_robot_skills", executable="capture_cut_environment", output="screen",
+             additional_env={"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
+             parameters=[{"jacket_padding_m": 0.045, "workpiece_margin_m": 0.025,
+                          "voxel_size_m": 0.04}]),
         Node(package="hb_robot_skills", executable="revalidate_workpiece_server", output="screen"),
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {

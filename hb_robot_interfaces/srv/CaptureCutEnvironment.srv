@@ -1,0 +1,10 @@
+uint64 geometry_version
+uint64 pose_version
+uint64 scene_version
+---
+bool success
+string message
+# ID observed in the scene, empty after a valid empty capture.
+string environment_id
+bool scene_changed
+uint32 occupied_voxels

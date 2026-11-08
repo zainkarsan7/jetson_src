@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+import threading
+import time
+import uuid
+from pathlib import Path
+
+import numpy as np
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import Pose
+from hb_robot_interfaces.msg import TaskState
+from hb_robot_interfaces.srv import CaptureCutEnvironment
+from moveit_msgs.msg import CollisionObject, PlanningSceneComponents
+from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.time import Time
+from scipy.spatial.transform import Rotation
+from sensor_msgs.msg import PointCloud2, PointField
+from shape_msgs.msg import SolidPrimitive
+from tf2_ros import Buffer, TransformListener
+
+from cut_environment_filter import Extrusion, MeshSurface, capsule, occupied_cells, voxel_runs
+
+
+def matrix(position, orientation):
+    result = np.eye(4)
+    result[:3, :3] = Rotation.from_quat(
+        [orientation.x, orientation.y, orientation.z, orientation.w]).as_matrix()
+    result[:3, 3] = [position.x, position.y, position.z]
+    if not np.isfinite(result).all():
+        raise ValueError("Non-finite transform")
+    return result
+
+
+def transform(points, pose):
+    return points @ pose[:3, :3].T + pose[:3, 3]
+
+
+def near_returns(cloud):
+    fields = {f.name: f for f in cloud.fields}
+    coordinates = [fields[k] for k in ('x', 'y', 'z')]
+    if any(f.datatype != PointField.FLOAT32 or f.count != 1 for f in coordinates):
+        raise ValueError("Expected FLOAT32 XYZ")
+    dtype = np.dtype(dict(names=['x', 'y', 'z'], offsets=[f.offset for f in coordinates],
+                          formats=[('>' if cloud.is_bigendian else '<')+'f4']*3,
+                          itemsize=cloud.point_step))
+    values = np.ndarray((cloud.height, cloud.width), dtype=dtype, buffer=cloud.data,
+                        strides=(cloud.row_step, cloud.point_step))
+    xyz = np.column_stack([values[k].ravel() for k in dtype.names])
+    xyz = xyz[np.isfinite(xyz).all(axis=1)]
+    radius_sq = np.einsum('ij,ij->i', xyz, xyz)
+    if not np.any(radius_sq > 0):
+        raise ValueError("Cloud contains no valid returns")
+    return xyz[(radius_sq > 0) & (radius_sq <= 4.)]
+
+
+class CaptureNode(Node):
+    # UR10e joint origins in kinematic order. Radii exclude the configurable jacket.
+    arm = ['robot_mount', 'ur10e_shoulder_link', 'ur10e_upper_arm_link',
+           'ur10e_forearm_link', 'ur10e_wrist_1_link', 'ur10e_wrist_2_link',
+           'ur10e_wrist_3_link', 'ur10e_tool0']
+    radii = [0.10, 0.11, 0.11, 0.09, 0.08, 0.08, 0.07]
+
+    def __init__(self):
+        super().__init__('capture_cut_environment')
+        self.padding = self.declare_parameter('jacket_padding_m', 0.045).value
+        self.margin = self.declare_parameter('workpiece_margin_m', 0.025).value
+        self.size = self.declare_parameter('voxel_size_m', 0.04).value
+        if not (0 <= self.padding <= 0.25 and 0 <= self.margin <= 0.10 and 0.01 <= self.size <= 0.2):
+            raise ValueError("Invalid jacket padding, workpiece margin or voxel size")
+        directory = Path(get_package_share_directory('hb_robot_description')) / 'meshes'
+        self.mount = MeshSurface(directory/'base_mount.stl')
+        self.bracket = MeshSurface(directory/'bracket.stl')
+        self.tf = Buffer()
+        self.listener = TransformListener(self.tf, self)
+        self.get_scene = self.create_client(GetPlanningScene, '/get_planning_scene')
+        self.apply_scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
+        self.lock = threading.Lock()
+        self.window = None
+        self.state = None
+        self.create_subscription(PointCloud2, '/hb_robot_lidar/cloud', self.cloud, qos_profile_sensor_data)
+        self.create_subscription(TaskState, '/task_state', self.status, QoSProfile(
+            depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_service(CaptureCutEnvironment, 'capture_cut_environment', self.capture,
+                            callback_group=MutuallyExclusiveCallbackGroup())
+
+    def status(self, state):
+        with self.lock:
+            self.state = state
+            if self.window is not None and not self.valid(state, self.request):
+                self.window_invalid = True
+
+    def valid(self, state, req):
+        if state is None:
+            return False
+        age = self.get_clock().now().nanoseconds - Time.from_msg(state.header.stamp).nanoseconds
+        return (0 <= age <= 500_000_000 and state.scene_valid and state.imu_stable
+                and state.supervision_valid and not state.motion_fault_active and not state.process_fault_active
+                and (state.geometry_version, state.pose_version, state.scene_version)
+                == (req.geometry_version, req.pose_version, req.scene_version))
+
+    def cloud(self, msg):
+        with self.lock:
+            if self.window is None:
+                return
+            stamp = Time.from_msg(msg.header.stamp).nanoseconds
+            if self.start_ns <= stamp < self.start_ns + 500_000_000 and len(self.window) < 32:
+                self.window[stamp] = msg
+
+    def rpc(self, client, request):
+        if not client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError('MoveGroup service unavailable')
+        future = client.call_async(request)
+        ready = threading.Event()
+        future.add_done_callback(lambda _: ready.set())
+        if not ready.wait(3.0):
+            raise RuntimeError('MoveGroup service timed out')
+        return future.result()
+
+    def lookup(self, frame, link, stamp):
+        t = self.tf.lookup_transform(frame, link, stamp, timeout=Duration(seconds=0.15)).transform
+        return matrix(t.translation, t.rotation)
+
+    def filtered(self, cloud, frame, mesh_pose, profile, initial):
+        stamp = Time.from_msg(cloud.header.stamp)
+        links = self.arm + ['ur10e_bracket_link', 'ur10e_torch_link', 'camera_base', cloud.header.frame_id]
+        poses = {link: self.lookup(frame, link, stamp) for link in links}
+        if not initial:
+            initial.update(poses)
+        for link, pose in poses.items():
+            first = initial[link]
+            angle = Rotation.from_matrix(first[:3, :3].T @ pose[:3, :3]).magnitude()
+            if np.linalg.norm(first[:3, 3]-pose[:3, 3]) > 0.01 or angle > 0.02:
+                raise ValueError("Robot moved during capture: " + link)
+        xyz = transform(near_returns(cloud), poses[cloud.header.frame_id])
+        for a, b, r in zip(self.arm, self.arm[1:], self.radii):
+            xyz = xyz[~capsule(xyz, poses[a][:3, 3], poses[b][:3, 3], r+self.padding)]
+        # The mount STL has a +pi/2 X rotation in hb_robot_macro.xacro.
+        local = transform(xyz, np.linalg.inv(poses['robot_mount']))
+        local = np.column_stack((local[:, 0], local[:, 2], -local[:, 1]))
+        xyz = xyz[~self.mount.contains(local, 0.015)]
+        local = transform(xyz, np.linalg.inv(poses['ur10e_bracket_link']))
+        xyz = xyz[~self.bracket.contains(local, self.padding)]
+        torch = transform(xyz, np.linalg.inv(poses['ur10e_torch_link']))
+        xyz = xyz[~capsule(torch, np.zeros(3), np.array([0, 0, 0.40]), 0.018+self.padding)]
+        camera = transform(xyz, np.linalg.inv(poses['camera_base']))
+        xyz = xyz[~np.all(np.abs(camera) <= np.array([0.12, 0.09, 0.07])+self.padding, axis=1)]
+        return xyz[~profile.contains(transform(xyz, np.linalg.inv(mesh_pose)))]
+
+    def capture(self, req, res):
+        try:
+            scene_req = GetPlanningScene.Request()
+            scene_req.components.components = PlanningSceneComponents.WORLD_OBJECT_GEOMETRY
+            objects = self.rpc(self.get_scene, scene_req).scene.world.collision_objects
+            work = next((o for o in objects if o.id == 'wk_workpiece_collision'), None)
+            if work is None or len(work.meshes) != 1 or len(work.mesh_poses) != 1:
+                raise ValueError('Missing accepted workpiece extrusion')
+            frame = work.header.frame_id
+            mesh = work.meshes[0]
+            profile = Extrusion(np.array([[p.x, p.y, p.z] for p in mesh.vertices]),
+                                np.array([list(t.vertex_indices) for t in mesh.triangles]), self.margin)
+            shape = work.mesh_poses[0]
+            mesh_pose = matrix(work.pose.position, work.pose.orientation) @ matrix(shape.position, shape.orientation)
+            with self.lock:
+                if not self.valid(self.state, req):
+                    raise ValueError('Stale reference, scene or platform stability')
+                self.start_ns = self.get_clock().now().nanoseconds
+                self.window = {}
+                self.request = req
+                self.window_invalid = False
+            # Small delivery allowance; admission is bounded by sensor timestamps.
+            time.sleep(0.60)
+            with self.lock:
+                scans = sorted(self.window.items())
+                self.window = None
+                if self.window_invalid or not self.valid(self.state, req):
+                    raise ValueError('Capture invalidated during acquisition')
+            if len(scans) < 5 or scans[-1][0]-scans[0][0] < 330_000_000:
+                raise ValueError(f'Insufficient timestamp coverage: {len(scans)} distinct clouds')
+            initial = {}
+            cells = occupied_cells([self.filtered(s, frame, mesh_pose, profile, initial)
+                                    for _, s in scans], self.size)
+            apply = ApplyPlanningScene.Request()
+            apply.scene.is_diff = True
+            apply.scene.robot_state.is_diff = True
+            updates = apply.scene.world.collision_objects
+            for obj in objects:
+                if obj.id.startswith('cut_environment_'):
+                    updates.append(CollisionObject(id=obj.id, header=work.header, operation=CollisionObject.REMOVE))
+            if len(cells):
+                obstacle = CollisionObject(id='cut_environment_'+uuid.uuid4().hex, header=work.header)
+                obstacle.pose.orientation.w = 1.
+                for center, length in voxel_runs(cells):
+                    pose = Pose()
+                    pose.orientation.w = 1.
+                    pose.position.x, pose.position.y, pose.position.z = map(float, center*self.size)
+                    obstacle.primitive_poses.append(pose)
+                    obstacle.primitives.append(SolidPrimitive(type=SolidPrimitive.BOX,
+                        dimensions=[self.size, self.size, self.size*length]))
+                updates.append(obstacle)
+                res.environment_id = obstacle.id
+            with self.lock:
+                if not self.valid(self.state, req):
+                    raise ValueError('Capture superseded before scene update')
+            if updates and not self.rpc(self.apply_scene, apply).success:
+                raise RuntimeError('MoveGroup rejected environment diff')
+            res.scene_changed = bool(updates)
+            res.occupied_voxels = len(cells)
+            res.success = True
+            res.message = f'{len(scans)} scans, {len(cells)} occupied voxels'
+            self.get_logger().info(res.message)
+        except Exception as exc:
+            res.message = str(exc)
+            self.get_logger().error(f'Capture failed: {exc}')
+        finally:
+            with self.lock:
+                self.window = None
+        return res
+
+
+def main():
+    rclpy.init()
+    node = CaptureNode()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
+    try:
+        executor.spin()
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

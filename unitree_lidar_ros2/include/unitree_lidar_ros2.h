@@ -66,6 +66,7 @@ protected:
     
     int cloud_scan_num_;
     bool use_system_timestamp_;
+    bool publish_sensor_tf_;
     double range_min_;
     double range_max_;
 
@@ -85,6 +86,7 @@ UnitreeLidarSDKNode::UnitreeLidarSDKNode(const rclcpp::NodeOptions &options)
     declare_parameter<int>("initialize_type", 2);
     declare_parameter<int>("work_mode", 0);
     declare_parameter<bool>("use_system_timestamp", true);
+    publish_sensor_tf_ = declare_parameter<bool>("publish_sensor_tf", true);
     declare_parameter<double>("range_min", 0);
     declare_parameter<double>("range_max", 50);
     declare_parameter<int>("cloud_scan_num", 18);
@@ -190,6 +192,7 @@ void UnitreeLidarSDKNode::timer_callback()
             imuMsg.linear_acceleration.z = imu.linear_acceleration[2];
 
             pub_imu_->publish(imuMsg);
+            if (!publish_sensor_tf_) return;
 
             // publish tf from initial imu to real-time imu
             geometry_msgs::msg::TransformStamped transformStamped;

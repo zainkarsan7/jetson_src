@@ -4,6 +4,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <hb_robot_interfaces/recovery.hpp>
+#include <hb_robot_interfaces/srv/capture_cut_environment.hpp>
+#include <optional>
 #include <hb_robot_interfaces/action/inspect_profile.hpp>
 #include <hb_robot_interfaces/action/inspect_cut.hpp>
 #include <hb_robot_interfaces/action/cut_profile.hpp>
@@ -37,6 +39,7 @@ struct Context {
   recovery::Verdict verdict;
   uint64_t execution_version=0;
   unsigned inspection_attempts=0;
+  std::optional<recovery::State> captured_scene;
   bool executed=false;
   bool preparing_candidate=false; // Planning and stationary pose confirmation issue no cut motion.
   recovery::State snapshot() {
@@ -164,6 +167,71 @@ class AwaitGeometry : public BT::StatefulActionNode {
  private:
   std::shared_ptr<Context> context_;bool planning_;std::chrono::steady_clock::time_point start_;
 };
+class CaptureEnvironment : public BT::StatefulActionNode {
+  using Service = hb_robot_interfaces::srv::CaptureCutEnvironment;
+ public:
+  CaptureEnvironment(const std::string& name, const BT::NodeConfiguration& cfg,
+                     rclcpp::Node::SharedPtr node, std::shared_ptr<Context> context)
+      : BT::StatefulActionNode(name, cfg), context_(context),
+        client_(node->create_client<Service>("capture_cut_environment")) {}
+  static BT::PortsList providedPorts() { return {}; }
+  BT::NodeStatus onStart() override {
+    context_->captured_scene.reset();
+    expected_ = context_->snapshot();
+    deadline_ = std::chrono::steady_clock::now() + 20s;
+    return onRunning();
+  }
+  BT::NodeStatus onRunning() override {
+    const auto state = context_->snapshot();
+    if (!state.scene_valid || state.motion_fault_active || state.process_fault_active || expected_.geometry_version != state.geometry_version ||
+        expected_.pose_version != state.pose_version || std::chrono::steady_clock::now() > deadline_) {
+      RCLCPP_ERROR(rclcpp::get_logger("bt_executor"), "Environment capture expired or reference changed");
+      onHalted();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (!response_ && !future_.valid()) {
+      if (!client_->service_is_ready()) return BT::NodeStatus::RUNNING;
+      auto request = std::make_shared<Service::Request>();
+      request->geometry_version = expected_.geometry_version;
+      request->pose_version = expected_.pose_version;
+      request->scene_version = expected_.scene_version;
+      auto pending = client_->async_send_request(request);
+      request_id_ = pending.request_id;
+      future_ = pending.share();
+    }
+    if (!response_) {
+      if (future_.wait_for(0s) != std::future_status::ready) return BT::NodeStatus::RUNNING;
+      response_ = future_.get();
+      future_ = {};
+      if (!response_->success) {
+        RCLCPP_ERROR(rclcpp::get_logger("bt_executor"), "Environment capture failed: %s",
+                     response_->message.c_str());
+        response_.reset();
+        return BT::NodeStatus::FAILURE;
+      }
+    }
+    if (state.cut_environment_id != response_->environment_id ||
+        (response_->scene_changed && state.scene_version <= expected_.scene_version))
+      return BT::NodeStatus::RUNNING;
+    context_->captured_scene = state;
+    response_.reset();
+    return BT::NodeStatus::SUCCESS;
+  }
+  void onHalted() override {
+    if (future_.valid()) client_->remove_pending_request(request_id_);
+    future_ = {};
+    response_.reset();
+  }
+ private:
+  std::shared_ptr<Context> context_;
+  rclcpp::Client<Service>::SharedPtr client_;
+  rclcpp::Client<Service>::SharedFuture future_;
+  Service::Response::SharedPtr response_;
+  int64_t request_id_ = 0;
+  recovery::State expected_;
+  std::chrono::steady_clock::time_point deadline_;
+};
+
 template<class Action,class Goal,class Result>
 void action(BT::BehaviorTreeFactory& factory,const std::string& name,
     rclcpp::Node::SharedPtr node,const std::string& endpoint,Goal goal,Result result) {
@@ -187,6 +255,8 @@ int main(int argc,char** argv) {
     "/workpiece_reference",rclcpp::QoS(1).transient_local(),[context](hb_robot_interfaces::msg::WorkpieceReference::ConstSharedPtr m){
       std::lock_guard<std::mutex> lock(context->mutex);context->estimate=m->estimate;});
   BT::BehaviorTreeFactory factory;
+  factory.registerBuilder<CaptureEnvironment>("CaptureCutEnvironment",[=](const auto& n,const auto& c){
+    return std::make_unique<CaptureEnvironment>(n,c,node,context);});
   auto condition=[&](const std::string& name,auto predicate){
     factory.registerSimpleCondition(name,[predicate](BT::TreeNode&){
       return predicate()?BT::NodeStatus::SUCCESS:BT::NodeStatus::FAILURE;
@@ -239,6 +309,8 @@ int main(int argc,char** argv) {
   auto planGoal=[=](auto& goal,bool recut) {
     const auto state=context->snapshot();
     if(!state.scene_valid || (recut && !recovery::geometryPermitted(state))) return false;
+    if (!context->captured_scene || !recovery::sameVersions(state, *context->captured_scene) ||
+        state.cut_environment_id != context->captured_scene->cut_environment_id) return false;
     goal.standoff=standoff;
     goal.pos_tol=pos_tol;
     goal.ang_tol=ang_tol;

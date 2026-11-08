@@ -18,6 +18,7 @@
               <AwaitPlanningReference />
             </Sequence>
           </Fallback>
+          <CaptureCutEnvironment/>
           <PlanCut />
           <!-- A candidate survives a supervision gap. Confirm the current pose before motion. -->
           <WorkpiecePoseValid />
@@ -43,6 +44,7 @@
     </Fallback>
   </BehaviorTree>
   <TreeNodesModel>
+        <Action ID="CaptureCutEnvironment"/>
     <Condition ID="FaultActive" />
     <Condition ID="ReferenceExists" />
     <Condition ID="WorkpiecePoseValid" />

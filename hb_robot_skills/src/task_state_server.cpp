@@ -75,6 +75,15 @@ class TaskStateServer : public rclcpp::Node {
         state_.path_valid=false;
       });
     scene_=create_subscription<moveit_msgs::msg::PlanningScene>("/monitored_planning_scene",10,[this](moveit_msgs::msg::PlanningScene::ConstSharedPtr m){
+      if (!m->is_diff) state_.cut_environment_id.clear();
+      for (const auto& object : m->world.collision_objects) {
+        if (object.id.rfind("cut_environment_", 0) != 0) continue;
+        if (object.operation == object.REMOVE) {
+          if (state_.cut_environment_id == object.id) state_.cut_environment_id.clear();
+        } else {
+          state_.cut_environment_id = object.id;
+        }
+      }
       if(scene_revisions_.changed(*m)) {
         ++state_.scene_version;
         state_.path_valid=false;

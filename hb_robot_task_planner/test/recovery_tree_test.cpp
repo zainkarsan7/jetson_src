@@ -5,7 +5,7 @@
 struct Scenario {
   std::map<std::string,int> calls;
   int evidence=2; // 1 inconclusive, 2 verified, 3 residual
-  bool execution_ok=true;
+  bool execution_ok=true, capture_ok=true;
   bool confirmed=true, localized=true, versions_match=true;
   bool profile_restores_pose=false, second_view_verifies=false, fault_active=false;
   BT::NodeStatus runVariant(const std::string& kind) {
@@ -16,7 +16,7 @@ struct Scenario {
   BT::NodeStatus run(const char* file=TREE_FILE) {
     BT::BehaviorTreeFactory f;
     for(const std::string name:{"FaultActive","ReferenceExists","WorkpiecePoseValid",
-        "InspectProfile","AwaitPlanningReference","AwaitGeometry","RevalidateWorkpiece","PlanCut","ValidateTaskState",
+        "InspectProfile","AwaitPlanningReference","AwaitGeometry","RevalidateWorkpiece","CaptureCutEnvironment","PlanCut","ValidateTaskState",
         "ExecuteCut","InspectKerf","ValidateKerf","KerfVerified","KerfInconclusive",
         "ResidualDetected","PlanRecut","ExecuteRecut","Escape"}) {
       auto tick=[&,name](BT::TreeNode&){
@@ -27,6 +27,7 @@ struct Scenario {
         if(name=="WorkpiecePoseValid") success=confirmed;
         if(name=="RevalidateWorkpiece") success=localized;
         if(name=="ValidateTaskState") success=versions_match;
+        if(name=="CaptureCutEnvironment") success=capture_ok;
         if(name=="ExecuteCut") success=execution_ok;
         if(name=="KerfVerified") success=evidence==2 || calls["ExecuteRecut"]>0 ||
           (second_view_verifies && calls["InspectKerf"]==2);
@@ -142,4 +143,11 @@ TEST(Ablations, InvalidPoseUsesOnlyAssignedRepair) {
   moved.versions_match = false;
   EXPECT_EQ(moved.runVariant("environment"), BT::NodeStatus::FAILURE);
   EXPECT_EQ(moved.calls["ExecuteCut"], 0);
+}
+
+TEST(RecoveryTree, FailedCapturePreventsPlanning) {
+  Scenario s;s.capture_ok=false;
+  EXPECT_EQ(s.run(),BT::NodeStatus::FAILURE);
+  EXPECT_EQ(s.calls["PlanCut"],0);
+  EXPECT_EQ(s.calls["ExecuteCut"],0);
 }

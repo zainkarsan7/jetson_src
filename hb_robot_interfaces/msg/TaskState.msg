@@ -26,6 +26,7 @@ std_msgs/Header header
 uint64 geometry_version
 uint64 pose_version
 uint64 scene_version
+string cut_environment_id
 uint64 execution_version
 bool workpiece_pose_valid
 bool imu_stable

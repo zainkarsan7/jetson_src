@@ -1,12 +1,12 @@
 <launch>
-  <arg name="device" description="Exact Windows DirectShow video device name"/>
+  <arg name="device" default="Innomaker-U20CAM-1080p-WDR"/>
   <arg name="width" default="1920"/>
   <arg name="height" default="1080"/>
   <arg name="fps" default="30"/>
   <arg name="marker_size_m" default="0.10"/>
   <arg name="calibration" default=""/>
   <node pkg="crane_cam" exec="windows_camera" namespace="innomaker" output="screen">
-    <param name="device" value="$(var device)" type="str"/>
+    <param name="device" value="Innomaker-U20CAM-1080p-WDR" type="str"/>
     <param name="width" value="$(var width)"/>
     <param name="height" value="$(var height)"/>
     <param name="fps" value="$(var fps)"/>

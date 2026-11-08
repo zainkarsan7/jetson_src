@@ -200,7 +200,13 @@ install(
   DESTINATION include
 )
 
+install(PROGRAMS scripts/capture_cut_environment DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/cut_environment_filter.py DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(cut_environment_test test/test_cut_environment.py
+    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=183 OPENBLAS_NUM_THREADS=1)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(recovery_test test/recovery_test.cpp)
   target_link_libraries(recovery_test hb_motion hb_robot_perception::hb_perception)

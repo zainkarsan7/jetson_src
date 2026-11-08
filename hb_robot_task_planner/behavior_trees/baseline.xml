@@ -5,6 +5,7 @@
         <Sequence name="BaselineInspectPlanCut">
             <Action ID="InspectProfile"/>
             <Action ID="AwaitPlanningReference"/>
+            <Action ID="CaptureCutEnvironment"/>
             <Action ID="PlanCut"/>
             <!-- A candidate already exists here. At most one fresh camera observation
                  may confirm its pose. A changed fit requires a new plan. -->
@@ -21,6 +22,7 @@
     </BehaviorTree>
     <!-- ////////// -->
     <TreeNodesModel>
+        <Action ID="CaptureCutEnvironment"/>
         <Action ID="AwaitPlanningReference"/>
         <Action ID="AwaitGeometry"/>
         <Action ID="Escape"/>
