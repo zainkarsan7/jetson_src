@@ -92,6 +92,23 @@ namespace hb_robot_skills{
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
+   
+
+        rgbd_acquisition_ =
+            std::make_unique<hb_perception::RGBDAcquisition>(
+                this,
+                tf_buffer_.get(),
+                scene_frame_,
+                hb_perception::RGBDAcquisition::Mode::CaptureWindow,
+                rgb_topic_,
+                depth_topic_,
+                camera_info_topic_);
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Persistent RGBD acquisition initialized");
+
+
 
         hb_perception::ImuStabilityConfig config;
         if (!has_parameter("platform_accel_topic"))
@@ -820,122 +837,234 @@ bool InspectProfileServer::waitForStability()
     
 
     return rclcpp::ok();
+
+
 }
-    bool InspectProfileServer::acquireSamples(
-        uint32_t sample_count,
-        double depth_range)
+
+bool InspectProfileServer::acquireSamples(
+    uint32_t sample_count,
+    double depth_range)
+{
+    using namespace std::chrono_literals;
+
+    if (!rgbd_acquisition_ || sample_count == 0)
+        return false;
+
+    const auto start =
+        std::chrono::steady_clock::now();
+
+    const auto deadline = start + 20s;
+
+    uint32_t integrated = 0;
+    uint32_t received = 0;
+    uint32_t timeouts = 0;
+    uint32_t rejected = 0;
+
+    // Require captures after this viewpoint's
+    // stability check has completed.
+    rclcpp::Time boundary = now();
+
+    while (rclcpp::ok() &&
+           integrated < sample_count &&
+           std::chrono::steady_clock::now() < deadline)
     {
-        if (sample_count == 0)
-            return false;
+        const auto remaining =
+            std::chrono::duration_cast<
+                std::chrono::milliseconds>(
+                deadline -
+                std::chrono::steady_clock::now());
 
-        using namespace std::chrono_literals;
+        if (remaining <= 0ms)
+            break;
 
-        const auto start = std::chrono::steady_clock::now();
+        const auto wait_time = std::min(
+            remaining,
+            std::chrono::milliseconds(
+                std::max<int64_t>(
+                    100,
+                    static_cast<int64_t>(
+                        acquisition_timeout_ * 1000.0))));
 
-        // Total budget for one viewpoint.
-        constexpr auto total_budget = 20s;
+        auto observation =
+            rgbd_acquisition_->acquireAfter(
+                boundary,
+                wait_time);
 
-        const auto deadline = start + total_budget;
-
-        uint32_t integrated = 0;
-        uint32_t received = 0;
-        uint32_t timeouts = 0;
-        uint32_t rejected = 0;
-
-        // Require observations newer than acquisition start.
-        rclcpp::Time boundary = now();
-        hb_perception::RGBDAcquisition capture(this, tf_buffer_.get(), scene_frame_,
-            hb_perception::RGBDAcquisition::Mode::CaptureWindow, rgb_topic_, depth_topic_, camera_info_topic_);
-
-        while (rclcpp::ok() &&
-            integrated < sample_count &&
-            std::chrono::steady_clock::now() < deadline)
+        if (!observation)
         {
-            const auto remaining =
-                std::chrono::duration_cast<
-                    std::chrono::milliseconds>(
-                    deadline - std::chrono::steady_clock::now());
-
-            if (remaining <= 0ms)
-                break;
-
-            const auto wait_time =
-                std::min(
-                    remaining,
-                    std::chrono::milliseconds(
-                        static_cast<int64_t>(
-                            acquisition_timeout_ * 1000.0)));
-
-            auto observation =
-                capture.acquireAfter(
-                    boundary,
-                    wait_time);
-
-            if (!observation)
-            {
-                ++timeouts;
-
-                RCLCPP_WARN(
-                    get_logger(),
-                    "RGBD timeout %u: "
-                    "integrated %u/%u",
-                    timeouts,
-                    integrated,
-                    sample_count);
-
-                continue;
-            }
-
-            ++received;
-
-            const auto stamp = observation->stamp;
-
-            // Advance boundary even if integration fails.
-            boundary = stamp;
-
-            const bool success =
-                scene_model_->addObservation(
-                    std::move(*observation),
-                    depth_range);
-
-            if (success)
-            {
-                if (!first_observation_)
-                    first_observation_ = stamp;
-
-                ++integrated;
-            }
-            else
-            {
-                ++rejected;
-
-                RCLCPP_WARN(
-                    get_logger(),
-                    "RGBD observation rejected during "
-                    "scene integration");
-            }
+            ++timeouts;
+            continue;
         }
 
-        const double elapsed =
-            std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - start)
+        ++received;
+
+        const auto stamp = observation->stamp;
+
+        // The next observation must have a later
+        // RGB timestamp, and its depth must also
+        // satisfy this boundary.
+        boundary = stamp;
+
+        const bool success =
+            scene_model_->addObservation(
+                std::move(*observation),
+                depth_range);
+
+        if (success)
+        {
+            if (!first_observation_)
+                first_observation_ = stamp;
+
+            ++integrated;
+        }
+        else
+        {
+            ++rejected;
+
+            RCLCPP_WARN(
+                get_logger(),
+                "RGBD observation rejected at %.6f",
+                stamp.seconds());
+        }
+    }
+
+    const double elapsed =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start)
                 .count();
 
-        RCLCPP_INFO(
-            get_logger(),
-            "RGBD acquisition: "
-            "integrated=%u/%u received=%u "
-            "timeouts=%u rejected=%u "
-            "elapsed=%.2f s",
-            integrated,
-            sample_count,
-            received,
-            timeouts,
-            rejected,
-            elapsed);
+    RCLCPP_INFO(
+        get_logger(),
+        "RGBD acquisition: integrated=%u/%u "
+        "received=%u timeouts=%u rejected=%u "
+        "elapsed=%.2f s",
+        integrated,
+        sample_count,
+        received,
+        timeouts,
+        rejected,
+        elapsed);
 
-        return integrated > 0;
-    }
+    // Preserve partial-success behavior.
+    return integrated > 0;
+}
+
+
+    // bool InspectProfileServer::acquireSamples(
+    //     uint32_t sample_count,
+    //     double depth_range)
+    // {
+    //     if (sample_count == 0)
+    //         return false;
+
+    //     using namespace std::chrono_literals;
+
+    //     const auto start = std::chrono::steady_clock::now();
+
+    //     // Total budget for one viewpoint.
+    //     constexpr auto total_budget = 20s;
+
+    //     const auto deadline = start + total_budget;
+
+    //     uint32_t integrated = 0;
+    //     uint32_t received = 0;
+    //     uint32_t timeouts = 0;
+    //     uint32_t rejected = 0;
+
+    //     // Require observations newer than acquisition start.
+    //     rclcpp::Time boundary = now();
+    //     hb_perception::RGBDAcquisition capture(this, tf_buffer_.get(), scene_frame_,
+    //         hb_perception::RGBDAcquisition::Mode::CaptureWindow, rgb_topic_, depth_topic_, camera_info_topic_);
+
+    //     while (rclcpp::ok() &&
+    //         integrated < sample_count &&
+    //         std::chrono::steady_clock::now() < deadline)
+    //     {
+    //         const auto remaining =
+    //             std::chrono::duration_cast<
+    //                 std::chrono::milliseconds>(
+    //                 deadline - std::chrono::steady_clock::now());
+
+    //         if (remaining <= 0ms)
+    //             break;
+
+    //         const auto wait_time =
+    //             std::min(
+    //                 remaining,
+    //                 std::chrono::milliseconds(
+    //                     static_cast<int64_t>(
+    //                         acquisition_timeout_ * 1000.0)));
+
+    //         auto observation =
+    //             capture.acquireAfter(
+    //                 boundary,
+    //                 wait_time);
+
+    //         if (!observation)
+    //         {
+    //             ++timeouts;
+
+    //             RCLCPP_WARN(
+    //                 get_logger(),
+    //                 "RGBD timeout %u: "
+    //                 "integrated %u/%u",
+    //                 timeouts,
+    //                 integrated,
+    //                 sample_count);
+
+    //             continue;
+    //         }
+
+    //         ++received;
+
+    //         const auto stamp = observation->stamp;
+
+    //         // Advance boundary even if integration fails.
+    //         boundary = stamp;
+
+    //         const bool success =
+    //             scene_model_->addObservation(
+    //                 std::move(*observation),
+    //                 depth_range);
+
+    //         if (success)
+    //         {
+    //             if (!first_observation_)
+    //                 first_observation_ = stamp;
+
+    //             ++integrated;
+    //         }
+    //         else
+    //         {
+    //             ++rejected;
+
+    //             RCLCPP_WARN(
+    //                 get_logger(),
+    //                 "RGBD observation rejected during "
+    //                 "scene integration");
+    //         }
+    //     }
+
+    //     const double elapsed =
+    //         std::chrono::duration<double>(
+    //             std::chrono::steady_clock::now() - start)
+    //             .count();
+
+    //     RCLCPP_INFO(
+    //         get_logger(),
+    //         "RGBD acquisition: "
+    //         "integrated=%u/%u received=%u "
+    //         "timeouts=%u rejected=%u "
+    //         "elapsed=%.2f s",
+    //         integrated,
+    //         sample_count,
+    //         received,
+    //         timeouts,
+    //         rejected,
+    //         elapsed);
+
+    //     return integrated > 0;
+    // }
 // bool InspectProfileServer::acquireSamples(
 //     uint32_t sample_count,
 //     double depth_range)

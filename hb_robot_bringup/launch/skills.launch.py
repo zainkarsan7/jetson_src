@@ -118,12 +118,16 @@ def generate_launch_description():
         Node(package="hb_robot_skills", executable="capture_cut_environment", output="screen",
              additional_env={"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
              parameters=[{"jacket_padding_m": 0.075, 
-                        "workpiece_margin_m": 0.04,
-                          "voxel_size_m": 0.04, 
+                        "workpiece_margin_m": 0.06,
+                          "voxel_size_m": 0.025, 
+                          "min_voxel_scans": 3,
+                          "capture_duration_s": 2.5,
                           "debug_allow_invalid_scene": True,
                           "max_state_age_s": 2.0,
                           "robot_description_node": "/robot_state_publisher"
                           }]),
+
+
         Node(package="hb_robot_skills", executable="revalidate_workpiece_server", output="screen"),
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {

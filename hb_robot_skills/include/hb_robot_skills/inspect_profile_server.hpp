@@ -210,6 +210,13 @@ class InspectProfileServer: public rclcpp::Node{
         // tf buffer stuff
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
         std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+        
+
+
+        // Long-lived acquisition, serviced by its own executor.
+        // Only observations are requested on demand.
+        std::unique_ptr<hb_perception::RGBDAcquisition>
+            rgbd_acquisition_;
 
         
 };

@@ -1,6 +1,7 @@
 #include <hb_robot_interfaces/action/revalidate_workpiece.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <hb_robot_interfaces/recovery.hpp>
+#include <tf2_eigen/tf2_eigen.hpp>
 #include <hb_robot_perception/rgbd_acquisition.hpp>
 #include <hb_robot_perception/imu_stability_monitor.hpp>
 #include <hb_robot_perception/observation_registrar.hpp>
@@ -26,9 +27,30 @@ class RevalidateServer : public rclcpp::Node {
     config_.max_correspondence_m=0.025;config_.max_translation_m=0.05;
     config_.max_rotation_rad=0.10;config_.max_fitness_m2=0.000025;
     config_.min_points=100;
-    tf_=std::make_unique<tf2_ros::Buffer>(get_clock());
-    listener_=std::make_unique<tf2_ros::TransformListener>(*tf_);
-    imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,"/k4a/imu");
+    
+    tf_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+
+    listener_ =
+        std::make_unique<tf2_ros::TransformListener>(*tf_);
+
+    // Persistent DDS subscriptions, with a dedicated
+    // acquisition executor. Same working architecture
+    // as InspectProfileServer.
+    rgbd_acquisition_ =
+        std::make_unique<hb_perception::RGBDAcquisition>(
+            this,
+            tf_.get(),
+            frame_,
+            hb_perception::RGBDAcquisition::Mode::CaptureWindow,
+            "/k4a/rgb/image_raw",
+            "/k4a/depth_to_rgb/image_raw",
+            "/k4a/depth_to_rgb/camera_info");
+
+    imu_ =
+        std::make_unique<hb_perception::ImuStabilityMonitor>(
+            *this,
+            "/k4a/imu");
+
     ref_sub_=create_subscription<Reference>("/workpiece_reference",rclcpp::QoS(1).transient_local(),
       [this](Reference::ConstSharedPtr m){std::lock_guard<std::mutex> lock(mutex_);reference_=*m;});
     state_sub_=create_subscription<hb_robot::recovery::State>("/task_state",rclcpp::QoS(1).transient_local(),
@@ -76,13 +98,65 @@ class RevalidateServer : public rclcpp::Node {
       }
       if(canceled()) {finish("Localization canceled");return;}
       if(!imu_->waitForStable(std::chrono::seconds(10),canceled)) {finish("No stable observation window");return;}
-      const auto observation = [this] {
-        const auto after = now();
-        hb_perception::RGBDAcquisition capture(this, tf_.get(), frame_,
-          hb_perception::RGBDAcquisition::Mode::CaptureWindow);
-        return capture.acquireAfter(after, std::chrono::seconds(3));
-      }();
-      if(!observation || canceled()) {finish("Fresh acquisition failed");return;}
+      
+      // Platform supervision and IMU stability have
+      // already been checked above this point.
+      //
+      // Require both camera exposures to be newer than
+      // the beginning of this revalidation request.
+      
+      std::optional<hb_perception::Observation> observation;
+
+      const rclcpp::Time after = now();
+
+      const auto acquisition_deadline =
+          std::chrono::steady_clock::now() +
+          std::chrono::seconds(10);
+
+      RCLCPP_INFO(
+          get_logger(),
+          "Revalidation RGBD acquisition started "
+          "after %.6f",
+          after.seconds());
+
+      while (!canceled() &&
+            std::chrono::steady_clock::now() <
+                acquisition_deadline)
+      {
+          const auto remaining =
+              std::chrono::duration_cast<
+                  std::chrono::milliseconds>(
+                  acquisition_deadline -
+                  std::chrono::steady_clock::now());
+
+          if (remaining <= std::chrono::milliseconds::zero())
+              break;
+
+          const auto wait_time = std::min(
+              remaining,
+              std::chrono::milliseconds(500));
+
+          observation = rgbd_acquisition_->acquireAfter(
+              after,
+              wait_time);
+
+          if (observation)
+              break;
+      }
+
+      if (canceled())
+      {
+          finish("Localization canceled");
+          return;
+      }
+
+      if (!observation)
+      {
+          finish("Fresh acquisition failed");
+          return;
+      }
+
+
       auto raw=hb_robot_skills::kerfObservationCloud(*observation,range_);
       hb_perception::PointCloud world,reference_cloud;
       pcl::transformPointCloud(*raw,world,tf2::transformToEigen(observation->camera_pose).matrix().cast<float>());
@@ -172,12 +246,15 @@ class RevalidateServer : public rclcpp::Node {
   std::chrono::steady_clock::time_point received_{};
   std::atomic<bool> busy_{false};std::thread worker_;
   std::unique_ptr<tf2_ros::Buffer> tf_;std::unique_ptr<tf2_ros::TransformListener> listener_;
+  std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
   std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_;
   rclcpp::Subscription<Reference>::SharedPtr ref_sub_;
   rclcpp::Subscription<hb_robot::recovery::State>::SharedPtr state_sub_;
   rclcpp::Publisher<Reference>::SharedPtr ref_pub_;
   rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr estimate_pub_;
   rclcpp_action::Server<Action>::SharedPtr server_;
+
+  
 };
 int main(int argc,char** argv) {
   rclcpp::init(argc,argv);auto node=std::make_shared<RevalidateServer>();

@@ -264,3 +264,5 @@ fastdds shm clean
 
 
 ros2 bag record <topic_name>
+
+CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build

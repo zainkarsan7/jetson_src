@@ -5,7 +5,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
+from tf2_ros import TransformException
 import numpy as np
 import rclpy
 
@@ -585,6 +585,37 @@ class CaptureNode(Node):
     # LIDAR CALLBACK
     # ========================================================
 
+    def lookup_scan_poses(self, frame, links, stamp):
+        deadline = time.monotonic() + 1.0
+        last_error = None
+
+        while time.monotonic() < deadline:
+            poses = {}
+            try:
+                for link in links:
+                    result = self.tf.lookup_transform(
+                        frame,
+                        link,
+                        stamp,
+                        timeout=Duration(seconds=0.0),
+                    )
+
+                    poses[link] = matrix(
+                        result.transform.translation,
+                        result.transform.rotation,
+                    )
+
+                return poses
+
+            except TransformException as exc:
+                last_error = exc
+                time.sleep(0.025)
+
+        raise RuntimeError(
+            f"TF unavailable for LiDAR scan "
+            f"{stamp.nanoseconds / 1e9:.6f}: {last_error}"
+        )
+
     def cloud(self, msg):
         with self.lock:
             if self.window is None:
@@ -610,7 +641,7 @@ class CaptureNode(Node):
             frame,
             link,
             stamp,
-            timeout=Duration(seconds=0.15),
+            timeout=Duration(seconds=1.0),
         )
 
         return matrix(
@@ -743,10 +774,11 @@ class CaptureNode(Node):
             "camera_base",
         ])
 
-        poses = {
-            link: self.lookup(frame, link, stamp)
-            for link in dict.fromkeys(links)
-        }
+        poses = self.lookup_scan_poses(
+            frame,
+            list(dict.fromkeys(links)),
+            stamp,
+        )
 
         first_scan = not initial
 
