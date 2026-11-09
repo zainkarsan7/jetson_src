@@ -1,0 +1,9 @@
+string frame
+sensor_msgs/JointState start
+sensor_msgs/JointState target
+moveit_msgs/PlanningSceneWorld world
+---
+bool success
+bool backend_error
+string message
+moveit_msgs/RobotTrajectory trajectory

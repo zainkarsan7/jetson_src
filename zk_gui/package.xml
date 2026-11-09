@@ -11,6 +11,7 @@
   <depend>sensor_msgs</depend>
   <depend>hb_robot_interfaces</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>pluginlib</depend>
   <depend>rviz_common</depend>
 

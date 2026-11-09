@@ -9,20 +9,34 @@ using namespace std::chrono_literals;
 RGBDAcquisition::RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
     const std::string& target_frame, const std::string& rgb_topic,
     const std::string& depth_topic, const std::string& camera_info_topic)
+    : RGBDAcquisition(node, tf_buffer, target_frame, Mode::Continuous, rgb_topic, depth_topic, camera_info_topic)
+{}
+
+RGBDAcquisition::RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
+    const std::string& target_frame, Mode mode, const std::string& rgb_topic,
+    const std::string& depth_topic, const std::string& camera_info_topic)
     : node_(node), tf_buffer_(tf_buffer), target_frame_(target_frame)
 {
-    rgb_sub_.subscribe(node_, rgb_topic, rmw_qos_profile_sensor_data);
-    depth_sub_.subscribe(node_, depth_topic, rmw_qos_profile_sensor_data);
-    synchronizer_ =
-        std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-            SyncPolicy(15), rgb_sub_, depth_sub_);
-        //     synchronizer_->setInterMessageLowerBound(
-        //     0, rclcpp::Duration(30ms));
-
-        // synchronizer_->setInterMessageLowerBound(
-        //     1, rclcpp::Duration(30ms));
-    synchronizer_->setMaxIntervalDuration(
-        rclcpp::Duration(40ms));
+    rclcpp::SubscriptionOptions options;
+    auto qos = rmw_qos_profile_sensor_data;
+    if (mode == Mode::CaptureWindow) {
+        window_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+        rclcpp::ExecutorOptions executor_options;
+        executor_options.context = node_->get_node_base_interface()->get_context();
+        window_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executor_options);
+        window_executor_->add_callback_group(window_group_, node_->get_node_base_interface());
+        options.callback_group = window_group_;
+        qos.depth = 2;
+    }
+    rgb_sub_.subscribe(node_, rgb_topic, qos, options);
+    depth_sub_.subscribe(node_, depth_topic, qos, options);
+    synchronizer_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+        SyncPolicy(window_executor_ ? 3 : 15), rgb_sub_, depth_sub_);
+    synchronizer_->setMaxIntervalDuration(rclcpp::Duration(window_executor_ ? 12ms : 40ms));
+    // At up to 30 Hz the next exposure is at least 30 ms away. This lets
+    // ApproximateTime deliver a close pair without waiting for another frame.
+    synchronizer_->setInterMessageLowerBound(0, rclcpp::Duration(30ms));
+    synchronizer_->setInterMessageLowerBound(1, rclcpp::Duration(30ms));
 
     synchronizer_->registerCallback(
         std::bind(
@@ -31,14 +45,14 @@ RGBDAcquisition::RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
             std::placeholders::_1,
             std::placeholders::_2));
 
-    retry_timer_ = node_->create_wall_timer(50ms, [this] { resolvePending(); });
+    retry_timer_ = node_->create_wall_timer(50ms, [this] { resolvePending(); }, window_group_);
     retry_timer_->cancel();
     camera_info_sub_ = node_->create_subscription<CameraInfo>(camera_info_topic,
         rclcpp::SensorDataQoS().keep_last(1), [this](CameraInfo::ConstSharedPtr info) {
             camera_info_ = std::move(info);
             camera_info_sub_.reset();
             resolvePending();
-        });
+        }, options);
 }
 
 void RGBDAcquisition::synchronizedCallback(const Image::ConstSharedPtr& rgb,
@@ -137,11 +151,24 @@ void RGBDAcquisition::resolvePending()
 std::optional<Observation> RGBDAcquisition::acquireAfter(const rclcpp::Time& min_stamp,
     std::chrono::milliseconds timeout)
 {
-    std::unique_lock<std::mutex> lock(observation_mutex_);
-    if (!observation_cv_.wait_for(lock, timeout, [&] {
+    const auto fresh = [&] {
         return latest_observation_ && latest_observation_->stamp > min_stamp &&
             rclcpp::Time(latest_observation_->depth_to_rgb->header.stamp) > min_stamp;
-    })) {
+    };
+    std::unique_lock<std::mutex> lock(observation_mutex_);
+    if (window_executor_) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!fresh() && rclcpp::ok(node_->get_node_base_interface()->get_context())) {
+            const auto remaining = deadline - std::chrono::steady_clock::now();
+            if (remaining <= 0ns) break;
+            lock.unlock();
+            window_executor_->spin_once(remaining);
+            lock.lock();
+        }
+    } else {
+        observation_cv_.wait_for(lock, timeout, fresh);
+    }
+    if (!fresh()) {
         RCLCPP_WARN(node_->get_logger(), "No calibrated RGB-D pair with a pose after %.6f within %ld ms",
             min_stamp.seconds(), static_cast<long>(timeout.count()));
         return std::nullopt;

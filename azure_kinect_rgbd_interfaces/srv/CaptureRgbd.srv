@@ -1,0 +1,7 @@
+# Both hardware exposures must be strictly newer than this ROS timestamp.
+builtin_interfaces/Time after
+---
+bool success
+sensor_msgs/Image rgb
+sensor_msgs/Image depth_to_rgb
+sensor_msgs/CameraInfo camera_info

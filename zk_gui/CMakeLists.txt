@@ -12,6 +12,7 @@ find_package(ament_cmake_ros REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_rendering REQUIRED)
@@ -28,6 +29,7 @@ $<INSTALL_INTERFACE:include>
 
 ament_target_dependencies(zk_panel
 hb_robot_interfaces
+rclcpp_action
 rclcpp
 sensor_msgs
 pluginlib

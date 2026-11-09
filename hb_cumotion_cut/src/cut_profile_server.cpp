@@ -1,0 +1,1868 @@
+#include <set>
+#include "cut_profile_server.hpp"
+#include <chrono>
+#include <thread>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+#include "rclcpp/rclcpp.hpp"
+#include <tf2_eigen/tf2_eigen.hpp>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/robot_state/conversions.h>
+#include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/kinematic_constraints/kinematic_constraint.h>
+#include <moveit/kinematic_constraints/utils.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit/trajectory_processing/ruckig_traj_smoothing.h>
+
+
+using namespace std::chrono_literals;
+namespace hb_robot_skills{
+
+    CutProfileServer::CutProfileServer(const rclcpp::NodeOptions &options):Node("cut_profile_server",options){
+        if(!has_parameter("planning_group")){
+            planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
+        }
+        get_parameter("planning_group",planning_group_);
+        
+        if(!has_parameter("plasma_link")){
+            plasma_link_ = declare_parameter<std::string>("plasma_link","ur10e_torch_link");
+        }
+        get_parameter("plasma_link",plasma_link_);
+        if(!has_parameter("planning_time")){
+            planning_time_ = declare_parameter<double>("planning_time",5.0);
+        }
+        get_parameter("planning_time",planning_time_);
+
+
+        if(!has_parameter("require_plan_approval")){
+            require_plan_approval_ = declare_parameter<bool>("require_plan_approval",true);
+        }
+        get_parameter("require_plan_approval",require_plan_approval_);
+
+        if(!has_parameter("skip_cutting_motion")){
+            skip_motion_ = declare_parameter<bool>("skip_cutting_motion",false);
+        }
+        get_parameter("skip_cutting_motion",skip_motion_);
+
+        // A restarted cutting server must not reuse an earlier evidence epoch.
+        execution_version_=static_cast<uint64_t>(now().nanoseconds());
+        if(!has_parameter("enable_cutting_process")){
+            process_enabled_=declare_parameter<bool>("enable_cutting_process",false);
+        }
+        get_parameter("enable_cutting_process",process_enabled_);
+        if (!has_parameter("flap_travel_ms")) declare_parameter<int>("flap_travel_ms", 500);
+        flap_travel_time_ = std::chrono::milliseconds(get_parameter("flap_travel_ms").as_int());
+        if (flap_travel_time_.count() < 0) throw std::invalid_argument("flap_travel_ms must be nonnegative");
+        flap_client_ = create_client<std_srvs::srv::SetBool>("/camera_flap/set_closed");
+        task_sub_=create_subscription<TaskState>("/task_state",rclcpp::QoS(1).transient_local(),
+          [this](TaskState::ConstSharedPtr msg) {std::lock_guard<std::mutex> lock(task_mutex_);
+            task_state_=*msg;task_received_=std::chrono::steady_clock::now();});
+        invalidate_pose_pub_=create_publisher<std_msgs::msg::Bool>("/workpiece_pose_invalidated",10);
+        execution_pub_=create_publisher<std_msgs::msg::UInt64>(
+          "/cut_profile/execution_version",rclcpp::QoS(1).transient_local());
+        supervision_timer_=create_wall_timer(20ms,[this]{
+          if(retreat_active_) {
+            TaskState state;
+            {std::lock_guard<std::mutex> lock(task_mutex_);state=task_state_;
+              if(std::chrono::steady_clock::now()-task_received_>500ms) state.supervision_valid=false;}
+            const auto t=torch_controller_->snapshot();
+            if(!state.supervision_valid || !state.imu_stable || !state.workpiece_pose_valid ||
+               state.motion_fault_active || !torch_controller_->hasFreshIO() ||
+               t.output_on!=std::optional<bool>(false) ||
+               t.transfer_detected!=std::optional<bool>(false) ||
+               !hb_robot::recovery::sameVersions(state,execution_state_)) {
+              cut_stop_requested_=true;torch_controller_->emergencyShutdown("Retreat supervision lost");
+              if(move_group_) move_group_->stop();
+            }
+          }
+          if(!motion_active_) return;
+          TaskState current;
+          if(!taskPermitsExecution(&current) ||
+             !hb_robot::recovery::sameVersions(current,execution_state_)) {
+            cut_stop_requested_=true;
+            torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
+            if(move_group_) move_group_->stop();
+          }
+        });
+        using Escape=hb_robot_interfaces::action::Escape;
+        escape_server_=rclcpp_action::create_server<Escape>(this,"escape",
+          [this](const auto&,auto goal) {
+            if(!std::isfinite(goal->retreat_distance) || goal->retreat_distance<0 ||
+               goal->retreat_distance>0.10) return rclcpp_action::GoalResponse::REJECT;
+            bool idle=false;
+            if(!escape_busy_.compare_exchange_strong(idle,true)) return rclcpp_action::GoalResponse::REJECT;
+            requestCutStop(); return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+          },
+          [this](auto){requestCutStop();return rclcpp_action::CancelResponse::ACCEPT;},
+          [this](auto h){if(escape_worker_.joinable()) escape_worker_.join();
+            escape_worker_=std::thread([this,h]{escape(h);escape_busy_=false;});});
+
+        TorchIOConfig torch_config_;
+        torch_config_.ignition_enabled=process_enabled_;
+
+        if(!has_parameter("torch_output_pin")){
+            torch_config_.torch_output_pin = declare_parameter<int>("torch_output_pin",1);
+        }
+        torch_config_.torch_output_pin = get_parameter("torch_output_pin").as_int();
+        
+        
+        if(!has_parameter("transfer_input_pin")){
+            torch_config_.transfer_input_pin = declare_parameter<int>("transfer_input_pin",0);
+        }
+        torch_config_.transfer_input_pin = get_parameter("transfer_input_pin").as_int();
+
+        if(!has_parameter("voltage_input_pin")){
+            torch_config_.voltage_input_pin = declare_parameter<int>("voltage_input_pin",0);
+        }
+        torch_config_.voltage_input_pin = get_parameter("voltage_input_pin").as_int();
+
+
+        torch_controller_ = std::make_unique<TorchController>(*this,torch_config_);
+
+        torch_controller_->setFaultCallback([this](const std::string& reason){
+            RCLCPP_ERROR(get_logger(), "TORCH PROCESS FAULT %s", reason.c_str());
+            cut_stop_requested_.store(true);
+            torch_controller_->emergencyShutdown(reason);
+            if(move_group_){
+                move_group_->stop();
+            }
+
+        });
+        approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
+            "approve_cut_motion",
+            std::bind(&CutProfileServer::handleApproval,this,
+                std::placeholders::_1,std::placeholders::_2)
+        );  
+
+        action_server_ = rclcpp_action::create_server<CutProfile>(this,"cut_profile",
+            std::bind(
+            &CutProfileServer::handleGoal,
+            this,
+            std::placeholders::_1,std::placeholders::_2
+            ),
+        std::bind(
+                &CutProfileServer::handleCancel,
+                this,
+                std::placeholders::_1
+            ),
+        std::bind(
+                &CutProfileServer::handleAccepted,
+                this,
+                std::placeholders::_1
+            ));
+
+        auto estimate_qos = rclcpp::QoS(1).reliable().transient_local();
+
+
+
+        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("/profile_inspection/estimate",
+        estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
+        std::placeholders::_1));
+
+        auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
+        visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
+        collision_debug_pub_ =
+    create_publisher<visualization_msgs::msg::MarkerArray>(
+        "/cut_profile/debug_collision", marker_qos);
+        debug_robot_pub_ = create_publisher<moveit_msgs::msg::DisplayRobotState>("/cut_profile/debug_robot",marker_qos);
+
+    }
+
+    void CutProfileServer::initialize(){
+
+        move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
+        move_group_->setPlanningTime(planning_time_);
+        
+        planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(shared_from_this(),"robot_description");
+        if(!planning_scene_monitor_->getPlanningScene()){
+            throw std::runtime_error("failed to create planning scene");
+        }
+
+        
+        
+        planning_scene_monitor_->startStateMonitor();
+        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
+        planning_scene_monitor_->startWorldGeometryMonitor();
+        // const bool scene_recieved  = 
+        bool synchronized = false;
+        for(int attempt = 0; attempt <5; attempt++){
+            synchronized = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+            if(synchronized) break;
+            RCLCPP_WARN(get_logger(), " could not get planning scene on attempt %d",attempt);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+
+        
+        if(!synchronized){
+             RCLCPP_INFO(
+                get_logger(),
+                "couldnt synchoroniz psm with move group");
+            throw std::runtime_error("cuttin gplan sync failed");
+            
+        }
+        RCLCPP_INFO(
+                get_logger(),
+                "synchoronized epsm with move group");
+        const auto robot_model =
+                move_group_->getRobotModel();
+        
+        const auto count_parameter = [this](const std::string& name, int64_t fallback, bool allow_zero = false) {
+            if (!has_parameter(name)) declare_parameter<int64_t>(name, fallback);
+            const auto value = get_parameter(name).as_int();
+            if (value < (allow_zero ? 0 : 1)) throw std::invalid_argument(name + " is out of range");
+            return static_cast<std::size_t>(value);
+        };
+        const auto double_parameter = [this](const std::string& name, double fallback) {
+            if (!has_parameter(name)) declare_parameter<double>(name, fallback);
+            return get_parameter(name).as_double();
+        };
+        const auto bool_parameter = [this](const std::string& name, bool fallback) {
+            if (!has_parameter(name)) declare_parameter<bool>(name, fallback);
+            return get_parameter(name).as_bool();
+        };
+        motion::CutPlannerOptions geometry_options;
+        geometry_options.max_pose_samples = count_parameter("cut_geometry.max_pose_samples", 48);
+        geometry_options.feasible_samples = count_parameter("cut_geometry.feasible_samples", 4);
+        geometry_options.refinement_iterations = count_parameter("cut_geometry.refinement_iterations", 8);
+        geometry_options.ik_timeout_s = double_parameter("cut_geometry.ik_timeout_s", 0.05);
+        geometry_options.waypoint_beam_width = count_parameter("cut_geometry.waypoint_beam_width", 3);
+        geometry_options.explore_ik_branches = bool_parameter("cut_geometry.explore_ik_branches", true);
+        geometry_options.ik_consistency_rad = double_parameter("cut_geometry.ik_consistency_rad", 2.0);
+        geometry_options.repair_joint_step_rad = double_parameter("cut_geometry.repair_joint_step_rad", 0.03);
+        geometry_options.repair_roll_step_rad = double_parameter("cut_geometry.repair_roll_step_rad", 0.15);
+        cut_planner_ = std::make_unique<motion::CutPlanner>(robot_model, planning_group_, plasma_link_, geometry_options);
+        motion::CutGraphPlanner::Options graph_options;
+        graph_options.return_home_between_cuts = bool_parameter("cut_transit.return_home_between_cuts", true);
+        graph_options.return_home_after_last_cut = bool_parameter("cut_transit.return_home_after_last_cut", true);
+        graph_options.tcp_link = plasma_link_;
+        graph_options.max_candidates_per_segment = count_parameter("cut_sampling.max_candidates", 32);
+        graph_options.transit_weight = double_parameter("cut_cost.transit_weight", 1.0);
+        graph_options.process_weight = double_parameter("cut_cost.process_weight", 1.0);
+        graph_options.preferred_joint_travel_rad = double_parameter("cut_cost.preferred_joint_travel_rad", 1.57);
+        graph_options.excess_travel_weight = double_parameter("cut_cost.excess_travel_weight", 2.0);
+        graph_options.max_transit_joint_travel_rad = double_parameter("cut_cost.max_transit_joint_travel_rad", 0.0);
+
+        motion::ProcessGeneratorOptions options;
+        options.max_candidates_per_roll = count_parameter("cut_sampling.max_candidates_per_roll", 2, true);
+        options.rank_transits_via_home = graph_options.return_home_between_cuts;
+        options.roll_samples = count_parameter("cut_sampling.roll_samples", 12);
+        options.seeds_per_roll = count_parameter("cut_sampling.seeds_per_roll", 16);
+        options.global_seeds_per_roll = count_parameter("cut_sampling.global_seeds_per_roll", 2, true);
+        options.local_seed_radius_rad = double_parameter("cut_sampling.local_seed_radius_rad", 0.35);
+        options.local_ik_consistency_rad = double_parameter("cut_sampling.local_ik_consistency_rad", 0.75);
+        options.retention_transit_weight = graph_options.transit_weight;
+        options.retention_process_weight = graph_options.process_weight;
+        options.preferred_joint_travel_rad = graph_options.preferred_joint_travel_rad;
+        options.excess_travel_weight = graph_options.excess_travel_weight;
+        options.max_translation_step_m = 0.003;
+        options.max_joint_step_rad = 0.20;
+        options.max_candidates = graph_options.max_candidates_per_segment;
+
+        process_generator_ = std::make_unique<motion::GpuProcessGenerator>
+        (   move_group_->getRobotModel(),
+            planning_group_,
+            plasma_link_,
+            *this, options);
+
+        
+
+        transit_client_ = create_client<hb_cumotion_cut::srv::PlanTransit>("/cut_gpu/transit");
+        cut_graph_planner_ = std::make_unique<motion::CutGraphPlanner>(
+            move_group_->getRobotModel(),
+            planning_group_,
+            [this](const moveit::core::RobotState& from, 
+            const moveit::core::RobotState& to
+        ){
+            return planToState(from,to);
+        },
+
+        [this](const motion::CutSegment& segment, 
+            const motion::ProcessCandidate& candidate
+        )->std::optional<motion::SegmentMotionPlan>{
+            
+            (void)segment;
+            auto approach = timeProcess(candidate.approach, cut_process_params_.approach_vel_m_s);
+            auto cut = timeProcess(candidate.cut, cut_process_params_.cut_speed_m_s);
+            auto retract = timeProcess(candidate.retract, cut_process_params_.retract_vel_m_s);
+            if (!approach || !cut || !retract) return std::nullopt;
+            motion::SegmentMotionPlan result;
+            result.approach = std::move(*approach);
+            result.cut = std::move(*cut);
+            result.retract = std::move(*retract);
+            return result;
+        },
+        graph_options
+            );
+        
+
+        cut_planner_->setDebugVisCallback([this](const motion::CutSegment segment){
+            publishCandidateVisualization(segment);
+        }
+        );
+
+        cut_planner_->setCollisionDebugVisCallback([this](const motion::CollisionDebugEvent& event){
+            publishCollisionDebug(event);
+        });
+        const auto trajectory_qos = rclcpp::QoS(1).transient_local().reliable();
+
+        display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
+        trajectory_qos
+        //rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()
+    );
+
+        RCLCPP_INFO(
+                get_logger(),
+                "Plasma link parameter: '%s'",
+                plasma_link_.c_str());
+        RCLCPP_INFO(get_logger(),"moveit initialized cam TCP manipulator group");
+        RCLCPP_INFO(get_logger(),"Planning Frame: %s",move_group_->getPlanningFrame().c_str());
+        RCLCPP_INFO(get_logger(), "Pose reference frame: %s", move_group_->getPoseReferenceFrame().c_str());
+        RCLCPP_INFO(get_logger(),"End-effector link %s",move_group_->getEndEffectorLink().c_str());
+        RCLCPP_INFO(get_logger(),"Skipping Motion %s",skip_motion_?"yes":"no");
+        
+        RCLCPP_INFO(get_logger(),"CutProfileServer Initialized"); 
+
+
+    }
+
+
+
+
+    rclcpp_action::GoalResponse CutProfileServer::handleGoal(const rclcpp_action::GoalUUID & , 
+    std::shared_ptr<const CutProfile::Goal> goal){
+        
+        if(escape_busy_ || goal->cut_id.empty() ||
+           !std::isfinite(goal->standoff) || goal->standoff<0 ||
+           !std::isfinite(goal->pos_tol) || goal->pos_tol<=0 ||
+           !std::isfinite(goal->ang_tol) || goal->ang_tol<=0)
+          return rclcpp_action::GoalResponse::REJECT;
+        for(const auto& i:goal->intervals)
+          if(!hb_robot::recovery::validInterval(i)) return rclcpp_action::GoalResponse::REJECT;
+        if(!goal->intervals.empty() && goal->parent_plan_id.empty())
+          return rclcpp_action::GoalResponse::REJECT;
+        bool idle=false;
+        if(!busy_.compare_exchange_strong(idle,true)) return rclcpp_action::GoalResponse::REJECT;
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+
+    void CutProfileServer::requestCutStop(){
+
+        cut_stop_requested_.store(true);
+        // Stop requests precede any feedback wait and never wait for a BT tick.
+        if(torch_controller_) torch_controller_->emergencyShutdown("Cut stop requested");
+        if(move_group_) move_group_->stop();
+        approval_cv_.notify_all();
+    }
+
+    rclcpp_action::CancelResponse CutProfileServer::handleCancel(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
+        RCLCPP_INFO(get_logger(),"cancel requested");
+
+        (void) goal_handle;
+        RCLCPP_WARN(get_logger(),"cut cancellation requested");
+        requestCutStop();
+
+        
+        approval_cv_.notify_all();
+
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+
+    void CutProfileServer::handleAccepted(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
+        if(worker_.joinable()) worker_.join();
+        worker_=std::thread([this,goal_handle]{
+          try { execute(goal_handle); }
+          catch(const std::exception& e) {
+            requestCutStop();
+            auto result=std::make_shared<CutProfile::Result>();result->message=e.what();
+            result->interrupted=motion_active_;motion_active_=false;
+            if(goal_handle->is_canceling()) goal_handle->canceled(result);
+            else goal_handle->abort(result);
+          }
+          busy_=false;
+        });
+    }
+
+    void CutProfileServer::profileEstimateCallback(
+        const hb_robot_interfaces::msg::ProfileEstimate::SharedPtr msg
+    ){
+        std::lock_guard<std::mutex>lock(estimate_mutex_);
+        latest_estimate_ = *msg;
+    }
+
+    std::optional<hb_robot_interfaces::msg::ProfileEstimate> CutProfileServer::latestProfileEstimate()const{
+        std::lock_guard<std::mutex> lock(estimate_mutex_);
+        return latest_estimate_;
+    }
+
+    void CutProfileServer::publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
+            const std::string& stage){
+                auto feedback = std::make_shared<CutProfile::Feedback>();
+                feedback->stage = stage;
+                goal_handle->publish_feedback(feedback);
+            }
+
+    moveit::core::RobotState CutProfileServer::getFinalState(const moveit::planning_interface::MoveGroupInterface::Plan& plan){
+        moveit::core::RobotState ref_state (move_group_->getRobotModel());
+        moveit::core::robotStateMsgToRobotState(plan.start_state_,ref_state);
+        robot_trajectory::RobotTrajectory trajectory(move_group_->getRobotModel(),planning_group_);
+        trajectory.setRobotTrajectoryMsg(ref_state,plan.trajectory_);
+        return trajectory.getLastWayPoint();
+
+    }
+
+    std::shared_ptr<robot_trajectory::RobotTrajectory> CutProfileServer::planToTrajectory(
+        const moveit::planning_interface::MoveGroupInterface::Plan& plan
+    ){
+        
+        const auto robot_model = move_group_->getRobotModel();
+        auto combined_ = std::make_shared<robot_trajectory::RobotTrajectory>(
+            robot_model, planning_group_);
+        moveit::core::RobotState start_state(robot_model);
+        moveit::core::robotStateMsgToRobotState(plan.start_state_,start_state);
+        robot_trajectory::RobotTrajectory traj(robot_model,planning_group_);
+        traj.setRobotTrajectoryMsg(start_state,plan.trajectory_);
+        combined_->append(traj,0.0);
+        return combined_;
+    }
+
+
+    std::shared_ptr<robot_trajectory::RobotTrajectory> CutProfileServer::collateSegmentTrajectory(
+        const motion::SegmentMotionPlan& smp
+    ){
+        const auto robot_model = move_group_->getRobotModel();
+        auto combined_ = std::make_shared<robot_trajectory::RobotTrajectory>(
+            robot_model, planning_group_);
+        moveit::core::RobotState approach_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.approach.start_state_,approach_start);
+        robot_trajectory::RobotTrajectory ap_traj(robot_model,planning_group_);
+        ap_traj.setRobotTrajectoryMsg(approach_start,smp.approach.trajectory_);
+        combined_->append(ap_traj,0.0);
+        /// cut
+        moveit::core::RobotState cut_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.cut.start_state_,cut_start);
+        robot_trajectory::RobotTrajectory cut_traj(robot_model,planning_group_);
+        cut_traj.setRobotTrajectoryMsg(cut_start,smp.cut.trajectory_);
+        combined_->append(cut_traj,0.0);
+        /// retract
+        moveit::core::RobotState retract_start(robot_model);
+        moveit::core::robotStateMsgToRobotState(smp.retract.start_state_,retract_start);
+        robot_trajectory::RobotTrajectory ret_traj(robot_model,planning_group_);
+        ret_traj.setRobotTrajectoryMsg(retract_start,smp.retract.trajectory_);
+        combined_->append(ret_traj,0.0);
+        
+        return combined_;
+    }
+
+
+    CutProfileServer::MotionOutcome CutProfileServer::waitForPlanApproval(
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+            ){
+
+                if (!require_plan_approval_) {
+                        return MotionOutcome::SUCCESS;
+                    }
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Waiting for cutting plan approval"
+                );
+                publishFeedback(goal_handle, "awaiting plan approval");
+
+                std::unique_lock<std::mutex> lock(approval_mutex_);
+
+                // Poll validity as well as approval: Escape must not wait behind
+                // an indefinitely blocked approval on the shared execution mutex.
+                while(!motion_approved_ && !motion_rejected_ &&
+                      !goal_handle->is_canceling() && !cut_stop_requested_ &&
+                      !escape_busy_ && rclcpp::ok() && taskPermitsExecution())
+                    approval_cv_.wait_for(lock, std::chrono::milliseconds(100));
+
+                if (goal_handle->is_canceling()) {
+                    return MotionOutcome::CANCELED;
+                }
+
+                if (!rclcpp::ok() || cut_stop_requested_ || escape_busy_ || !taskPermitsExecution()) {
+                    return MotionOutcome::FAILED;
+                }
+
+                if (motion_rejected_) {
+                    return MotionOutcome::REJECTED;
+                }
+
+                return MotionOutcome::SUCCESS;
+            }
+
+
+    CutProfileServer::MotionOutcome CutProfileServer::executeMotion(
+        const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+        const std::shared_ptr<GoalHandleCutProfile> goal_handle,
+        const std::string& description
+    ){
+
+        if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
+        if(cut_stop_requested_ || !taskPermitsExecution()) return MotionOutcome::FAILED;
+        RCLCPP_INFO(
+        get_logger(),
+        "Executing: %s",
+        description.c_str()
+    );
+
+    publishFeedback(goal_handle, description);
+
+    const auto execution_result = move_group_->execute(plan);
+    if(goal_handle->is_canceling()){
+        return MotionOutcome::CANCELED;
+    }
+    if(cut_stop_requested_ || !taskPermitsExecution()) return MotionOutcome::FAILED;
+    if(!static_cast<bool>(execution_result)){
+        
+        RCLCPP_ERROR(
+            get_logger(),
+            "Motion execution failed: %s",
+            description.c_str()
+        );
+        return MotionOutcome::FAILED;
+    }
+    return MotionOutcome::SUCCESS;
+    }
+            
+    bool CutProfileServer::setFlapClosed(bool closed) {
+        using namespace std::chrono_literals;
+        const char* command = closed ? "close" : "open";
+        try {
+            if (!flap_client_->wait_for_service(1s)) {
+                RCLCPP_ERROR(get_logger(), "Flap service unavailable during %s", command);
+                return false;
+            }
+            auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+            request->data = closed;
+            auto pending = flap_client_->async_send_request(request);
+            if (pending.wait_for(2s) != std::future_status::ready) {
+                flap_client_->remove_pending_request(pending);
+                RCLCPP_ERROR(get_logger(), "Flap %s acknowledgement timed out", command);
+                return false;
+            }
+            const auto response = pending.get();
+            if (!response->success) {
+                RCLCPP_ERROR(get_logger(), "Flap %s failed: %s", command, response->message.c_str());
+                return false;
+            }
+            std::this_thread::sleep_for(flap_travel_time_);
+            return true;
+        } catch (const std::exception& error) {
+            RCLCPP_ERROR(get_logger(), "Flap %s failed: %s", command, error.what());
+            return false;
+        }
+    }
+
+    CutProfileServer::MotionOutcome CutProfileServer::executeCut(
+                const motion::ExecutableCut& cut,
+                const std::shared_ptr<GoalHandleCutProfile> goal_handle
+                ){
+                    using namespace std::chrono_literals;
+                    if(!torch_controller_){
+                        RCLCPP_ERROR(get_logger(),"torch not available, doing try run instead");
+                        return MotionOutcome::FAILED;
+                    }
+                    auto& torch = *torch_controller_;
+                    const auto canceled = [&](){
+                        return goal_handle->is_canceling() || cut_stop_requested_.load() || !rclcpp::ok();
+                    };
+                    if(canceled()){
+                        return goal_handle->is_canceling() ? MotionOutcome::CANCELED : MotionOutcome::FAILED;
+                    }
+                    if(torch.hasFault() || !torch.hasFreshIO()){
+                        RCLCPP_ERROR(get_logger(),"torch is faulted or IO Stale");
+                         return MotionOutcome::FAILED;
+                    }
+
+                    const auto before = torch.snapshot();
+                    if(before.output_on!=std::optional<bool>(false)||
+                        before.transfer_detected!=std::optional<bool>(false)){
+                         RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
+                        return MotionOutcome::FAILED;
+                    }
+                    const auto& params= cut.parameters;
+                    torch_controller_->setActiveSegment(cut.name);
+                    MotionOutcome outcome = MotionOutcome::FAILED;
+                    const auto shutdown = [&]()->bool{
+                        const auto off = torch.requestShutdown(1500ms);
+                        if(off != TorchCommandResult::CONFIRMED){
+                            RCLCPP_ERROR(get_logger(),"Torch off not confirmed for cut %s",
+                        cut.name.c_str());
+                        return false;
+                        }
+                        if(!torch.finishCut()){
+                            RCLCPP_ERROR(get_logger(),"torch could not return to IDLE");
+                            return false;
+                        }
+                        return true;
+                    };
+
+                    do{
+                        if (!setFlapClosed(true) || canceled()) break;
+                        // request remote start on:
+                        publishFeedback(goal_handle,cut.name + ":ignition");
+                        const auto ignition = torch.requestIgnition(1500ms, canceled);
+                        if(ignition != TorchCommandResult::CONFIRMED){
+
+                            RCLCPP_ERROR(get_logger(),"IGNITION NOT CONFIRMED");
+                            break;
+
+                        }
+                        // wait for arc transfer
+                        publishFeedback(goal_handle,cut.name + ": waiting for arc transfer");
+                        const auto transfer = torch.waitForArcTransfer(2000ms,canceled);
+                        if(transfer != TorchController::WaitResult::CONFIRMED){
+                            RCLCPP_ERROR(get_logger(),"TRANSFER NOT CONFIRMED");
+                            break;
+                        }
+                        // pierce dwell is here eventually , 
+                        if(canceled()) break;
+                        // arm cutting state watchdog by using markcut:
+                        if(!torch.markCutting()){
+                            RCLCPP_ERROR(get_logger(),"CUTTING STATE NOT CONFIRMED");
+                            break;
+                        }
+                        if(canceled() || torch.hasFault())
+                            break;
+                        
+                        // FINALLY execute motion now: this call blocks, 
+                        //torch controller is running in background
+                        outcome = executeMotion(cut.process.cut, 
+                            goal_handle,cut.name+": cut");
+                        if(canceled() || torch.hasFault()) 
+                            outcome = MotionOutcome::FAILED;
+                        }
+                        while(false);
+
+                        const bool off_confirmed = shutdown();
+
+                        torch.setActiveSegment("");
+                        if(!off_confirmed || !setFlapClosed(false)) return MotionOutcome::FAILED;
+                        if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
+                        if(cut_stop_requested_.load() || torch.hasFault()) return MotionOutcome::FAILED;
+                        return outcome;
+                    
+
+    }
+
+    CutProfileServer::MotionOutcome CutProfileServer::executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
+                const std::shared_ptr<GoalHandleCutProfile>goal_handle){
+
+        for (const auto& cut: executable_plan_.cuts){
+            active_segment_=cut.name;
+            RCLCPP_INFO(
+            get_logger(),
+            "Starting cut: %s",
+            cut.name.c_str());
+
+            auto run = [&](const auto& plan, const std::string& phase){
+                return executeMotion(
+                    plan,goal_handle,cut.name+": " + phase
+                );
+            };
+
+
+            auto outcome = run(cut.transit_in,"transit in");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            outcome = run(cut.process.approach,"approach");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            outcome = process_enabled_ ? executeCut(cut,goal_handle) : run(cut.process.cut,"cut (torch disabled)");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+
+            outcome = run(cut.process.retract,"retract");
+            if(outcome != MotionOutcome::SUCCESS){
+                return outcome;
+            }
+            ++completed_segments_;
+            if (cut.transit_out) {
+                outcome = run(*cut.transit_out, "return home");
+                if (outcome != MotionOutcome::SUCCESS) return outcome;
+            }
+            
+
+         }
+         return MotionOutcome::SUCCESS;
+        }
+
+    void CutProfileServer::execute(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
+
+        //approval machienry 
+        
+        std::lock_guard<std::mutex> execution_lock(execution_mutex_);      
+
+        //un pack / get the goal
+        auto const goal = goal_handle->get_goal();
+
+        if(!goal->plan_id.empty()) {
+            executeStored(goal->plan_id,goal_handle); // stored plan id 
+            return;
+        }
+
+        //make empty result
+        auto result = std::make_shared<CutProfile::Result>();
+
+        {
+        std::lock_guard<std::mutex> approval_lock(
+            approval_mutex_);
+            motion_approved_ = false;
+            motion_rejected_ = false;
+        }
+
+        // handy lamba expressions 
+
+        auto fail = [&](uint8_t code, const std::string& message)
+        {
+            result->success = false;
+            result->message = message;
+            goal_handle->abort(result);
+        };
+
+        auto canceled = [&]()
+        {
+            if (!goal_handle->is_canceling())
+                return false;
+
+            move_group_->stop();
+            result->message = "Cutting Motion cancelled";
+            goal_handle->canceled(result);
+            return true;
+        };
+
+        TaskState planning_versions;
+        if(!readFreshTaskState(planning_versions) || !planning_versions.scene_valid ||
+           goal->geometry_version!=planning_versions.geometry_version ||
+           goal->pose_version!=planning_versions.pose_version ||
+           goal->scene_version!=planning_versions.scene_version) {
+          fail(0,"Planning needs a fresh task heartbeat, a measured reference and matching snapshot versions");return;
+        }
+        publishFeedback(goal_handle,"acquiring estimate");
+
+        const auto estimate_opt = latestProfileEstimate();
+        if(!estimate_opt){
+            result->success = false;
+            result->message= "couldnt get estimate";
+            goal_handle->abort(result);
+            return;
+        }
+        //get the estimate;
+        const auto estimate = *estimate_opt;
+        RCLCPP_INFO(get_logger(),"Using profile estimate %s | rms %.2f | inlier %.2f | score %.2f", 
+        estimate.profile_name.c_str(), estimate.rms_distance,estimate.inlier_fraction,estimate.score);
+        RCLCPP_INFO(get_logger(),
+        "profile frame %s | Moveit planning frame %s",estimate.header.frame_id.c_str(),move_group_->getPlanningFrame().c_str());
+        publishFeedback(goal_handle,"loading profile geom");
+
+        const auto profile_opt = hb_perception::ProfileLibrary::find(estimate.profile_name);
+        if(!profile_opt){
+            result->success = false;
+            std::ostringstream ss;
+            ss << "looking up " << estimate.profile_name.c_str();
+            result->message= ss.str();
+            goal_handle->abort(result);
+            return;
+        }
+
+        publishFeedback(goal_handle,"generating cut plan");
+
+        motion::CutRequest request;
+        request.standoff = goal->standoff;
+        request.ang_tol = goal->ang_tol;
+        request.pos_tol = goal->pos_tol;
+        auto current_state = move_group_->getCurrentState(2.0);
+        if(!current_state){
+            RCLCPP_ERROR(get_logger(),"couldnt get current state");
+            result->success = false;
+            result->message= "couldnt get current state";
+            goal_handle->abort(result);
+            return;
+        }
+        current_state->update();
+
+        RCLCPP_ERROR(get_logger(),"current state dirty after update: %s",current_state->dirty()?"true":"false");
+        
+        {
+            std::lock_guard<std::mutex>lock(debug_segments_mutex);
+            debug_segs_.clear();
+        }
+        clearCollisionDebug();
+        const moveit::core::RobotState arbitrary_start_state = *current_state;
+
+        // 
+        auto check_psm =[](const planning_scene::PlanningScenePtr& scene_)->bool{
+            if(!scene_){
+                return false;
+            }
+            const auto* world = scene_->getWorld().get();
+
+            return    (!world->hasObject("inspection_workpiece") &&
+                world->hasObject("wk_workpiece_collision"));
+            };
+
+        /// check the planning scene
+        moveit::planning_interface::PlanningSceneInterface psi;
+        const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision"});
+        
+        const bool authoritative_ready =
+            objects.count("inspection_workpiece") == 0 &&
+            objects.count("wk_workpiece_collision") == 1
+            ;
+
+        if (!authoritative_ready)
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "move_group scene is not ready for cutting"
+                );
+
+                fail(0, "Authoritative cutting scene is incomplete");
+                return;
+            }
+        const bool request_psm_update = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
+
+        if(!request_psm_update){
+            fail(0, "Could not refresh planning scene before cutting");
+            return;
+        }
+        RCLCPP_INFO(
+                get_logger(),
+                "retrieved planning_scene");
+
+        planning_scene::PlanningScenePtr scene_snapshot;
+
+        {
+            planning_scene_monitor::LockedPlanningSceneRO locked_scene(
+                planning_scene_monitor_
+            );
+
+            if (!locked_scene) {
+                fail(0, "Could not lock local planning scene");
+                return;
+            }
+
+            scene_snapshot = locked_scene->diff();
+            scene_snapshot->decoupleParent();
+        }
+        
+
+        // Object IDs are reused on every inspection. Their presence does not
+        // establish freshness; always replace the snapshot's cutting geometry
+        // with the authoritative object fetched for this planning operation.
+        scene_snapshot->getWorldNonConst()->removeObject("inspection_workpiece");
+        auto object = objects.at("wk_workpiece_collision");
+        object.operation = moveit_msgs::msg::CollisionObject::ADD;
+        if (!scene_snapshot->processCollisionObjectMsg(object))
+        {
+            fail(0, "Could not copy cutting collision geometry");
+            return;
+        }
+
+        // The estimate topic and planning-scene service are independent.
+        // Do not generate edges from an estimate belonging to a different fit.
+        if (object.meshes.size() != 1 || object.mesh_poses.size() != 1 ||
+            !scene_snapshot->knowsFrameTransform(object.header.frame_id) ||
+            !scene_snapshot->knowsFrameTransform(estimate.header.frame_id))
+        {
+            fail(0, "Cannot validate cutting estimate against extrusion geometry");
+            return;
+        }
+        Eigen::Isometry3d object_pose, mesh_pose, estimate_pose;
+        tf2::fromMsg(object.pose, object_pose);
+        tf2::fromMsg(object.mesh_poses.front(), mesh_pose);
+        tf2::fromMsg(estimate.pose, estimate_pose);
+        const Eigen::Isometry3d scene_from_mesh =
+            scene_snapshot->getFrameTransform(object.header.frame_id) * object_pose * mesh_pose;
+        const Eigen::Isometry3d scene_from_estimate =
+            scene_snapshot->getFrameTransform(estimate.header.frame_id) * estimate_pose;
+        if (!scene_from_mesh.matrix().allFinite() || !scene_from_estimate.matrix().allFinite() ||
+            (scene_from_mesh.translation() - scene_from_estimate.translation()).norm() > 1e-4 ||
+            (scene_from_mesh.linear() - scene_from_estimate.linear()).norm() > 1e-4)
+        {
+            fail(0, "Profile estimate and extrusion pose disagree; refusing stale cutting geometry");
+            return;
+        }
+
+        const auto* world = scene_snapshot->getWorld().get();
+
+        RCLCPP_INFO(
+            get_logger(),
+            "FINAL CUTTING SNAPSHOT: box=%d coarse=%d section=%d",
+            world->hasObject("inspection_workpiece"),
+            world->hasObject("wk_workpiece_collision"),
+            world->hasObject("wk_section_collision")
+        );
+
+        if (!check_psm(scene_snapshot)) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Final cutting scene snapshot is invalid"
+            );
+
+            fail(0, "Cutting scene validation failed");
+            return;
+        }
+        RCLCPP_INFO(get_logger(), "cut entering geo planner");
+        auto geometry=*profile_opt;
+        if(!goal->intervals.empty()) {
+          const auto parent=stored_plans_.find(goal->parent_plan_id);
+          if(parent==stored_plans_.end() || parent->second.cut_id!=goal->cut_id ||
+             parent->second.versions.geometry_version!=planning_versions.geometry_version) {
+            fail(0,"Unknown parent cut or changed reference geometry");return;
+          }
+          // Regenerate process entry/exit from original geometry. Never execute a
+          // trajectory slice: piercing, standoff, IK and collision checks run again.
+          geometry=parent->second.geometry;
+          std::vector<hb_perception::ProfileCutFeature> selected;
+          std::set<std::string> seen;
+          for(const auto& interval:goal->intervals) {
+            if(!seen.insert(interval.segment_id).second) {fail(0,"Merge residual bins per feature first");return;}
+            auto feature=std::find_if(geometry.cut_features.begin(),geometry.cut_features.end(),
+              [&](const auto& f){return f.name==interval.segment_id;});
+            const auto executed_feature=std::find_if(parent->second.executable.cuts.begin(),
+              parent->second.executable.cuts.end(),[&](const auto& c){return c.name==interval.segment_id;});
+            if(feature==geometry.cut_features.end() ||
+               executed_feature==parent->second.executable.cuts.end()) {
+              fail(0,"Residual feature not in original planned path");return;
+            }
+            for(const auto& used:attempted_[goal->cut_id])
+              if(hb_robot::recovery::overlaps(interval,used)) {fail(0,"Residual region already attempted");return;}
+            auto part=*feature;
+            if(part.type==hb_perception::ProfileCutFeatureType::Web) {
+              const Eigen::Vector2f tangent=(part.end-part.start).normalized();
+              part.start+=0.5f*request.torch_diameter*tangent;
+              part.end-=0.5f*request.torch_diameter*tangent;
+            }
+            const Eigen::Vector2f delta=part.end-part.start;
+            part.end=part.start+static_cast<float>(interval.s1)*delta;
+            part.start+=static_cast<float>(interval.s0)*delta;
+            selected.push_back(part);
+          }
+          geometry.cut_features=std::move(selected);
+          request.torch_diameter=0; // End clearance was applied before interval slicing.
+        }
+        gpu_scene_ = scene_snapshot;
+        const auto plan_opt = cut_planner_->plan(estimate,geometry,request,*current_state,scene_snapshot);
+        if(!plan_opt){
+            result->success = false;
+            result->message= "planner failed";
+            goal_handle->abort(result);
+            return;
+        }
+        const motion::CutPlan plan = *plan_opt;
+        RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
+
+        std::vector<std::vector<motion::ProcessCandidate>> candidates_by_segment;
+        candidates_by_segment.reserve(plan.segments.size());
+
+        for (const auto& segment : plan.segments)
+            {
+
+                RCLCPP_INFO(get_logger(), "Segment: %s generating candidates", segment.name.c_str());
+
+                auto generated = process_generator_->generate(
+                    segment,
+                    arbitrary_start_state,
+                    scene_snapshot
+                );
+
+               RCLCPP_INFO(get_logger(),"Segment: %s generated %zu candidates",
+               segment.name.c_str(), generated.candidates.size());
+               RCLCPP_INFO(get_logger(),
+                   "Process sampling: attempts=%zu, IK=%zu, collision=%zu, bounds=%zu, jump=%zu, TCP=%zu, duplicates=%zu",
+                   generated.stats.attempts, generated.stats.ik_failures, generated.stats.collision_failures,
+                   generated.stats.joint_limit_failures, generated.stats.joint_jump_failures,
+                   generated.stats.tcp_error_failures, generated.stats.duplicate_candidates);
+               if(!goal->intervals.empty()) {
+                 const auto& parent=stored_plans_.at(goal->parent_plan_id);
+                 const auto old=std::find_if(parent.executable.cuts.begin(),parent.executable.cuts.end(),
+                   [&](const auto& c){return c.name==segment.name;});
+                 const auto interval=std::find_if(goal->intervals.begin(),goal->intervals.end(),
+                   [&](const auto& i){return i.segment_id==segment.name;});
+                 if(old!=parent.executable.cuts.end() && interval!=goal->intervals.end()) {
+                   const auto& trajectory=old->process.cut.trajectory_.joint_trajectory;
+                   if(!trajectory.points.empty()) {
+                     // Sample index is only a warm-start heuristic, not a claim
+                     // that time or joint distance equals Cartesian arc length.
+                     const size_t index=static_cast<size_t>(interval->s0*(trajectory.points.size()-1));
+                     const auto& positions=trajectory.points[index].positions;
+                     if(positions.size()==trajectory.joint_names.size()) {
+                       auto seeded=segment;
+                       seeded.start_state=std::make_shared<moveit::core::RobotState>(arbitrary_start_state);
+                       for(size_t j=0;j<positions.size();++j)
+                         seeded.start_state->setVariablePosition(trajectory.joint_names[j],positions[j]);
+                       seeded.start_state->update();
+                       auto warm=process_generator_->generate(seeded,arbitrary_start_state,scene_snapshot);
+                       generated.candidates.insert(generated.candidates.end(),
+                         std::make_move_iterator(warm.candidates.begin()),std::make_move_iterator(warm.candidates.end()));
+                     }
+                   }
+                 }
+               }
+               if(generated.candidates.empty()){
+                fail(0,"no process candidates generated");
+                return;
+               }
+               candidates_by_segment.push_back(std::move(generated.candidates));
+
+            }
+        RCLCPP_INFO(get_logger(), "starting cut graph planner");
+
+
+        auto executable_opt = cut_graph_planner_->plan(
+           plan,
+           candidates_by_segment,
+           arbitrary_start_state,
+           "cut_plan_001" ,
+           estimate.profile_name
+        );
+
+        RCLCPP_INFO(get_logger(), "returned  cut graph planner");
+        if(!executable_opt){
+            fail(0,"could not connect cutting operations");
+            return;
+        }
+        motion::ExecutablePlan executable_plan_ = std::move(*executable_opt);
+        const auto& stats = cut_graph_planner_->statistics();
+        RCLCPP_INFO(get_logger(),
+        "graph planning: tested %zu, process fail %zu, "
+        "transit_in_fail: %zu, transit_out_fail: %zu, accepted: %zu",
+        stats.candidates_tested,
+        stats.process_failures,
+        stats.transit_in_failures,
+        stats.transit_out_failures,
+        stats.accepted_candidates);
+
+
+            const auto robot_model = move_group_->getRobotModel();
+
+            using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
+            moveit_msgs::msg::DisplayTrajectory display_msg;
+
+            display_msg.model_id = move_group_->getRobotModel()->getName();
+
+            auto appendPlan = [&](const Plan& plan, const std::string& name)->bool{
+              const auto & jt = plan.trajectory_.joint_trajectory;
+              if(jt.joint_names.empty() || jt.points.empty()){
+                RCLCPP_ERROR(get_logger(), "emtpy trajectory, %s", name.c_str());
+                return false;
+              }
+
+              RCLCPP_INFO(get_logger(),"%s: start joints = %zu, traj joint= %zu, points = %zu",
+            name.c_str(),plan.start_state_.joint_state.name.size(),jt.joint_names.size(),jt.points.size());
+            display_msg.trajectory.push_back(plan.trajectory_);
+            return true;
+            };
+
+            if(executable_plan_.cuts.empty()){
+                fail(0,"no executable cuts");
+                return;
+
+            }
+
+            const auto& first_plan = executable_plan_.cuts.front().transit_in;
+            display_msg.trajectory_start = first_plan.start_state_;
+            if(display_msg.trajectory_start.joint_state.name.empty()){
+                 moveit::core::robotStateToRobotStateMsg(arbitrary_start_state,
+                    display_msg.trajectory_start);
+            }
+            bool valid = true;
+            // auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
+            RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_plan_.cuts.size());
+           
+            for (const auto& cut: executable_plan_.cuts){
+                valid&= appendPlan(cut.transit_in, cut.name + "/transit_in");
+                valid&= appendPlan(cut.process.approach, cut.name + "/approach");
+                valid&= appendPlan(cut.process.cut, cut.name + "/cut");
+                valid&= appendPlan(cut.process.retract, cut.name + "/retract");
+                if (cut.transit_out) valid &= appendPlan(*cut.transit_out, cut.name + "/return_home");
+            }
+            if(!valid){
+                fail(0,"empty trajectories found");
+                return;
+            }
+            display_traj_pub_->publish(display_msg);
+            RCLCPP_INFO(get_logger(), "published %zu cutting traj", display_msg.trajectory.size());
+            
+        
+       
+
+        publishVisualization(plan,estimate.header.frame_id);
+        publishFeedback(goal_handle,"visualizing, cut plan ready");
+
+        if(canceled()) return;
+        TaskState current_versions;
+        const bool permitted = taskPermitsExecution(&current_versions);
+        // The stored versions describe the detached scene used to plan. A candidate
+        // can be inspected after a gap or a scene edit. executeStored independently
+        // requires live permission, the same versions, matching joints and collision checks.
+        const bool current=permitted && hb_robot::recovery::sameVersions(planning_versions,current_versions);
+        const auto id="cut_plan_"+std::to_string(++next_plan_);
+        // Keep original geometry even for a recovery plan, so future interval
+        // coordinates always refer to the initial feature, never to a prior slice.
+        stored_plans_[id]=StoredPlan{executable_plan_,*profile_opt,planning_versions,
+          goal->cut_id,goal->parent_plan_id,goal->intervals,false};
+        for(const auto& segment:plan.segments) result->required_segments.push_back(segment.name);
+        result->plan_id=id;
+        result->cut_id=goal->cut_id;
+        result->parent_plan_id=goal->parent_plan_id;
+        if(goal->execute && !skip_motion_) {
+            executeStored(id,goal_handle);
+            return;
+        }
+        result->success=true;
+        std::ostringstream summary;
+        summary << "Candidate stored for geometry=" << planning_versions.geometry_version
+                << ", pose=" << planning_versions.pose_version << ", scene=" << planning_versions.scene_version;
+        if(current) summary << "; execution requires live checks";
+        else summary << "; execution blocked at preview completion (current geometry="
+                     << current_versions.geometry_version << ", pose=" << current_versions.pose_version
+                     << ", scene=" << current_versions.scene_version << ", " << current_versions.status_message << ")";
+        result->message=summary.str();
+        goal_handle->succeed(result);
+    }
+
+
+    void CutProfileServer::clearCollisionDebug()
+{
+    visualization_msgs::msg::MarkerArray array;
+    visualization_msgs::msg::Marker clear;
+
+    clear.action =
+        visualization_msgs::msg::Marker::DELETEALL;
+
+    array.markers.push_back(clear);
+
+    collision_debug_pub_->publish(array);
+}
+    
+    void CutProfileServer::publishCandidateVisualization(const motion::CutSegment segment){
+        motion::CutPlan debug_plan;
+        debug_plan.profile_name = "debug_";
+        {
+        std::lock_guard<std::mutex>lock(debug_segments_mutex);
+            debug_segs_[segment.name] = segment;
+
+            debug_plan.segments.reserve(debug_segs_.size());
+
+            for( const auto& [name,cached_seg]: debug_segs_){
+                debug_plan.segments.push_back(cached_seg);
+            }
+            
+        }
+        visualization_pub_->publish(makeVisualization(debug_plan,move_group_->getPlanningFrame()));
+    }
+    
+    namespace
+{
+
+geometry_msgs::msg::Point
+toPoint(const Eigen::Vector3d& p)
+{
+    geometry_msgs::msg::Point msg;
+    msg.x = p.x();
+    msg.y = p.y();
+    msg.z = p.z();
+    return msg;
+}
+
+visualization_msgs::msg::Marker
+makeArrow(
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int id,
+    const Eigen::Vector3d& origin,
+    const Eigen::Vector3d& direction,
+    double length)
+{
+    visualization_msgs::msg::Marker marker;
+
+    marker.header.frame_id = frame_id;
+    marker.header.stamp = stamp;
+
+    marker.ns = ns;
+    marker.id = id;
+
+    marker.type =
+        visualization_msgs::msg::Marker::ARROW;
+
+    marker.action =
+        visualization_msgs::msg::Marker::ADD;
+
+    marker.points.push_back(
+        toPoint(origin));
+
+    marker.points.push_back(
+        toPoint(
+            origin +
+            direction.normalized() * length));
+
+    marker.scale.x = 0.001;
+    marker.scale.y = 0.001;
+    marker.scale.z = 0.010;
+
+    marker.color.a = 1.0;
+
+    return marker;
+}
+
+
+/*
+ * Draw the process-relevant part of the tool frame.
+ *
+ * makeToolPose() convention:
+ *
+ *   X = cut tangent
+ *   Z = surface normal / torch axis
+ *
+ * Green = tangent
+ * Red   = surface normal
+ */
+
+
+void drawFrame(
+    visualization_msgs::msg::MarkerArray& array,
+    const Eigen::Isometry3d& pose,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id,
+    double length = 0.04,
+    double alpha = 1.0    
+)
+{
+    const Eigen::Vector3d origin =
+        pose.translation();
+
+    const Eigen::Vector3d tangent =
+        pose.linear().col(0);
+
+    const Eigen::Vector3d normal =
+        pose.linear().col(2);
+
+
+    auto tangent_arrow =
+        makeArrow(
+            frame_id,
+            stamp,
+            ns + "_tangent",
+            id++,
+            origin,
+            tangent,
+            length);
+
+    tangent_arrow.color.r = 0.0;
+    tangent_arrow.color.g = 1.0;
+    tangent_arrow.color.b = 0.0;
+    tangent_arrow.color.a = alpha;
+
+    array.markers.push_back(
+        std::move(tangent_arrow));
+
+
+    auto normal_arrow =
+        makeArrow(
+            frame_id,
+            stamp,
+            ns + "_normal",
+            id++,
+            origin,
+            normal,
+            length);
+
+    normal_arrow.color.r = 1.0;
+    normal_arrow.color.g = 0.0;
+    normal_arrow.color.b = 0.0;
+    normal_arrow.color.a = alpha;
+
+    array.markers.push_back(
+        std::move(normal_arrow));
+}
+
+
+void drawRobotStateFrame(
+visualization_msgs::msg::MarkerArray& array,
+const moveit::core::RobotState& state,
+const std::string link_name,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id,
+    double length,
+    double alpha
+
+){
+    const Eigen::Isometry3d act_pose = state.getGlobalLinkTransform(link_name);
+    drawFrame(array,act_pose,frame_id,stamp,ns,id, length,alpha);
+
+}
+void makeLabel(
+    visualization_msgs::msg::MarkerArray& array,
+    const Eigen::Vector3d& position,
+    const std::string& text,
+    const std::string& frame_id,
+    const rclcpp::Time& stamp,
+    const std::string& ns,
+    int& id)
+{
+    visualization_msgs::msg::Marker label;
+
+    label.header.frame_id = frame_id;
+    label.header.stamp = stamp;
+
+    label.ns = ns;
+    label.id = id++;
+
+    label.type =
+        visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+
+    label.action =
+        visualization_msgs::msg::Marker::ADD;
+
+    label.pose.position =
+        toPoint(
+            position +
+            Eigen::Vector3d(
+                0.0,
+                0.0,
+                0.025));
+
+    label.pose.orientation.w = 1.0;
+
+    label.scale.z = 0.018;
+
+    label.color.r = 1.0;
+    label.color.g = 1.0;
+    label.color.b = 1.0;
+    label.color.a = 1.0;
+
+    label.text = text;
+
+    array.markers.push_back(
+        std::move(label));
+}
+
+} // namespace
+visualization_msgs::msg::MarkerArray
+CutProfileServer::makeVisualization(
+    const motion::CutPlan& plan,
+    const std::string& frame_id) const
+{
+    visualization_msgs::msg::MarkerArray array;
+
+    const auto stamp = now();
+
+    /*
+     * Clear previous visualization.
+     */
+    visualization_msgs::msg::Marker clear;
+
+    clear.action =
+        visualization_msgs::msg::Marker::DELETEALL;
+
+    array.markers.push_back(clear);
+
+
+    int id = 0;
+
+
+    for (const auto& segment : plan.segments)
+    {
+        /*
+         * --------------------------------------------------
+         * Actual requested cut line
+         * --------------------------------------------------
+         *
+         * Use the process poses rather than CutPathPoint here.
+         * These already include standoff.
+         */
+        visualization_msgs::msg::Marker cut_line;
+
+        cut_line.header.frame_id = frame_id;
+        cut_line.header.stamp = stamp;
+
+        cut_line.ns = "cut_segments";
+        cut_line.id = id++;
+
+        cut_line.type =
+            visualization_msgs::msg::Marker::LINE_LIST;
+
+        cut_line.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        cut_line.scale.x = 0.005;
+
+        cut_line.points.push_back(
+            toPoint(
+                segment.start_pose.translation()));
+
+        cut_line.points.push_back(
+            toPoint(
+                segment.end_pose.translation()));
+
+        // Cyan
+        cut_line.color.r = 0.0;
+        cut_line.color.g = 1.0;
+        cut_line.color.b = 1.0;
+        cut_line.color.a = 1.0;
+
+        array.markers.push_back(
+            std::move(cut_line));
+
+
+        /*
+         * --------------------------------------------------
+         * Approach -> start
+         * --------------------------------------------------
+         *
+         * Thin line so we can see the intended approach
+         * direction as well.
+         */
+        visualization_msgs::msg::Marker approach_line;
+
+        approach_line.header.frame_id = frame_id;
+        approach_line.header.stamp = stamp;
+
+        approach_line.ns = "approach_paths";
+        approach_line.id = id++;
+
+        approach_line.type =
+            visualization_msgs::msg::Marker::LINE_LIST;
+
+        approach_line.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        approach_line.scale.x = 0.002;
+
+        approach_line.points.push_back(
+            toPoint(
+                segment.approach_pose.translation()));
+
+        approach_line.points.push_back(
+            toPoint(
+                segment.start_pose.translation()));
+
+        approach_line.color.r = 1.0;
+        approach_line.color.g = 1.0;
+        approach_line.color.b = 1.0;
+        approach_line.color.a = 0.6;
+
+        array.markers.push_back(
+            std::move(approach_line));
+
+
+        /*
+         * --------------------------------------------------
+         * End -> retract
+         * --------------------------------------------------
+         */
+        visualization_msgs::msg::Marker retract_line;
+
+        retract_line.header.frame_id = frame_id;
+        retract_line.header.stamp = stamp;
+
+        retract_line.ns = "retract_paths";
+        retract_line.id = id++;
+
+        retract_line.type =
+            visualization_msgs::msg::Marker::LINE_LIST;
+
+        retract_line.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        retract_line.scale.x = 0.002;
+
+        retract_line.points.push_back(
+            toPoint(
+                segment.end_pose.translation()));
+
+        retract_line.points.push_back(
+            toPoint(
+                segment.retract_pose.translation()));
+
+        retract_line.color.r = 1.0;
+        retract_line.color.g = 1.0;
+        retract_line.color.b = 1.0;
+        retract_line.color.a = 0.6;
+
+        array.markers.push_back(
+            std::move(retract_line));
+
+
+        /*
+         * --------------------------------------------------
+         * Nominal tool frames
+         * --------------------------------------------------
+         */
+
+        const std::string base_ns =
+            "cut_pose_" + segment.name;
+
+        drawFrame(
+            array,
+            segment.approach_pose,
+            frame_id,
+            stamp,
+            base_ns + "_approach",
+            id,0.04,0.35);
+
+        drawFrame(
+            array,
+            segment.start_pose,
+            frame_id,
+            stamp,
+            base_ns + "_start",
+            id,0.04,0.35);
+
+        drawFrame(
+            array,
+            segment.end_pose,
+            frame_id,
+            stamp,
+            base_ns + "_end",
+            id,0.04,0.35);
+
+        drawFrame(
+            array,
+            segment.retract_pose,
+            frame_id,
+            stamp,
+            base_ns + "_retract",
+            id,0.04,0.35);
+
+        if (segment.start_state){
+            drawRobotStateFrame(array, *segment.start_state,plasma_link_,frame_id,stamp,base_ns+"_start",id,0.02,1.0);
+        }
+        if (segment.approach_state){
+            drawRobotStateFrame(array, *segment.approach_state,plasma_link_,frame_id,stamp,base_ns+"_appr",id,0.02,1.0);
+        }
+        if (segment.end_state){
+            drawRobotStateFrame(array, *segment.end_state,plasma_link_,frame_id,stamp,base_ns+"_end",id,0.02,1.0);
+        }
+        if (segment.retract_state){
+            drawRobotStateFrame(array, *segment.retract_state,plasma_link_,frame_id,stamp,base_ns+"_retr",id,0.02,1.0);
+        }
+        /*
+         * --------------------------------------------------
+         * Labels
+         * --------------------------------------------------
+         */
+
+        makeLabel(
+            array,
+            segment.approach_pose.translation(),
+            segment.name + " approach",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.start_pose.translation(),
+            segment.name + " start",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.end_pose.translation(),
+            segment.name + " end",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+
+        makeLabel(
+            array,
+            segment.retract_pose.translation(),
+            segment.name + " retract",
+            frame_id,
+            stamp,
+            base_ns + "_labels",
+            id);
+    }
+
+
+    return array;
+}
+
+
+void
+CutProfileServer::publishVisualization(
+    const motion::CutPlan& plan,
+    const std::string& frame_id)
+{
+    visualization_pub_->publish(
+        makeVisualization(
+            plan,
+            frame_id));
+}
+
+void CutProfileServer::publishCollisionDebug(
+    const motion::CollisionDebugEvent& event)
+{
+    using Marker = visualization_msgs::msg::Marker;
+
+    visualization_msgs::msg::MarkerArray array;
+
+    const auto stamp = now();
+    const std::string frame_id = move_group_->getPlanningFrame();
+
+    // Separate namespace for each sample/iteration.
+    // This preserves the history of the correction steps in RViz.
+    const std::string ns =
+        "sample_" + std::to_string(event.sample) +
+        "_iter_" + std::to_string(event.iter);
+
+    int id = 0;
+
+    // -------------------------------------------------------
+    // 1. Nominal TCP frame
+    // -------------------------------------------------------
+
+    drawFrame(
+        array,
+        event.nominal_tcp_pose,
+        frame_id,
+        stamp,
+        ns + "_nominal_tcp",
+        id,
+        0.045,
+        0.35);
+
+    // -------------------------------------------------------
+    // 2. Proposed TCP frame
+    // -------------------------------------------------------
+
+    const Eigen::Isometry3d actual_tcp =
+        event.state.getGlobalLinkTransform(plasma_link_);
+
+    drawFrame(
+        array,
+        actual_tcp,
+        frame_id,
+        stamp,
+        ns + "_actual_tcp",
+        id,
+        0.035,
+        1.0);
+
+    // -------------------------------------------------------
+    // 3. TCP displacement from nominal
+    // -------------------------------------------------------
+
+    const Eigen::Vector3d nominal_pos =
+        event.nominal_tcp_pose.translation();
+
+    const Eigen::Vector3d actual_pos =
+        actual_tcp.translation();
+
+    const Eigen::Vector3d tcp_delta =
+        actual_pos - nominal_pos;
+
+    if (tcp_delta.norm() > 1e-6)
+    {
+        auto arrow = makeArrow(
+            frame_id,
+            stamp,
+            ns + "_tcp_displacement",
+            id++,
+            nominal_pos,
+            tcp_delta,
+            tcp_delta.norm());
+
+        arrow.color.r = 0.0;
+        arrow.color.g = 1.0;
+        arrow.color.b = 0.2;
+        arrow.color.a = 1.0;
+
+        array.markers.push_back(std::move(arrow));
+    }
+
+    // -------------------------------------------------------
+    // 4. Collision contacts
+    // -------------------------------------------------------
+
+    for (const auto& contact : event.contacts)
+    {
+        // Contact point sphere
+        Marker sphere;
+
+        sphere.header.frame_id = frame_id;
+        sphere.header.stamp = stamp;
+
+        sphere.ns = ns + "_contacts";
+        sphere.id = id++;
+
+        sphere.type = Marker::SPHERE;
+        sphere.action = Marker::ADD;
+
+        sphere.pose.position = toPoint(contact.pos_world);
+        sphere.pose.orientation.w = 1.0;
+
+        sphere.scale.x = 0.0015;
+        sphere.scale.y = 0.0015;
+        sphere.scale.z = 0.0015;
+
+        sphere.color.r = 1.0;
+        sphere.color.g = 0.0;
+        sphere.color.b = 0.0;
+        sphere.color.a = 0.9;
+
+        array.markers.push_back(std::move(sphere));
+
+        // Contact separation normal
+        if (contact.normal_world.norm() > 1e-8)
+        {
+            auto arrow = makeArrow(
+                frame_id,
+                stamp,
+                ns + "_contact_normals",
+                id++,
+                contact.pos_world,
+                contact.normal_world,
+                0.03);
+
+            arrow.color.r = 1.0;
+            arrow.color.g = 0.5;
+            arrow.color.b = 0.0;
+            arrow.color.a = 1.0;
+
+            array.markers.push_back(std::move(arrow));
+        }
+
+        // Label the colliding link and penetration depth
+        std::ostringstream ss;
+
+        ss << contact.robot_link
+           << " "
+           << std::fixed
+           << std::setprecision(1)
+           << (1000.0 * contact.depth)
+           << " mm";
+
+        makeLabel(
+            array,
+            contact.pos_world,
+            ss.str(),
+            frame_id,
+            stamp,
+            ns + "_contact_labels",
+            id);
+    }
+
+    // -------------------------------------------------------
+    // 5. Iteration/status label
+    // -------------------------------------------------------
+
+    std::ostringstream status;
+
+    status
+        << event.label
+        << " | sample " << event.sample
+        << " | iter " << event.iter
+        << " | " << event.strategy
+        << " | contacts " << event.contacts.size()
+        << " | TCP offset "
+        << std::fixed << std::setprecision(2)
+        << (1000.0 * tcp_delta.norm())
+        << " mm";
+
+    makeLabel(
+        array,
+        actual_pos,
+        status.str(),
+        frame_id,
+        stamp,
+        ns + "_status",
+        id);
+
+    // -------------------------------------------------------
+    // 6. Publish markers and proposed robot state
+    // -------------------------------------------------------
+
+    collision_debug_pub_->publish(array);
+
+    publishDebugRobot(event.state);
+}
+    
+    void CutProfileServer::publishDebugRobot(
+    const moveit::core::RobotState& state)
+{
+    moveit_msgs::msg::DisplayRobotState msg;
+
+    moveit::core::robotStateToRobotStateMsg(
+        state, msg.state);
+
+    msg.highlight_links.clear();
+
+    debug_robot_pub_->publish(msg);
+}
+
+void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
+        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
+            
+            {
+                std::lock_guard<std::mutex> lock(approval_mutex_);
+            motion_approved_ = request->approve;
+            motion_rejected_ = !request->approve;
+        }
+            approval_cv_.notify_all();
+
+            response->accepted = true;
+
+            response->message =
+                request->approve
+                    ? "Cutting plan approved"
+                    : "Cutting plan rejected";
+
+        }
+
+
+
+
+}
+
+
+int main (int argc, char** argv){
+    rclcpp::init(argc,argv);
+    auto options = rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true);
+    auto node = std::make_shared<hb_robot_skills::CutProfileServer>(options);
+
+    try{
+    node->initialize();
+    RCLCPP_INFO(node->get_logger(),"initalized cut profile server");
+    }
+    catch(std::exception &e){
+        RCLCPP_FATAL(node->get_logger(),"%s",e.what());
+        rclcpp::shutdown();
+        return 1;
+    }
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
+    rclcpp::shutdown();
+
+    return 0;
+}

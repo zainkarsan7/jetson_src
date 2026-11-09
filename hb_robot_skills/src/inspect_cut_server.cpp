@@ -60,10 +60,6 @@ class InspectCutServer : public rclcpp::Node {
       throw std::runtime_error("Planning frame mismatch or camera optical link absent from robot model");
     tf_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_);
-    acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this, tf_.get(), frame_,
-      get_parameter("perception_rgb_topic").as_string(),
-      get_parameter("perception_depth_topic").as_string(),
-      get_parameter("perception_camera_info_topic").as_string());
     stability_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
       *this, get_parameter("imu_topic").as_string());
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/kerf_cloud", rclcpp::QoS(1).transient_local());
@@ -236,9 +232,14 @@ class InspectCutServer : public rclcpp::Node {
         }
         auto stamp=now(); // Strictly post-motion and post-stability observations only.
         const auto index=station_ids[edge.to];
+        hb_perception::RGBDAcquisition capture(this, tf_.get(), frame_,
+          hb_perception::RGBDAcquisition::Mode::CaptureWindow,
+          get_parameter("perception_rgb_topic").as_string(),
+          get_parameter("perception_depth_topic").as_string(),
+          get_parameter("perception_camera_info_topic").as_string());
         for (uint32_t sample=0;sample<samples;++sample) {
           if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
-          const auto ob=acquisition_->acquireAfter(stamp, std::chrono::milliseconds(static_cast<int>(timeout_*1000)));
+          const auto ob=capture.acquireAfter(stamp, std::chrono::milliseconds(static_cast<int>(timeout_*1000)));
           if (!ob || !stability_->metrics().stable || !stability_->metrics().valid) {
             finish(Action::Result::ACQUISITION_FAILED, "Missing fresh RGB-D or stability lost"); return;
           }
@@ -303,7 +304,6 @@ class InspectCutServer : public rclcpp::Node {
   std::unique_ptr<MoveGroup> move_;
   std::unique_ptr<tf2_ros::Buffer> tf_;
   std::unique_ptr<tf2_ros::TransformListener> listener_;
-  std::unique_ptr<hb_perception::RGBDAcquisition> acquisition_;
   std::unique_ptr<hb_perception::ImuStabilityMonitor> stability_;
   rclcpp_action::Server<Action>::SharedPtr server_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;

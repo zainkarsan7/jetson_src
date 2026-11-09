@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>hb_robot_cut_environment</name>
+  <version>0.0.0</version>
+  <description>On-demand UniLiDAR obstacle snapshots for cut planning.</description>
+  <maintainer email="zainkarsan7@gmail.com">zk-pac</maintainer>
+  <license>TODO: License declaration</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>tf2_ros</depend>
+  <depend>hb_robot_interfaces</depend>
+  <depend>moveit_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometric_shapes</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <exec_depend>hb_robot_description</exec_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>tf2_ros_py</test_depend>
+  <test_depend>python3-numpy</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

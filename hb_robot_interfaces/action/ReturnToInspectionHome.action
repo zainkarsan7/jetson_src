@@ -1,0 +1,6 @@
+# Move the planning group to its inspection_home named state.
+---
+bool success
+string message
+---
+string phase

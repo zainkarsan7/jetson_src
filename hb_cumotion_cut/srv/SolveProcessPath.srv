@@ -1,0 +1,9 @@
+string frame
+string tool
+geometry_msgs/Pose[] poses
+sensor_msgs/JointState seed
+---
+bool success
+bool backend_error
+string message
+trajectory_msgs/JointTrajectory path

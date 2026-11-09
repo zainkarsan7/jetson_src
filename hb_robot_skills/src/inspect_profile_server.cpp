@@ -91,9 +91,6 @@ namespace hb_robot_skills{
         planning_scene_monitor_->startStateMonitor();
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
-        rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
-        tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
-    RCLCPP_INFO(get_logger(),"Acquisition Initialized");
 
 
         hb_perception::ImuStabilityConfig config;
@@ -828,7 +825,7 @@ bool InspectProfileServer::waitForStability()
         uint32_t sample_count,
         double depth_range)
     {
-        if (!rgbd_acquisition_ || sample_count == 0)
+        if (sample_count == 0)
             return false;
 
         using namespace std::chrono_literals;
@@ -847,6 +844,8 @@ bool InspectProfileServer::waitForStability()
 
         // Require observations newer than acquisition start.
         rclcpp::Time boundary = now();
+        hb_perception::RGBDAcquisition capture(this, tf_buffer_.get(), scene_frame_,
+            hb_perception::RGBDAcquisition::Mode::CaptureWindow, rgb_topic_, depth_topic_, camera_info_topic_);
 
         while (rclcpp::ok() &&
             integrated < sample_count &&
@@ -868,7 +867,7 @@ bool InspectProfileServer::waitForStability()
                             acquisition_timeout_ * 1000.0)));
 
             auto observation =
-                rgbd_acquisition_->acquireAfter(
+                capture.acquireAfter(
                     boundary,
                     wait_time);
 

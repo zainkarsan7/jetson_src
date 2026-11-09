@@ -24,6 +24,8 @@ Panels:
   Name: Help
 - Class: rviz_visual_tools/RvizVisualToolsGui
   Name: RvizVisualToolsGui
+- Class: zk_gui/MotionApproval
+  Name: Motion controls
 Visualization Manager:
   Class: ''
   Displays:

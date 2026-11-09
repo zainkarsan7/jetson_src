@@ -28,6 +28,13 @@ public:
         const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw",
         const std::string& camera_info_topic = "/k4a/depth_to_rgb/camera_info");
 
+    enum class Mode { Continuous, CaptureWindow };
+    RGBDAcquisition(rclcpp::Node* node, tf2_ros::Buffer* tf_buffer,
+        const std::string& target_frame, Mode mode,
+        const std::string& rgb_topic = "/k4a/rgb/image_raw",
+        const std::string& depth_topic = "/k4a/depth_to_rgb/image_raw",
+        const std::string& camera_info_topic = "/k4a/depth_to_rgb/camera_info");
+
     // Both exposures must be strictly newer than min_stamp.
     std::optional<Observation> acquireAfter(const rclcpp::Time& min_stamp,
         std::chrono::milliseconds timeout);
@@ -47,7 +54,9 @@ private:
     tf2_ros::Buffer* tf_buffer_;
     const std::string target_frame_;
 
-    // All subscriptions and the retry timer use the node's mutually exclusive default group.
+    // A capture window owns its callbacks. Only the acquiring worker spins them.
+    rclcpp::CallbackGroup::SharedPtr window_group_;
+    std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> window_executor_;
     std::deque<PendingPair> pending_;
     CameraInfo::ConstSharedPtr camera_info_;
     message_filters::Subscriber<Image> rgb_sub_, depth_sub_;

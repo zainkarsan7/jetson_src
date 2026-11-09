@@ -28,7 +28,6 @@ class RevalidateServer : public rclcpp::Node {
     config_.min_points=100;
     tf_=std::make_unique<tf2_ros::Buffer>(get_clock());
     listener_=std::make_unique<tf2_ros::TransformListener>(*tf_);
-    acquisition_=std::make_unique<hb_perception::RGBDAcquisition>(this,tf_.get(),frame_);
     imu_=std::make_unique<hb_perception::ImuStabilityMonitor>(*this,"/k4a/imu");
     ref_sub_=create_subscription<Reference>("/workpiece_reference",rclcpp::QoS(1).transient_local(),
       [this](Reference::ConstSharedPtr m){std::lock_guard<std::mutex> lock(mutex_);reference_=*m;});
@@ -77,7 +76,12 @@ class RevalidateServer : public rclcpp::Node {
       }
       if(canceled()) {finish("Localization canceled");return;}
       if(!imu_->waitForStable(std::chrono::seconds(10),canceled)) {finish("No stable observation window");return;}
-      const auto observation=acquisition_->acquireAfter(now(),std::chrono::seconds(3));
+      const auto observation = [this] {
+        const auto after = now();
+        hb_perception::RGBDAcquisition capture(this, tf_.get(), frame_,
+          hb_perception::RGBDAcquisition::Mode::CaptureWindow);
+        return capture.acquireAfter(after, std::chrono::seconds(3));
+      }();
       if(!observation || canceled()) {finish("Fresh acquisition failed");return;}
       auto raw=hb_robot_skills::kerfObservationCloud(*observation,range_);
       hb_perception::PointCloud world,reference_cloud;
@@ -168,7 +172,6 @@ class RevalidateServer : public rclcpp::Node {
   std::chrono::steady_clock::time_point received_{};
   std::atomic<bool> busy_{false};std::thread worker_;
   std::unique_ptr<tf2_ros::Buffer> tf_;std::unique_ptr<tf2_ros::TransformListener> listener_;
-  std::unique_ptr<hb_perception::RGBDAcquisition> acquisition_;
   std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_;
   rclcpp::Subscription<Reference>::SharedPtr ref_sub_;
   rclcpp::Subscription<hb_robot::recovery::State>::SharedPtr state_sub_;

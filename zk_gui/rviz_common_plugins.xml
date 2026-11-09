@@ -1,6 +1,6 @@
 <library path="zk_panel">
     <class name="zk_gui/MotionApproval" type="zk_gui::MotionApprovalPanel" base_class_type="rviz_common::Panel">
-        <description>Approve or reject scene inspection, profile inspection, and cutting motions.</description>
+        <description>Return to inspection home and approve or reject profile inspection and cutting motions.</description>
     </class>
     <class type="zk_gui::zk_panel" base_class_type="rviz_common::Panel">
         <description>test panel</description>

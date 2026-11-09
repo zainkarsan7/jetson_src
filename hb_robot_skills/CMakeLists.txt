@@ -30,6 +30,7 @@ find_package(tf2_eigen REQUIRED)
 include_directories(include)
 
 add_library(hb_motion
+  src/motion/transit_planner.cpp
   src/motion/cut_graph_planner.cpp
   src/motion/cut_candidate_graph.cpp
   src/motion/cut_process_trajectory_generator.cpp
@@ -94,6 +95,11 @@ ament_target_dependencies(approve_motion_server
 rclcpp
 hb_robot_interfaces
 )
+
+add_executable(return_to_inspection_home_server src/return_to_inspection_home_server.cpp)
+ament_target_dependencies(return_to_inspection_home_server rclcpp rclcpp_action hb_robot_interfaces
+  moveit_ros_planning moveit_ros_planning_interface)
+target_link_libraries(return_to_inspection_home_server hb_motion)
 
 add_executable(inspect_scene_server
 src/inspect_scene_server.cpp)
@@ -182,6 +188,7 @@ install(
   TARGETS
     task_state_server
     revalidate_workpiece_server
+    return_to_inspection_home_server
     inspect_scene_server
     inspect_profile_server
     inspect_cut_server

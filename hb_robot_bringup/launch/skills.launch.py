@@ -128,7 +128,8 @@ def generate_launch_description():
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {
                  "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool)}]),
-        # inspect_scene_server,
+        Node(package="hb_robot_skills", executable="return_to_inspection_home_server",
+             output="screen", parameters=[moveit_config.to_dict()]),
         cut_profile_server,
         inspect_profile_server
     ])

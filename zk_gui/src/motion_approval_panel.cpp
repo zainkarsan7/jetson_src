@@ -8,6 +8,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <hb_robot_interfaces/action/return_to_inspection_home.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <hb_robot_interfaces/srv/approve_motion.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -21,6 +23,68 @@ namespace
 {
 using Approval = hb_robot_interfaces::srv::ApproveMotion;
 using namespace std::chrono_literals;
+
+class HomeRow : public QWidget
+{
+  using Action = hb_robot_interfaces::action::ReturnToInspectionHome;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+
+public:
+  explicit HomeRow(const rclcpp::Node::SharedPtr& node)
+  : client_(rclcpp_action::create_client<Action>(node, "return_to_inspection_home"))
+  {
+    auto * layout = new QVBoxLayout(this);
+    layout->addWidget(button_);
+    layout->addWidget(status_);
+    connect(button_, &QPushButton::clicked, this, [this] {
+      button_->setEnabled(false);
+      try {
+        pending_ = client_->async_send_goal(Action::Goal{});
+        status_->setText("Requesting inspection home");
+      } catch (const std::exception& e) {
+        status_->setText(e.what());
+      }
+    });
+    auto * timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this] { refresh(); });
+    timer->start(250);
+    refresh();
+  }
+
+private:
+  void refresh()
+  {
+    try {
+      if (pending_.valid() && pending_.wait_for(0s) == std::future_status::ready) {
+        auto goal = pending_.get();
+        pending_ = {};
+        if (goal) {
+          outcome_ = client_->async_get_result(goal);
+          status_->setText("Returning to inspection home");
+        } else {
+          status_->setText("Home request rejected");
+        }
+      }
+      if (outcome_.valid() && outcome_.wait_for(0s) == std::future_status::ready) {
+        auto reply = outcome_.get();
+        outcome_ = {};
+        status_->setText(reply.result ? QString::fromStdString(reply.result->message) :
+                                       QString("Home action ended without a result"));
+      }
+    } catch (const std::exception& e) {
+      pending_ = {};
+      outcome_ = {};
+      status_->setText(e.what());
+    }
+    button_->setEnabled(!pending_.valid() && !outcome_.valid() && client_->action_server_is_ready());
+  }
+
+  rclcpp_action::Client<Action>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> pending_;
+  std::shared_future<GoalHandle::WrappedResult> outcome_;
+  QPushButton * button_{new QPushButton("Return to inspection home")};
+  QLabel * status_{new QLabel};
+};
 
 class ApprovalRow : public QWidget
 {
@@ -106,7 +170,7 @@ public:
   {
     auto node = getDisplayContext()->getRosNodeAbstraction().lock()->get_raw_node();
     auto * layout = new QVBoxLayout(this);
-    layout->addWidget(new ApprovalRow(*node, "Scene inspection", "approve_motion"));
+    layout->addWidget(new HomeRow(node));
     layout->addWidget(new ApprovalRow(*node, "Profile inspection", "approve_profile_motion"));
     layout->addWidget(new ApprovalRow(*node, "Cut motion", "approve_cut_motion"));
     layout->addStretch();

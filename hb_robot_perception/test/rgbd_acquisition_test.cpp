@@ -69,3 +69,54 @@ TEST(RGBDAcquisition, RecoversDelayedTFWithoutAnotherCapture)
     EXPECT_EQ(acquisition.latest()->depth_to_rgb->header.stamp, image.header.stamp);
     rclcpp::shutdown();
 }
+
+TEST(RGBDAcquisition, CaptureWindowReleasesSubscriptionsAndRejectsAdjacentFrames)
+{
+    rclcpp::init(0, nullptr);
+    auto node = std::make_shared<rclcpp::Node>("rgbd_window_test");
+    tf2_ros::Buffer tf(node->get_clock());
+    using Capture = hb_perception::RGBDAcquisition;
+    const auto qos = rclcpp::SensorDataQoS();
+    auto rgb = node->create_publisher<Capture::Image>("rgb", qos);
+    auto depth = node->create_publisher<Capture::Image>("depth", qos);
+    auto info = node->create_publisher<Capture::CameraInfo>("info", qos);
+    const auto matched = [&](size_t count) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        do {
+            if (rgb->get_subscription_count() == count && depth->get_subscription_count() == count &&
+                info->get_subscription_count() == count) return true;
+            std::this_thread::sleep_for(5ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    geometry_msgs::msg::TransformStamped pose;
+    pose.header.frame_id = "world";
+    pose.child_frame_id = "optical";
+    pose.transform.rotation.w = 1;
+    ASSERT_TRUE(tf.setTransform(pose, "test", true));
+    for (int view = 0; view < 2; ++view) {
+        ASSERT_TRUE(matched(0));
+        Capture capture(node.get(), &tf, "world", Capture::Mode::CaptureWindow, "rgb", "depth", "info");
+        ASSERT_TRUE(matched(1));
+        info->publish(Capture::CameraInfo{});
+        const auto boundary = node->now();
+        Capture::Image image;
+        image.header.frame_id = "optical";
+        image.header.stamp = boundary;
+        rgb->publish(image);
+        depth->publish(image);
+        EXPECT_FALSE(capture.acquireAfter(boundary, 100ms));
+        image.header.stamp = boundary + rclcpp::Duration(50ms);
+        depth->publish(image);
+        image.header.stamp = boundary + rclcpp::Duration(83ms);
+        rgb->publish(image);
+        EXPECT_FALSE(capture.acquireAfter(boundary, 100ms));
+        image.header.stamp = boundary + rclcpp::Duration(85ms);
+        depth->publish(image);
+        auto ob = capture.acquireAfter(boundary, 1s);
+        ASSERT_TRUE(ob);
+        EXPECT_EQ(ob->depth_to_rgb->header.stamp, image.header.stamp);
+    }
+    EXPECT_TRUE(matched(0));
+    rclcpp::shutdown();
+}
