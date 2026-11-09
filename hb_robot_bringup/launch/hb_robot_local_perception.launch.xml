@@ -69,6 +69,10 @@
     </node>
  -->
 
+<include file="$(find-pkg-share hb_robot_hardware)/launch/hardware.launch.py">
+<arg name="port"
+             value="/dev/ttyACM1"/>
+</include>
 
 
 

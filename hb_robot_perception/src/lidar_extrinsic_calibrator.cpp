@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <deque>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -28,102 +28,165 @@
 #include <pcl/registration/gicp.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include <hb_robot_perception/rgbd_acquisition.hpp>
-#include <hb_robot_perception/perception_types.hpp>
+#include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/perception_types.hpp"
 
 using namespace std::chrono_literals;
 
 using Cloud = pcl::PointCloud<pcl::PointXYZ>;
+using CloudMsg = sensor_msgs::msg::PointCloud2;
+using Observation = hb_perception::Observation;
 
-// Convert the existing perception package's XYZRGB cloud
-// to a geometry-only XYZ cloud.
-static Cloud::Ptr xyz(const hb_perception::PointCloud& in)
+static Cloud::Ptr toXYZ(
+    const hb_perception::PointCloud& input)
 {
-    auto out = std::make_shared<Cloud>();
-    out->reserve(in.size());
+    auto output = std::make_shared<Cloud>();
+    output->reserve(input.size());
 
-    for (const auto& p : in)
+    for (const auto& p : input.points)
     {
         if (!std::isfinite(p.x) ||
             !std::isfinite(p.y) ||
             !std::isfinite(p.z))
-        {
             continue;
-        }
 
-        out->push_back(pcl::PointXYZ(p.x, p.y, p.z));
+        output->push_back(
+            pcl::PointXYZ(p.x, p.y, p.z));
     }
 
-    return out;
+    return output;
 }
 
-static Cloud::Ptr voxel(
-    const Cloud::ConstPtr& in,
+static Cloud::Ptr downsample(
+    const Cloud::ConstPtr& input,
     float leaf)
 {
-    auto out = std::make_shared<Cloud>();
+    auto output = std::make_shared<Cloud>();
 
     pcl::VoxelGrid<pcl::PointXYZ> filter;
-    filter.setInputCloud(in);
+    filter.setInputCloud(input);
     filter.setLeafSize(leaf, leaf, leaf);
-    filter.filter(*out);
+    filter.filter(*output);
 
-    return out;
+    return output;
 }
 
-static Cloud::Ptr crop(
-    const Cloud::ConstPtr& in,
-    const Eigen::Vector3f& lo,
-    const Eigen::Vector3f& hi)
+
+static Cloud::Ptr cropAngular(
+    const Cloud::ConstPtr& input,
+    const Eigen::Vector3f& origin,
+    const Eigen::Vector2f& direction,
+    double half_angle_deg,
+    double min_range = 1.0,
+    double max_range = 3.0)
 {
-    auto out = std::make_shared<Cloud>();
+    auto output = std::make_shared<Cloud>();
+    output->reserve(input->size());
+
+    constexpr double PI = 3.14159265358979323846;
+
+    const float cos_limit = static_cast<float>(
+        std::cos(half_angle_deg * PI / 180.0));
+
+    const float max_range_sq =
+        static_cast<float>(max_range * max_range);
+
+    const float min_range_sq =
+        static_cast<float>(min_range * min_range);
+    const Eigen::Vector2f axis = direction.normalized();
+
+    for (const auto& p : input->points)
+    {
+        if (!std::isfinite(p.x) ||
+            !std::isfinite(p.y) ||
+            !std::isfinite(p.z))
+            continue;
+
+        const Eigen::Vector3f v =
+            Eigen::Vector3f(p.x, p.y, p.z) - origin;
+
+        // Full 3D radial distance from the LiDAR.
+        if (v.squaredNorm() > max_range_sq || v.squaredNorm()<min_range_sq)
+            continue;
+
+        // Horizontal bearing around world Z.
+        const Eigen::Vector2f horizontal = v.head<2>();
+
+        const float horizontal_norm = horizontal.norm();
+
+        if (horizontal_norm < 1e-6f)
+            continue;
+
+        const float cosine =
+            horizontal.dot(axis) / horizontal_norm;
+
+        if (cosine >= cos_limit)
+            output->push_back(p);
+    }
+
+    return output;
+}
+
+
+static Cloud::Ptr cropCloud(
+    const Cloud::ConstPtr& input,
+    const Eigen::Vector3f& minimum,
+    const Eigen::Vector3f& maximum)
+{
+    auto output = std::make_shared<Cloud>();
 
     pcl::CropBox<pcl::PointXYZ> filter;
-    filter.setInputCloud(in);
+    filter.setInputCloud(input);
 
-    filter.setMin(
-        Eigen::Vector4f(lo.x(), lo.y(), lo.z(), 1.0f));
+    filter.setMin(Eigen::Vector4f(
+        minimum.x(),
+        minimum.y(),
+        minimum.z(),
+        1.0f));
 
-    filter.setMax(
-        Eigen::Vector4f(hi.x(), hi.y(), hi.z(), 1.0f));
+    filter.setMax(Eigen::Vector4f(
+        maximum.x(),
+        maximum.y(),
+        maximum.z(),
+        1.0f));
 
-    filter.filter(*out);
+    filter.filter(*output);
 
-    return out;
+    return output;
 }
 
-static void bounds(
+static void cloudBounds(
     const Cloud& cloud,
-    Eigen::Vector3f& lo,
-    Eigen::Vector3f& hi)
+    Eigen::Vector3f& minimum,
+    Eigen::Vector3f& maximum)
 {
-    lo.setConstant(
+    minimum.setConstant(
         std::numeric_limits<float>::infinity());
 
-    hi.setConstant(
+    maximum.setConstant(
         -std::numeric_limits<float>::infinity());
 
-    for (const auto& p : cloud)
+    for (const auto& p : cloud.points)
     {
-        const Eigen::Vector3f v(p.x, p.y, p.z);
+        Eigen::Vector3f v(p.x, p.y, p.z);
 
-        lo = lo.cwiseMin(v);
-        hi = hi.cwiseMax(v);
+        minimum = minimum.cwiseMin(v);
+        maximum = maximum.cwiseMax(v);
     }
 }
 
-class Calibrator : public rclcpp::Node
+class LidarExtrinsicCalibrator : public rclcpp::Node
 {
 public:
-    Calibrator()
+    LidarExtrinsicCalibrator()
         : Node("lidar_extrinsic_calibrator"),
-          tf_(get_clock()),
-          listener_(tf_)
+          tf_buffer_(get_clock()),
+          tf_listener_(tf_buffer_)
     {
-        base_ = declare_parameter<std::string>(
-            "base_frame", "world");
+        base_frame_ = declare_parameter<std::string>(
+            "base_frame", "HB_carriage");
 
-        lidar_ = declare_parameter<std::string>(
+        lidar_frame_ = declare_parameter<std::string>(
             "lidar_frame", "unilidar_lidar");
 
         const auto lidar_topic =
@@ -144,87 +207,104 @@ public:
                 "camera_info_topic",
                 "/k4a/depth_to_rgb/camera_info");
 
-        depth_range_ =
-            declare_parameter<double>("depth_range", 3.0);
+        depth_range_ = declare_parameter<double>(
+            "depth_range", 3.0);
 
-        leaf_ =
-            declare_parameter<double>("voxel_size", 0.025);
+        voxel_size_ = declare_parameter<double>(
+            "voxel_size", 0.025);
 
-        roi_pad_ =
-            declare_parameter<double>("roi_padding", 0.25);
+        roi_padding_ = declare_parameter<double>(
+            "roi_padding", 0.25);
 
-        max_pair_dt_ =
-            declare_parameter<double>("max_pair_dt", 0.15);
+        accumulation_seconds_ =
+            declare_parameter<double>(
+                "lidar_accumulation_seconds", 10.0);
 
-        max_corr_ =
+        max_lidar_samples_ =
+            declare_parameter<int>(
+                "max_lidar_samples", 100);
+
+        min_lidar_samples_ =
+            declare_parameter<int>(
+                "min_lidar_samples", 5);
+
+        acquisition_timeout_ =
+            declare_parameter<double>(
+                "acquisition_timeout", 2.0);
+
+        max_acquisition_attempts_ =
+            declare_parameter<int>(
+                "max_acquisition_attempts", 10);
+
+        max_correspondence_ =
             declare_parameter<double>(
                 "max_correspondence", 0.20);
 
-        max_translation_ =
+        max_translation_correction_ =
             declare_parameter<double>(
                 "max_translation_correction", 0.25);
 
-        max_rotation_deg_ =
+        max_rotation_correction_deg_ =
             declare_parameter<double>(
                 "max_rotation_correction_deg", 15.0);
 
         max_fitness_ =
             declare_parameter<double>(
                 "max_fitness", 0.003);
+        
+        lidar_max_range_ =
+            declare_parameter<double>("lidar_max_range", 3.0);
+        lidar_min_range_ =
+            declare_parameter<double>("lidar_min_range", 1.0);
 
-        max_acquisition_attempts_ =
-                declare_parameter<int>(
-                    "max_acquisition_attempts", 10);
+        angular_axis_ = declare_parameter<std::string>(
+            "angular_axis", "+y");
 
-        acquisition_timeout_ =
-            declare_parameter<double>(
-                "acquisition_timeout", 2.0);
+        angular_half_angle_deg_ = declare_parameter<double>(
+            "angular_half_angle_deg", 35.0);
 
-        // Reuse the existing synchronized RGBD pipeline.
-        // Its Observation includes a timestamped camera pose
-        // expressed in base_.
+        angular_origin_x_ = declare_parameter<double>(
+            "angular_origin_x", 0.0);
+
+        angular_origin_y_ = declare_parameter<double>(
+            "angular_origin_y", 0.0);
+
         acquisition_ =
-            std::make_unique<hb_perception::RGBDAcquisition>(
+            std::make_unique<
+                hb_perception::RGBDAcquisition>(
                 this,
-                &tf_,
-                base_,
+                &tf_buffer_,
+                base_frame_,
                 rgb_topic,
                 depth_topic,
                 camera_info_topic);
 
-        sub_ =
-            create_subscription<sensor_msgs::msg::PointCloud2>(
-                lidar_topic,
-                rclcpp::SensorDataQoS().keep_last(5),
-                [this](
-                    sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
-                {
-                    std::lock_guard<std::mutex> lock(mu_);
-
-                    lidar_samples_.push_back(msg);
-
-                    while (lidar_samples_.size() > 40)
-                    {
-                        lidar_samples_.pop_front();
-                    }
-                });
+        lidar_sub_ = create_subscription<CloudMsg>(
+            lidar_topic,
+            rclcpp::SensorDataQoS().keep_last(5),
+            [this](CloudMsg::ConstSharedPtr msg)
+            {
+                lidarCallback(msg);
+            });
 
         const auto qos =
-            rclcpp::QoS(1).reliable().transient_local();
+            rclcpp::QoS(1)
+                .reliable()
+                .transient_local();
 
-        rgb_pub_ =
-            create_publisher<sensor_msgs::msg::PointCloud2>(
+        rgbd_pub_ =
+            create_publisher<CloudMsg>(
                 "~/rgbd_base", qos);
 
-        before_pub_ =
-            create_publisher<sensor_msgs::msg::PointCloud2>(
+        lidar_before_pub_ =
+            create_publisher<CloudMsg>(
                 "~/lidar_before", qos);
 
-        after_pub_ =
-            create_publisher<sensor_msgs::msg::PointCloud2>(
+        lidar_after_pub_ =
+            create_publisher<CloudMsg>(
                 "~/lidar_after", qos);
 
-        service_ =
+        calibration_service_ =
             create_service<std_srvs::srv::Trigger>(
                 "~/calibrate",
                 [this](
@@ -233,463 +313,643 @@ public:
                     std::shared_ptr<
                         std_srvs::srv::Trigger::Response> response)
                 {
-                    if (busy_)
+                    if (state_ != State::IDLE)
                     {
                         response->success = false;
                         response->message =
-                            "Calibration already running";
+                            "Calibration already in progress";
                         return;
                     }
 
-                    busy_ = true;
-                    request_stamp_ = now();
-                    attempt_started_ = request_stamp_;
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            lidar_mutex_);
+
+                        lidar_samples_.clear();
+                    }
+
+                    capture_start_ = now();
+                    attempt_start_ = capture_start_;
                     acquisition_attempts_ = 1;
+
+                    observation_.reset();
+
+                    state_ = State::CAPTURING;
 
                     response->success = true;
                     response->message =
-                        "Capture requested. "
-                        "Watch node logs for result; "
-                        "no TF is changed.";
+                        "Calibration capture started. "
+                        "Watch node logs for result.";
                 });
 
-        // Processing occurs outside the service callback.
-        // The executor can continue receiving sensor data
-        // while waiting for a suitable pair.
         timer_ = create_wall_timer(
             100ms,
             [this]() { tick(); });
 
         RCLCPP_INFO(
             get_logger(),
-            "Ready. Call ~/calibrate with "
-            "std_srvs/srv/Trigger");
+            "LiDAR extrinsic calibrator ready");
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Base: %s | LiDAR: %s",
+            base_frame_.c_str(),
+            lidar_frame_.c_str());
+
+        RCLCPP_INFO(
+            get_logger(),
+            "LiDAR accumulation: %.2f s",
+            accumulation_seconds_);
     }
 
 private:
-    void publish(
-        const Cloud& cloud,
-        const rclcpp::Publisher<
-            sensor_msgs::msg::PointCloud2>::SharedPtr& pub)
+    enum class State
     {
-        sensor_msgs::msg::PointCloud2 msg;
+        IDLE,
+        CAPTURING,
+        PROCESSING
+    };
 
-        pcl::toROSMsg(cloud, msg);
-
-        msg.header.frame_id = base_;
-        msg.header.stamp = now();
-
-        pub->publish(msg);
-    }
-
-    void tick()
+    void lidarCallback(
+        const CloudMsg::ConstSharedPtr& msg)
     {
-       
-    if (!busy_)
-        return;
+        if (state_ != State::CAPTURING)
+            return;
 
-    const auto ob = acquisition_->latest();
-
-    if (!ob || ob->stamp <= request_stamp_)
-    {
-
-        RCLCPP_WARN_THROTTLE(
+        if (msg->header.frame_id != lidar_frame_)
+        {
+            RCLCPP_WARN_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 2000,
-                "Waiting for RGBD: now=%.3f request=%.3f "
-                "latest=%.3f",
-                now().seconds(),
-                request_stamp_.seconds(),
-                ob ? ob->stamp.seconds() : -1.0);
-        const double elapsed =
-            (now() - attempt_started_).seconds();
-
-        if (elapsed >= acquisition_timeout_)
-        {
-            RCLCPP_WARN(
-                get_logger(),
-                "RGBD acquisition attempt %d/%d failed",
-                acquisition_attempts_,
-                max_acquisition_attempts_);
-
-            if (acquisition_attempts_ >=
-                max_acquisition_attempts_)
-            {
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "RGBD acquisition failed after %d attempts",
-                    max_acquisition_attempts_);
-
-                busy_ = false;
-                return;
-            }
-
-            ++acquisition_attempts_;
-            attempt_started_ = now();
-        }
-
-        return;
-    }
-
-    // Existing LiDAR sample selection and
-    // calibration logic continues here.
-
-        sensor_msgs::msg::PointCloud2::ConstSharedPtr
-            lidar_msg;
-
-        double best_dt = max_pair_dt_;
-
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-
-            for (const auto& msg : lidar_samples_)
-            {
-                const double dt = std::abs(
-                    (rclcpp::Time(msg->header.stamp) -
-                     ob->stamp).seconds());
-
-                if (dt < best_dt)
-                {
-                    best_dt = dt;
-                    lidar_msg = msg;
-                }
-            }
-        }
-
-        if (!lidar_msg)
-        {
-            if ((now() - request_stamp_).seconds() > 8.0)
-            {
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "No LiDAR sample within %.3f s "
-                    "of RGBD capture",
-                    max_pair_dt_);
-
-                busy_ = false;
-            }
+                "Ignoring LiDAR cloud in frame '%s'; "
+                "expected '%s'",
+                msg->header.frame_id.c_str(),
+                lidar_frame_.c_str());
 
             return;
         }
 
-        busy_ = false;
+        std::lock_guard<std::mutex> lock(
+            lidar_mutex_);
+
+        // if (lidar_samples_.size() >=
+        //     static_cast<std::size_t>(
+        //         max_lidar_samples_))
+        // {
+        //     return;
+        // }
+
+        lidar_samples_.push_back(msg);
+    }
+
+    void tick()
+    {
+        if (state_ != State::CAPTURING)
+            return;
+
+        const auto current_time = now();
+
+        // ---------------------------------------------
+        // Acquire Kinect observation with retries.
+        // ---------------------------------------------
+
+        if (!observation_)
+        {
+            const auto latest = acquisition_->latest();
+
+            if (latest &&
+                latest->stamp > capture_start_)
+            {
+                observation_ = latest;
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "RGBD acquired at %.3f",
+                    latest->stamp.seconds());
+            }
+            else
+            {
+                const double elapsed =
+                    (current_time - attempt_start_)
+                        .seconds();
+
+                if (elapsed >= acquisition_timeout_)
+                {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "RGBD attempt %d/%d failed",
+                        acquisition_attempts_,
+                        max_acquisition_attempts_);
+
+                    if (acquisition_attempts_ >=
+                        max_acquisition_attempts_)
+                    {
+                        RCLCPP_ERROR(
+                            get_logger(),
+                            "RGBD acquisition failed "
+                            "after %d attempts",
+                            max_acquisition_attempts_);
+
+                        state_ = State::IDLE;
+                        return;
+                    }
+
+                    ++acquisition_attempts_;
+                    attempt_start_ = current_time;
+                }
+            }
+        }
+
+        // ---------------------------------------------
+        // Wait for LiDAR accumulation window.
+        // ---------------------------------------------
+
+        const double capture_elapsed =
+            (current_time - capture_start_).seconds();
+
+        if (capture_elapsed < accumulation_seconds_)
+            return;
+
+        // Kinect can take longer than LiDAR.
+        if (!observation_)
+            return;
+
+        std::vector<CloudMsg::ConstSharedPtr> samples;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                lidar_mutex_);
+
+            samples = lidar_samples_;
+        }
+
+        if (samples.size() <
+            static_cast<std::size_t>(
+                min_lidar_samples_))
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Insufficient LiDAR messages: %zu",
+                samples.size());
+
+            state_ = State::IDLE;
+            return;
+        }
+
+        state_ = State::PROCESSING;
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Captured %zu LiDAR messages "
+            "and one RGBD observation",
+            samples.size());
 
         try
         {
-            calibrate(*ob, *lidar_msg, best_dt);
+            calibrate(*observation_, samples);
         }
         catch (const std::exception& e)
         {
             RCLCPP_ERROR(
                 get_logger(),
-                "Calibration failed: %s",
+                "Calibration exception: %s",
                 e.what());
         }
+
+        observation_.reset();
+        state_ = State::IDLE;
+    }
+
+    void publishCloud(
+        const Cloud& cloud,
+        const rclcpp::Publisher<CloudMsg>::SharedPtr& pub)
+    {
+        CloudMsg msg;
+
+        pcl::toROSMsg(cloud, msg);
+
+        msg.header.frame_id = base_frame_;
+        msg.header.stamp = now();
+
+        pub->publish(msg);
     }
 
     void calibrate(
-        const hb_perception::Observation& ob,
-        const sensor_msgs::msg::PointCloud2& lidar_msg,
-        double pair_dt)
+        const Observation& observation,
+        const std::vector<
+            CloudMsg::ConstSharedPtr>& lidar_samples)
     {
-        // The cloud must be expressed in the physical
-        // LiDAR frame, not the IMU initial/world frame.
-        if (lidar_msg.header.frame_id != lidar_)
-        {
-            RCLCPP_ERROR(
-                get_logger(),
-                "LiDAR message frame '%s' "
-                "!= configured frame '%s'",
-                lidar_msg.header.frame_id.c_str(),
-                lidar_.c_str());
-
-            return;
-        }
-
-        // ------------------------------------------------
-        // 1. Kinect depth -> cloud -> robot base
-        // ------------------------------------------------
+        // =============================================
+        // 1. Kinect depth cloud in robot base
+        // =============================================
 
         const Eigen::Matrix4f T_BC =
-            tf2::transformToEigen(ob.camera_pose)
+            tf2::transformToEigen(
+                observation.camera_pose)
                 .matrix()
                 .cast<float>();
 
-        auto cam_raw =
+        auto rgbd_raw =
             hb_perception::depthToCloud(
-                ob.depth_to_rgb,
-                ob.rgb_camera_info,
+                observation.depth_to_rgb,
+                observation.rgb_camera_info,
                 depth_range_,
                 3);
 
-        if (!cam_raw || cam_raw->empty())
+        if (!rgbd_raw || rgbd_raw->empty())
         {
             RCLCPP_ERROR(
                 get_logger(),
-                "No valid RGBD points");
-
+                "RGBD depth cloud is empty");
             return;
         }
 
-        Cloud cam_base;
+        Cloud rgbd_base;
 
         pcl::transformPointCloud(
-            *xyz(*cam_raw),
-            cam_base,
+            *toXYZ(*rgbd_raw),
+            rgbd_base,
             T_BC);
 
-        auto target = voxel(
-            std::make_shared<Cloud>(cam_base),
-            static_cast<float>(leaf_));
+        auto target = downsample(
+            std::make_shared<Cloud>(rgbd_base),
+            static_cast<float>(voxel_size_));
 
         if (target->size() < 100)
         {
             RCLCPP_ERROR(
                 get_logger(),
-                "Insufficient RGBD points");
-
+                "Insufficient RGBD target points: %zu",
+                target->size());
             return;
         }
 
-        // ------------------------------------------------
-        // 2. Approximate overlap ROI in base coordinates
-        // ------------------------------------------------
+        // =============================================
+        // 2. Find approximate common region
+        // =============================================
 
-        Eigen::Vector3f lo;
-        Eigen::Vector3f hi;
+        Eigen::Vector2f angular_direction;
 
-        bounds(*target, lo, hi);
+        if (angular_axis_ == "+x")
+            angular_direction = Eigen::Vector2f::UnitX();
+        else if (angular_axis_ == "-x")
+            angular_direction = -Eigen::Vector2f::UnitX();
+        else if (angular_axis_ == "+y")
+            angular_direction = Eigen::Vector2f::UnitY();
+        else if (angular_axis_ == "-y")
+            angular_direction = -Eigen::Vector2f::UnitY();
+        else
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Invalid angular_axis '%s'. "
+                "Use +x, -x, +y, or -y.",
+                angular_axis_.c_str());
+            return;
+        }
 
-        lo.array() -= static_cast<float>(roi_pad_);
-        hi.array() += static_cast<float>(roi_pad_);
+        if (angular_half_angle_deg_ <= 0.0 ||
+            angular_half_angle_deg_ > 180.0)
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "angular_half_angle_deg must be in (0, 180]");
+            return;
+        }
 
-        // ------------------------------------------------
-        // 3. LiDAR cloud -> robot base using current TF
-        // ------------------------------------------------
+const Eigen::Vector2f angular_origin(
+    static_cast<float>(angular_origin_x_),
+    static_cast<float>(angular_origin_y_));
 
-        Cloud lidar_raw;
+        // =============================================
+        // 3. Current base -> LiDAR transform
+        // =============================================
 
-        pcl::fromROSMsg(lidar_msg, lidar_raw);
-
-        std::vector<int> kept;
-
-        auto lidar_clean = std::make_shared<Cloud>();
-
-        pcl::removeNaNFromPointCloud(
-            lidar_raw,
-            *lidar_clean,
-            kept);
-
-        const auto tf_msg = tf_.lookupTransform(
-            base_,
-            lidar_,
-            lidar_msg.header.stamp,
-            rclcpp::Duration::from_seconds(0.2));
+        // This is the current physical mounting estimate.
+        // It must not contain IMU attitude drift.
+        const auto tf_msg =
+            tf_buffer_.lookupTransform(
+                base_frame_,
+                lidar_frame_,
+                tf2::TimePointZero);
 
         const Eigen::Matrix4f T_BL =
             tf2::transformToEigen(tf_msg)
                 .matrix()
                 .cast<float>();
 
-        Cloud lidar_base;
+        // =============================================
+        // 4. Accumulate LiDAR scans
+        // =============================================
 
-        pcl::transformPointCloud(
-            *lidar_clean,
-            lidar_base,
-            T_BL);
+        Cloud accumulated;
 
-        auto source = crop(
-            voxel(
-                std::make_shared<Cloud>(lidar_base),
-                static_cast<float>(leaf_)),
-            lo,
-            hi);
+        std::size_t raw_points = 0;
+        std::size_t accepted_scans = 0;
+
+        for (const auto& msg : lidar_samples)
+        {
+            if (msg->header.frame_id != lidar_frame_)
+                continue;
+
+            Cloud raw;
+            pcl::fromROSMsg(*msg, raw);
+
+            Cloud clean;
+            std::vector<int> indices;
+
+            pcl::removeNaNFromPointCloud(
+                raw,
+                clean,
+                indices);
+
+            if (clean.empty())
+                continue;
+
+            Cloud transformed;
+
+            pcl::transformPointCloud(
+                clean,
+                transformed,
+                T_BL);
+
+            accumulated += transformed;
+
+            raw_points += clean.size();
+            ++accepted_scans;
+        }
+
+        if (accumulated.empty())
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "Accumulated LiDAR cloud is empty");
+            return;
+        }
+
+        // Downsample once after accumulation.
+        auto lidar_downsampled = downsample(
+            std::make_shared<Cloud>(accumulated),
+            static_cast<float>(voxel_size_));
+
+        const Eigen::Vector3f lidar_origin =
+            T_BL.block<3, 1>(0, 3);
+
+        auto source = cropAngular(
+            lidar_downsampled,
+            lidar_origin,
+            angular_direction,
+            angular_half_angle_deg_,
+            lidar_min_range_,
+            lidar_max_range_);
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Angular crop: axis=%s half-angle=%.1f deg "
+            "origin=(%.3f, %.3f) "
+            "points=%zu/%zu",
+            angular_axis_.c_str(),
+            angular_half_angle_deg_,
+            angular_origin_x_,
+            angular_origin_y_,
+            source->size(),
+            lidar_downsampled->size());
+
+        RCLCPP_INFO(
+            get_logger(),
+            "LiDAR scans=%zu raw_points=%zu "
+            "voxelized=%zu overlap=%zu "
+            "RGBD=%zu",
+            accepted_scans,
+            raw_points,
+            lidar_downsampled->size(),
+            source->size(),
+            target->size());
 
         if (source->size() < 60)
         {
             RCLCPP_ERROR(
                 get_logger(),
-                "Only %zu LiDAR points overlap RGBD ROI",
-                source->size());
-
+                "Insufficient overlapping LiDAR points");
             return;
         }
 
-        RCLCPP_INFO(
-            get_logger(),
-            "Registering %zu LiDAR points "
-            "to %zu RGBD points (dt=%.3f s)",
-            source->size(),
-            target->size(),
-            pair_dt);
-
-        // ------------------------------------------------
-        // 4. Register LiDAR source to Kinect target
-        // ------------------------------------------------
+        // =============================================
+        // 5. Generalized ICP
+        // =============================================
 
         pcl::GeneralizedIterativeClosestPoint<
             pcl::PointXYZ,
-            pcl::PointXYZ> reg;
+            pcl::PointXYZ> gicp;
 
-        reg.setInputSource(source);
-        reg.setInputTarget(target);
+        gicp.setInputSource(source);
+        gicp.setInputTarget(target);
 
-        reg.setMaxCorrespondenceDistance(max_corr_);
-        reg.setMaximumIterations(45);
-        reg.setTransformationEpsilon(1e-7);
+        gicp.setMaxCorrespondenceDistance(
+            max_correspondence_);
+
+        gicp.setMaximumIterations(45);
+        gicp.setTransformationEpsilon(1e-7);
 
         Cloud aligned;
 
-        // Both clouds are already in base coordinates.
-        // Thus the initial registration correction is I.
-        reg.align(aligned);
+        // Both source and target are already expressed
+        // in base_frame_, so estimate only the correction.
+        gicp.align(aligned);
 
-        if (!reg.hasConverged())
+        if (!gicp.hasConverged())
         {
             RCLCPP_ERROR(
                 get_logger(),
-                "GICP did not converge");
+                "GICP failed to converge");
 
+            publishCloud(*target, rgbd_pub_);
+            publishCloud(*source, lidar_before_pub_);
             return;
         }
 
-        // ------------------------------------------------
-        // 5. Recover corrected base -> LiDAR transform
-        // ------------------------------------------------
+        // =============================================
+        // 6. Correct mounting transform
+        // =============================================
 
         const Eigen::Matrix4f delta =
-            reg.getFinalTransformation();
+            gicp.getFinalTransformation();
 
-        // delta is expressed in base coordinates.
-        // Therefore left-multiply the existing extrinsic.
-        const Eigen::Matrix4f T_new = delta * T_BL;
+        // Correction is expressed in base coordinates.
+        const Eigen::Matrix4f T_BL_new =
+            delta * T_BL;
 
-        const Eigen::AngleAxisf aa(
+        const Eigen::Vector3f correction_translation =
+            delta.block<3, 1>(0, 3);
+
+        const Eigen::AngleAxisf correction_rotation(
             delta.block<3, 3>(0, 0));
 
         constexpr double RAD_TO_DEG =
             180.0 / 3.14159265358979323846;
 
-        const double rot_deg =
-            std::abs(aa.angle()) * RAD_TO_DEG;
+        const double correction_angle_deg =
+            std::abs(correction_rotation.angle()) *
+            RAD_TO_DEG;
 
-        const double translation =
-            delta.block<3, 1>(0, 3).norm();
+        const double correction_distance =
+            correction_translation.norm();
 
         const double fitness =
-            reg.getFitnessScore(max_corr_);
+            gicp.getFitnessScore(max_correspondence_);
 
-        // ------------------------------------------------
-        // 6. Publish diagnostic clouds for RViz
-        // ------------------------------------------------
+        // =============================================
+        // 7. RViz diagnostics
+        // =============================================
 
-        publish(*target, rgb_pub_);
-        publish(*source, before_pub_);
-        publish(aligned, after_pub_);
+        publishCloud(*target, rgbd_pub_);
+        publishCloud(*source, lidar_before_pub_);
+        publishCloud(aligned, lidar_after_pub_);
 
         RCLCPP_INFO(
             get_logger(),
-            "GICP fitness %.6f m^2, "
-            "correction %.3f m / %.2f deg",
+            "GICP converged: "
+            "fitness=%.7f m^2 "
+            "translation=%.4f m "
+            "rotation=%.3f deg",
             fitness,
-            translation,
-            rot_deg);
+            correction_distance,
+            correction_angle_deg);
+
+        // =============================================
+        // 8. Sanity checks
+        // =============================================
 
         if (!std::isfinite(fitness) ||
             fitness > max_fitness_ ||
-            translation > max_translation_ ||
-            rot_deg > max_rotation_deg_)
+            correction_distance >
+                max_translation_correction_ ||
+            correction_angle_deg >
+                max_rotation_correction_deg_)
         {
             RCLCPP_WARN(
                 get_logger(),
-                "REJECTED: fitness/correction exceeded "
-                "configured limits. Inspect RViz.");
-
+                "Calibration REJECTED by thresholds. "
+                "Inspect RViz before changing TF.");
             return;
         }
 
-        // ------------------------------------------------
-        // 7. Report candidate Xacro extrinsic
-        // ------------------------------------------------
+        // =============================================
+        // 9. Report candidate extrinsic
+        // =============================================
 
-        Eigen::Quaternionf q(
-            T_new.block<3, 3>(0, 0));
+        const Eigen::Matrix3f R =
+            T_BL_new.block<3, 3>(0, 0);
 
+        Eigen::Quaternionf q(R);
         q.normalize();
 
         const Eigen::Vector3f p =
-            T_new.block<3, 1>(0, 3);
+            T_BL_new.block<3, 1>(0, 3);
+
+        const Eigen::Vector3f rpy =
+            R.eulerAngles(2, 1, 0).reverse();
 
         RCLCPP_INFO(
             get_logger(),
-            "CANDIDATE %s -> %s:\n"
-            "  xyz  [%.6f %.6f %.6f]\n"
-            "  xyzw [%.7f %.7f %.7f %.7f]",
-            base_.c_str(),
-            lidar_.c_str(),
+            "\n"
+            "====================================\n"
+            "CANDIDATE LIDAR EXTRINSIC\n"
+            "====================================\n"
+            "Parent: %s\n"
+            "Child:  %s\n"
+            "xyz:  %.6f %.6f %.6f\n"
+            "rpy:  %.6f %.6f %.6f\n"
+            "xyzw: %.7f %.7f %.7f %.7f\n"
+            "====================================",
+            base_frame_.c_str(),
+            lidar_frame_.c_str(),
             p.x(), p.y(), p.z(),
+            rpy.x(), rpy.y(), rpy.z(),
             q.x(), q.y(), q.z(), q.w());
 
         RCLCPP_WARN(
             get_logger(),
-            "Do not apply automatically. "
-            "Validate with independent captures "
-            "and check for planar degeneracy.");
+            "Candidate only. Do not update Xacro "
+            "until repeated captures agree.");
     }
 
-    tf2_ros::Buffer tf_;
-    tf2_ros::TransformListener listener_;
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
 
     std::unique_ptr<hb_perception::RGBDAcquisition>
         acquisition_;
 
-    rclcpp::Subscription<
-        sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
+    rclcpp::Subscription<CloudMsg>::SharedPtr
+        lidar_sub_;
 
-    rclcpp::Publisher<
-        sensor_msgs::msg::PointCloud2>::SharedPtr
-            rgb_pub_, before_pub_, after_pub_;
+    rclcpp::Publisher<CloudMsg>::SharedPtr
+        rgbd_pub_;
+
+    rclcpp::Publisher<CloudMsg>::SharedPtr
+        lidar_before_pub_;
+
+    rclcpp::Publisher<CloudMsg>::SharedPtr
+        lidar_after_pub_;
 
     rclcpp::Service<
-        std_srvs::srv::Trigger>::SharedPtr service_;
+        std_srvs::srv::Trigger>::SharedPtr
+        calibration_service_;
 
     rclcpp::TimerBase::SharedPtr timer_;
 
-    std::mutex mu_;
+    std::mutex lidar_mutex_;
 
-    std::deque<
-        sensor_msgs::msg::PointCloud2::ConstSharedPtr>
-            lidar_samples_;
+    std::vector<CloudMsg::ConstSharedPtr>
+        lidar_samples_;
 
-    bool busy_ = false;
+    std::optional<Observation> observation_;
 
-    rclcpp::Time request_stamp_{0, 0, RCL_ROS_TIME};
+    State state_ = State::IDLE;
 
-    std::string base_;
-    std::string lidar_;
+    rclcpp::Time capture_start_{
+        0, 0, RCL_ROS_TIME};
 
-    double depth_range_;
-    double leaf_;
-    double roi_pad_;
-    double max_pair_dt_;
-    double max_corr_;
-    double max_translation_;
-    double max_rotation_deg_;
-    double max_fitness_;
-    int max_acquisition_attempts_ = 10;
-    double acquisition_timeout_ = 2.0;
+    rclcpp::Time attempt_start_{
+        0, 0, RCL_ROS_TIME};
 
     int acquisition_attempts_ = 0;
-    rclcpp::Time attempt_started_{0, 0, RCL_ROS_TIME};
+
+    std::string base_frame_;
+    std::string lidar_frame_;
+
+    double depth_range_ = 3.0;
+    double voxel_size_ = 0.025;
+    double roi_padding_ = 0.25;
+
+    double accumulation_seconds_ = 3.0;
+
+    int max_lidar_samples_ = 100;
+    int min_lidar_samples_ = 5;
+
+    double acquisition_timeout_ = 2.0;
+    int max_acquisition_attempts_ = 10;
+    double lidar_min_range_ = 1.0;
+    double lidar_max_range_ = 3.0;
+    double max_correspondence_ = 0.20;
+    double max_translation_correction_ = 2.25;
+    double max_rotation_correction_deg_ = 15.0;
+    double max_fitness_ = 0.003;
+    std::string angular_axis_ = "+y";
+    double angular_half_angle_deg_ = 35.0;
+    double angular_origin_x_ = 0.0;
+    double angular_origin_y_ = 0.0;
 };
 
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
 
-    rclcpp::spin(
-        std::make_shared<Calibrator>());
+    auto node =
+        std::make_shared<LidarExtrinsicCalibrator>();
+
+    rclcpp::spin(node);
 
     rclcpp::shutdown();
 

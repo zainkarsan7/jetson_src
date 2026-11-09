@@ -1,7 +1,7 @@
 """Geometry used by the on-demand UniLiDAR capture (metres)."""
 import numpy as np
 from scipy.spatial import cKDTree
-
+import struct
 
 def capsule(points, start, end, radius):
     axis = end - start
@@ -9,6 +9,73 @@ def capsule(points, start, end, radius):
     t = np.clip((offset @ axis) / max(axis @ axis, 1e-16), 0., 1.)
     delta = offset - t[:, None] * axis
     return np.einsum('ij,ij->i', delta, delta) <= radius * radius
+
+
+
+
+def stl_vertices(path):
+    """Read binary or ASCII STL triangle vertices, in mesh-local metres."""
+    data = path.read_bytes()
+
+    if len(data) >= 84:
+        count = struct.unpack_from('<I', data, 80)[0]
+        if 84 + 50 * count == len(data):
+            dtype = np.dtype([
+                ('normal', '<f4', (3,)),
+                ('vertices', '<f4', (3, 3)),
+                ('attribute', '<u2')
+            ])
+            faces = np.frombuffer(data, dtype=dtype, count=count, offset=84)
+            return faces['vertices'].reshape(-1, 3).astype(np.float64)
+
+    # ASCII STL fallback.
+    points = []
+    for line in data.decode('utf-8').splitlines():
+        fields = line.strip().split()
+        if len(fields) == 4 and fields[0].lower() == 'vertex':
+            points.append([float(v) for v in fields[1:]])
+
+    if not points:
+        raise ValueError(f'Cannot read STL: {path}')
+
+    return np.asarray(points, dtype=np.float64)
+
+
+def capsule_from_mesh(vertices):
+    """Return local-frame endpoints and radius enclosing all vertices."""
+    points = np.asarray(vertices, dtype=np.float64)
+
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        raise ValueError('Invalid mesh vertices')
+
+    if not np.isfinite(points).all():
+        raise ValueError('Non-finite mesh vertices')
+
+    center = points.mean(axis=0)
+    centered = points - center
+
+    covariance = centered.T @ centered / len(points)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+
+    axis = eigenvectors[:, -1]
+    projections = centered @ axis
+
+    # Full-length segment, deliberately conservative.
+    a = center + projections.min() * axis
+    b = center + projections.max() * axis
+
+    offset = points - a
+    segment = b - a
+
+    t = np.clip(
+        (offset @ segment) / max(segment @ segment, 1e-16),
+        0.0, 1.0
+    )
+
+    closest = a + t[:, None] * segment
+    radius = np.linalg.norm(points - closest, axis=1).max()
+
+    return a, b, float(radius)
 
 
 class Extrusion:

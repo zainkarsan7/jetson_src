@@ -55,6 +55,9 @@ private:
     rclcpp::Subscription<CameraInfo>::SharedPtr camera_info_sub_;
     rclcpp::TimerBase::SharedPtr retry_timer_;
 
+    std::size_t synchronized_count_ = 0;
+    std::size_t resolved_count_ = 0;
+    std::size_t expired_count_ = 0;
     mutable std::mutex observation_mutex_;
     std::condition_variable observation_cv_;
     std::optional<Observation> latest_observation_;

@@ -824,45 +824,157 @@ bool InspectProfileServer::waitForStability()
 
     return rclcpp::ok();
 }
+    bool InspectProfileServer::acquireSamples(
+        uint32_t sample_count,
+        double depth_range)
+    {
+        if (!rgbd_acquisition_ || sample_count == 0)
+            return false;
 
-bool InspectProfileServer::acquireSamples(
-    uint32_t sample_count,
-    double depth_range)
-{
-    if (!rgbd_acquisition_ || sample_count == 0)
-        return false;
+        using namespace std::chrono_literals;
+
+        const auto start = std::chrono::steady_clock::now();
+
+        // Total budget for one viewpoint.
+        constexpr auto total_budget = 20s;
+
+        const auto deadline = start + total_budget;
+
+        uint32_t integrated = 0;
+        uint32_t received = 0;
+        uint32_t timeouts = 0;
+        uint32_t rejected = 0;
+
+        // Require observations newer than acquisition start.
+        rclcpp::Time boundary = now();
+
+        while (rclcpp::ok() &&
+            integrated < sample_count &&
+            std::chrono::steady_clock::now() < deadline)
+        {
+            const auto remaining =
+                std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now());
+
+            if (remaining <= 0ms)
+                break;
+
+            const auto wait_time =
+                std::min(
+                    remaining,
+                    std::chrono::milliseconds(
+                        static_cast<int64_t>(
+                            acquisition_timeout_ * 1000.0)));
+
+            auto observation =
+                rgbd_acquisition_->acquireAfter(
+                    boundary,
+                    wait_time);
+
+            if (!observation)
+            {
+                ++timeouts;
+
+                RCLCPP_WARN(
+                    get_logger(),
+                    "RGBD timeout %u: "
+                    "integrated %u/%u",
+                    timeouts,
+                    integrated,
+                    sample_count);
+
+                continue;
+            }
+
+            ++received;
+
+            const auto stamp = observation->stamp;
+
+            // Advance boundary even if integration fails.
+            boundary = stamp;
+
+            const bool success =
+                scene_model_->addObservation(
+                    std::move(*observation),
+                    depth_range);
+
+            if (success)
+            {
+                if (!first_observation_)
+                    first_observation_ = stamp;
+
+                ++integrated;
+            }
+            else
+            {
+                ++rejected;
+
+                RCLCPP_WARN(
+                    get_logger(),
+                    "RGBD observation rejected during "
+                    "scene integration");
+            }
+        }
+
+        const double elapsed =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - start)
+                .count();
+
+        RCLCPP_INFO(
+            get_logger(),
+            "RGBD acquisition: "
+            "integrated=%u/%u received=%u "
+            "timeouts=%u rejected=%u "
+            "elapsed=%.2f s",
+            integrated,
+            sample_count,
+            received,
+            timeouts,
+            rejected,
+            elapsed);
+
+        return integrated > 0;
+    }
+// bool InspectProfileServer::acquireSamples(
+//     uint32_t sample_count,
+//     double depth_range)
+// {
+//     if (!rgbd_acquisition_ || sample_count == 0)
+//         return false;
 
     
-    uint32_t integrated = 0;
+//     uint32_t integrated = 0;
 
-    // Every acquisition must be newer than this boundary.
-    rclcpp::Time boundary = now();
+//     // Every acquisition must be newer than this boundary.
+//     rclcpp::Time boundary = now();
 
-    for (uint32_t i = 0; i < sample_count; ++i)
-    {
-        auto observation =
-            rgbd_acquisition_->acquireAfter(
-                boundary,
-                std::chrono::milliseconds(
-                    static_cast<int64_t>(
-                        acquisition_timeout_ * 1000.0)));
+//     for (uint32_t i = 0; i < sample_count; ++i)
+//     {
+//         auto observation =
+//             rgbd_acquisition_->acquireAfter(
+//                 boundary,
+//                 std::chrono::milliseconds(
+//                     static_cast<int64_t>(
+//                         acquisition_timeout_ * 1000.0)));
 
-        if (!observation)
-            break;
+//         if (!observation)
+//             break;
 
-        const auto stamp = observation->stamp;
-        boundary = stamp;
+//         const auto stamp = observation->stamp;
+//         boundary = stamp;
 
-        if (scene_model_->addObservation(
-                std::move(*observation), depth_range))
-        {
-            if(!first_observation_) first_observation_=stamp;
-            ++integrated;
-        }
-    }
+//         if (scene_model_->addObservation(
+//                 std::move(*observation), depth_range))
+//         {
+//             if(!first_observation_) first_observation_=stamp;
+//             ++integrated;
+//         }
+//     }
 
-    return integrated > 0;
-}
+//     return integrated > 0;
+// }
 
 
 void InspectProfileServer::publishSceneCloud()

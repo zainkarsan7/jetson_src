@@ -19,18 +19,18 @@ def generate_launch_description():
     # .sensors_3d(file_path="config/sensors_3d.yaml")
     .to_moveit_configs()
     )
-    inspect_scene_server= Node(
-        package= "hb_robot_skills",
-        executable = "inspect_scene_server",
-        name = "inspect_scene_server",
-        output="screen",
-        # prefix = ["gdb -ex run --args"],
-        parameters = [moveit_config.robot_description,
-        moveit_config.robot_description_semantic,
-        moveit_config.robot_description_kinematics,
-        {"skip_inspection_motion": False},
-        ],
-    )
+    # inspect_scene_server= Node(
+    #     package= "hb_robot_skills",
+    #     executable = "inspect_scene_server",
+    #     name = "inspect_scene_server",
+    #     output="screen",
+    #     # prefix = ["gdb -ex run --args"],
+    #     parameters = [moveit_config.robot_description,
+    #     moveit_config.robot_description_semantic,
+    #     moveit_config.robot_description_kinematics,
+    #     {"skip_inspection_motion": False},
+    #     ],
+    # )
 
     inspect_profile_server= Node(
         package= "hb_robot_skills",
@@ -117,13 +117,18 @@ def generate_launch_description():
              }]),
         Node(package="hb_robot_skills", executable="capture_cut_environment", output="screen",
              additional_env={"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
-             parameters=[{"jacket_padding_m": 0.045, "workpiece_margin_m": 0.025,
-                          "voxel_size_m": 0.04}]),
+             parameters=[{"jacket_padding_m": 0.075, 
+                        "workpiece_margin_m": 0.04,
+                          "voxel_size_m": 0.04, 
+                          "debug_allow_invalid_scene": True,
+                          "max_state_age_s": 2.0,
+                          "robot_description_node": "/robot_state_publisher"
+                          }]),
         Node(package="hb_robot_skills", executable="revalidate_workpiece_server", output="screen"),
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {
                  "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool)}]),
-        inspect_scene_server,
+        # inspect_scene_server,
         cut_profile_server,
         inspect_profile_server
     ])

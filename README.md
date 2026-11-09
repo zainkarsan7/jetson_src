@@ -94,6 +94,24 @@ Writing calibration to device.
 SUCCESS: saved calibration to camera.
 Done.
 
+## LIDAR CALIBRATION : 
+
+[INFO] [1794172235.743894011] [lidar_extrinsic_calibrator]: RGBD acquired at 1794172235.644
+[INFO] [1794172243.543396259] [lidar_extrinsic_calibrator]: Captured 120 LiDAR messages and one RGBD observation
+[INFO] [1794172244.396208357] [lidar_extrinsic_calibrator]: Angular crop: axis=+y half-angle=25.0 deg origin=(0.000, 0.000) points=17294/283079
+[INFO] [1794172244.396349703] [lidar_extrinsic_calibrator]: LiDAR scans=120 raw_points=578281 voxelized=283079 overlap=17294 RGBD=7727
+[INFO] [1794172273.730756663] [lidar_extrinsic_calibrator]: GICP converged: fitness=0.0107521 m^2 translation=0.1818 m rotation=1.946 deg
+[INFO] [1794172273.731318626] [lidar_extrinsic_calibrator]: 
+====================================
+CANDIDATE LIDAR EXTRINSIC
+====================================
+Parent: HB_carriage
+Child:  unilidar_lidar
+xyz:  -0.208782 -0.152058 0.589362
+rpy:  1.558308 -1.988559 3.130679
+xyzw: -0.5985859 -0.3797739 -0.3910571 0.5869762
+====================================
+
 
 ## File transfer stuff:
 scp -r zk@192.168.200.10:~/bags/rosbag2_2026_08_31-11_54_27 ~/ros2_ws/src/bags/

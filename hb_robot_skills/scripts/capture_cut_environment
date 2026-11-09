@@ -1,38 +1,71 @@
 #!/usr/bin/env python3
+
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
 import rclpy
+
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose
 from hb_robot_interfaces.msg import TaskState
 from hb_robot_interfaces.srv import CaptureCutEnvironment
 from moveit_msgs.msg import CollisionObject, PlanningSceneComponents
 from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene
+from rcl_interfaces.srv import GetParameters
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    qos_profile_sensor_data,
+)
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import PointCloud2, PointField
 from shape_msgs.msg import SolidPrimitive
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
-from cut_environment_filter import Extrusion, MeshSurface, capsule, occupied_cells, voxel_runs
+from cut_environment_filter import (
+    Extrusion,
+    capsule,
+    capsule_from_mesh,
+    occupied_cells,
+    stl_vertices,
+    voxel_runs,
+)
 
+
+# ============================================================
+# GEOMETRY UTILITIES
+# ============================================================
 
 def matrix(position, orientation):
-    result = np.eye(4)
-    result[:3, :3] = Rotation.from_quat(
-        [orientation.x, orientation.y, orientation.z, orientation.w]).as_matrix()
-    result[:3, 3] = [position.x, position.y, position.z]
+    result = np.eye(4, dtype=np.float64)
+
+    result[:3, :3] = Rotation.from_quat([
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w,
+    ]).as_matrix()
+
+    result[:3, 3] = [
+        position.x,
+        position.y,
+        position.z,
+    ]
+
     if not np.isfinite(result).all():
         raise ValueError("Non-finite transform")
+
     return result
 
 
@@ -40,200 +73,1180 @@ def transform(points, pose):
     return points @ pose[:3, :3].T + pose[:3, 3]
 
 
+def urdf_origin(collision):
+    origin = collision.find("origin")
+
+    xyz = np.zeros(3, dtype=np.float64)
+    rpy = np.zeros(3, dtype=np.float64)
+
+    if origin is not None:
+        xyz = np.fromstring(
+            origin.get("xyz", "0 0 0"),
+            sep=" ",
+        )
+        rpy = np.fromstring(
+            origin.get("rpy", "0 0 0"),
+            sep=" ",
+        )
+
+    if xyz.size != 3 or rpy.size != 3:
+        raise ValueError("Invalid URDF collision origin")
+
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = Rotation.from_euler(
+        "xyz", rpy
+    ).as_matrix()
+    result[:3, 3] = xyz
+
+    return result
+
+
+def resolve_mesh_uri(uri):
+    if uri.startswith("package://"):
+        relative = uri[len("package://"):]
+        package, separator, path = relative.partition("/")
+
+        if not separator:
+            raise ValueError(f"Invalid package URI: {uri}")
+
+        return (
+            Path(get_package_share_directory(package))
+            / path
+        )
+
+    if uri.startswith("/"):
+        return Path(uri)
+
+    if uri.startswith("file://"):
+        return Path(uri[len("file://"):])
+
+    raise ValueError(f"Unsupported mesh URI: {uri}")
+
+
+def load_link_capsules(robot_description):
+    """
+    Construct conservative capsules in each link frame.
+
+    Every mesh's URDF collision origin and scale are applied
+    before calculating the PCA capsule.
+
+    Returns:
+        {
+            link_name: [(a_local, b_local, radius), ...]
+        }
+    """
+    root = ET.fromstring(robot_description)
+    result = {}
+
+    for link in root.findall("link"):
+        name = link.get("name")
+
+        if not name:
+            continue
+
+        # Only mask the UR10e and the custom robot hardware.
+        if not (
+            name.startswith("ur10e_")
+            or name == "robot_mount"
+        ):
+            continue
+
+        shapes = []
+
+        for collision in link.findall("collision"):
+            geometry = collision.find("geometry")
+
+            if geometry is None:
+                continue
+
+            mesh = geometry.find("mesh")
+
+            if mesh is None:
+                # A primitive is not a mesh. Reject it rather
+                # than silently leaving robot geometry unmasked.
+                raise ValueError(
+                    f"Unsupported non-mesh collision geometry "
+                    f"on link {name}"
+                )
+
+            uri = mesh.get("filename")
+
+            if not uri:
+                raise ValueError(
+                    f"Missing collision mesh filename: {name}"
+                )
+
+            path = resolve_mesh_uri(uri)
+
+            if path.suffix.lower() != ".stl":
+                raise ValueError(
+                    f"Expected STL collision mesh for {name}: "
+                    f"{path}"
+                )
+
+            vertices = stl_vertices(path)
+
+            scale = np.fromstring(
+                mesh.get("scale", "1 1 1"),
+                sep=" ",
+            )
+
+            if (
+                scale.size != 3
+                or not np.isfinite(scale).all()
+                or np.any(scale == 0)
+            ):
+                raise ValueError(
+                    f"Invalid collision mesh scale: {name}"
+                )
+
+            # Mesh-local -> link-local.
+            vertices = vertices * scale
+            T_link_mesh = urdf_origin(collision)
+            vertices = transform(vertices, T_link_mesh)
+
+            a, b, radius = capsule_from_mesh(vertices)
+
+            shapes.append((a, b, radius))
+
+        if shapes:
+            result[name] = shapes
+
+    return result
+
+
+# ============================================================
+# LIDAR CLOUD EXTRACTION
+# ============================================================
+
 def near_returns(cloud):
     fields = {f.name: f for f in cloud.fields}
-    coordinates = [fields[k] for k in ('x', 'y', 'z')]
-    if any(f.datatype != PointField.FLOAT32 or f.count != 1 for f in coordinates):
+
+    coordinates = [fields[k] for k in ("x", "y", "z")]
+
+    if any(
+        f.datatype != PointField.FLOAT32 or f.count != 1
+        for f in coordinates
+    ):
         raise ValueError("Expected FLOAT32 XYZ")
-    dtype = np.dtype(dict(names=['x', 'y', 'z'], offsets=[f.offset for f in coordinates],
-                          formats=[('>' if cloud.is_bigendian else '<')+'f4']*3,
-                          itemsize=cloud.point_step))
-    values = np.ndarray((cloud.height, cloud.width), dtype=dtype, buffer=cloud.data,
-                        strides=(cloud.row_step, cloud.point_step))
-    xyz = np.column_stack([values[k].ravel() for k in dtype.names])
+
+    dtype = np.dtype(dict(
+        names=["x", "y", "z"],
+        offsets=[f.offset for f in coordinates],
+        formats=[
+            (">" if cloud.is_bigendian else "<") + "f4"
+        ] * 3,
+        itemsize=cloud.point_step,
+    ))
+
+    values = np.ndarray(
+        (cloud.height, cloud.width),
+        dtype=dtype,
+        buffer=cloud.data,
+        strides=(cloud.row_step, cloud.point_step),
+    )
+
+    xyz = np.column_stack([
+        values[k].ravel()
+        for k in dtype.names
+    ])
+
     xyz = xyz[np.isfinite(xyz).all(axis=1)]
-    radius_sq = np.einsum('ij,ij->i', xyz, xyz)
+
+    radius_sq = np.einsum(
+        "ij,ij->i",
+        xyz,
+        xyz,
+    )
+
     if not np.any(radius_sq > 0):
         raise ValueError("Cloud contains no valid returns")
-    return xyz[(radius_sq > 0) & (radius_sq <= 4.)]
 
+    return xyz[
+        (radius_sq > 0)
+        & (radius_sq <= 4.0)
+    ]
+
+
+# ============================================================
+# CAPTURE NODE
+# ============================================================
 
 class CaptureNode(Node):
-    # UR10e joint origins in kinematic order. Radii exclude the configurable jacket.
-    arm = ['robot_mount', 'ur10e_shoulder_link', 'ur10e_upper_arm_link',
-           'ur10e_forearm_link', 'ur10e_wrist_1_link', 'ur10e_wrist_2_link',
-           'ur10e_wrist_3_link', 'ur10e_tool0']
-    radii = [0.10, 0.11, 0.11, 0.09, 0.08, 0.08, 0.07]
 
     def __init__(self):
-        super().__init__('capture_cut_environment')
-        self.padding = self.declare_parameter('jacket_padding_m', 0.045).value
-        self.margin = self.declare_parameter('workpiece_margin_m', 0.025).value
-        self.size = self.declare_parameter('voxel_size_m', 0.04).value
-        if not (0 <= self.padding <= 0.25 and 0 <= self.margin <= 0.10 and 0.01 <= self.size <= 0.2):
-            raise ValueError("Invalid jacket padding, workpiece margin or voxel size")
-        directory = Path(get_package_share_directory('hb_robot_description')) / 'meshes'
-        self.mount = MeshSurface(directory/'base_mount.stl')
-        self.bracket = MeshSurface(directory/'bracket.stl')
+        super().__init__("capture_cut_environment")
+
+        # ----------------------------------------------------
+        # Parameters
+        # ----------------------------------------------------
+
+        self.padding = self.declare_parameter(
+            "jacket_padding_m", 0.045
+        ).value
+
+        self.margin = self.declare_parameter(
+            "workpiece_margin_m", 0.025
+        ).value
+
+        self.size = self.declare_parameter(
+            "voxel_size_m", 0.04
+        ).value
+
+        self.debug_allow_invalid_scene = self.declare_parameter(
+            "debug_allow_invalid_scene", False
+        ).value
+
+        self.max_state_age_s = self.declare_parameter(
+            "max_state_age_s", 0.5
+        ).value
+
+        self.debug_publish_only = self.declare_parameter(
+            "debug_publish_only", False
+        ).value
+
+        self.robot_description_node = self.declare_parameter(
+            "robot_description_node",
+            "/robot_state_publisher",
+        ).value
+
+        if not (
+            0 <= self.padding <= 0.25
+            and 0 <= self.margin <= 0.10
+            and 0.01 <= self.size <= 0.2
+            and self.max_state_age_s > 0
+        ):
+            raise ValueError("Invalid capture parameters")
+
+        # ----------------------------------------------------
+        # TF
+        # ----------------------------------------------------
+
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, self)
-        self.get_scene = self.create_client(GetPlanningScene, '/get_planning_scene')
-        self.apply_scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
+
+        # ----------------------------------------------------
+        # Planning scene clients
+        # ----------------------------------------------------
+
+        self.get_scene = self.create_client(
+            GetPlanningScene,
+            "/get_planning_scene",
+        )
+
+        self.apply_scene = self.create_client(
+            ApplyPlanningScene,
+            "/apply_planning_scene",
+        )
+
+        description_service = (
+            self.robot_description_node.rstrip("/")
+            + "/get_parameters"
+        )
+
+        self.description_client = self.create_client(
+            GetParameters,
+            description_service,
+        )
+
+        # ----------------------------------------------------
+        # Robot geometry cache
+        # ----------------------------------------------------
+
+        self.link_capsules = None
+
+        # ----------------------------------------------------
+        # Capture state
+        # ----------------------------------------------------
+
         self.lock = threading.Lock()
         self.window = None
         self.state = None
-        self.create_subscription(PointCloud2, '/hb_robot_lidar/cloud', self.cloud, qos_profile_sensor_data)
-        self.create_subscription(TaskState, '/task_state', self.status, QoSProfile(
-            depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.create_service(CaptureCutEnvironment, 'capture_cut_environment', self.capture,
-                            callback_group=MutuallyExclusiveCallbackGroup())
+        self.request = None
+        self.window_invalid = False
+
+        # ----------------------------------------------------
+        # Subscribers
+        # ----------------------------------------------------
+
+        self.cloud_sub = self.create_subscription(
+            PointCloud2,
+            "/hb_robot_lidar/cloud",
+            self.cloud,
+            qos_profile_sensor_data,
+        )
+
+        self.state_sub = self.create_subscription(
+            TaskState,
+            "/task_state",
+            self.status,
+            QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+
+        # ----------------------------------------------------
+        # RViz debug publisher
+        # ----------------------------------------------------
+
+        self.mask_marker_pub = self.create_publisher(
+            MarkerArray,
+            "/cut_environment/debug_robot_masks",
+            QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Services
+        # ----------------------------------------------------
+
+        self.capture_service = self.create_service(
+            CaptureCutEnvironment,
+            "capture_cut_environment",
+            self.capture,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        self.clear_service = self.create_service(
+            Trigger,
+            "clear_cut_environment",
+            self.clear_environment,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        self.get_logger().info(
+            "Cut environment capture initialized"
+        )
+
+    # ========================================================
+    # ROS SERVICE RPC
+    # ========================================================
+
+    def rpc(self, client, request):
+        if not client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError("Required service unavailable")
+
+        future = client.call_async(request)
+
+        ready = threading.Event()
+        future.add_done_callback(lambda _: ready.set())
+
+        if not ready.wait(3.0):
+            raise RuntimeError("Service request timed out")
+
+        result = future.result()
+
+        if result is None:
+            raise RuntimeError("Service returned no result")
+
+        return result
+
+    # ========================================================
+    # ROBOT CAPSULE INITIALIZATION
+    # ========================================================
+
+    def initialize_robot_capsules(self):
+        if self.link_capsules is not None:
+            return
+
+        request = GetParameters.Request()
+        request.names = ["robot_description"]
+
+        response = self.rpc(
+            self.description_client,
+            request,
+        )
+
+        if not response.values:
+            raise RuntimeError(
+                "robot_description parameter unavailable"
+            )
+
+        description = response.values[0].string_value
+
+        if not description.strip():
+            raise RuntimeError("robot_description is empty")
+
+        capsules = load_link_capsules(description)
+
+        required = [
+            "robot_mount",
+            "ur10e_shoulder_link",
+            "ur10e_upper_arm_link",
+            "ur10e_forearm_link",
+            "ur10e_wrist_1_link",
+            "ur10e_wrist_2_link",
+            "ur10e_wrist_3_link",
+            "ur10e_bracket_link",
+            "ur10e_torch_link",
+        ]
+
+        missing = [
+            name for name in required
+            if name not in capsules
+        ]
+
+        if missing:
+            raise RuntimeError(
+                f"Missing robot collision meshes: {missing}"
+            )
+
+        self.link_capsules = capsules
+
+        for link, shapes in capsules.items():
+            for a, b, radius in shapes:
+                self.get_logger().info(
+                    f"CAPSULE {link}: "
+                    f"length={np.linalg.norm(b-a):.3f}m "
+                    f"radius={radius:.3f}m"
+                )
+
+        self.get_logger().info(
+            f"Loaded {sum(len(v) for v in capsules.values())} "
+            f"collision mesh capsules across "
+            f"{len(capsules)} links"
+        )
+
+    # ========================================================
+    # TASK STATE VALIDATION
+    # ========================================================
 
     def status(self, state):
         with self.lock:
             self.state = state
-            if self.window is not None and not self.valid(state, self.request):
+
+            if self.window is None:
+                return
+
+            if not self.valid(state, self.request):
+                if not self.window_invalid:
+                    self.get_logger().warning(
+                        "Capture window invalidated by /task_state"
+                    )
+
                 self.window_invalid = True
 
     def valid(self, state, req):
         if state is None:
             return False
-        age = self.get_clock().now().nanoseconds - Time.from_msg(state.header.stamp).nanoseconds
-        return (0 <= age <= 500_000_000 and state.scene_valid and state.imu_stable
-                and state.supervision_valid and not state.motion_fault_active and not state.process_fault_active
-                and (state.geometry_version, state.pose_version, state.scene_version)
-                == (req.geometry_version, req.pose_version, req.scene_version))
+
+        age = (
+            self.get_clock().now().nanoseconds
+            - Time.from_msg(state.header.stamp).nanoseconds
+        )
+
+        versions_match = (
+            state.geometry_version,
+            state.pose_version,
+            state.scene_version,
+        ) == (
+            req.geometry_version,
+            req.pose_version,
+            req.scene_version,
+        )
+
+        scene_ok = (
+            state.scene_valid
+            or self.debug_allow_invalid_scene
+        )
+
+        valid = (
+            0 <= age <= int(self.max_state_age_s * 1e9)
+            and scene_ok
+            and state.imu_stable
+            and state.supervision_valid
+            and not state.motion_fault_active
+            and not state.process_fault_active
+            and versions_match
+        )
+
+        if not valid:
+            self.get_logger().warning(
+                f"Capture validation failed: "
+                f"age_ms={age/1e6:.1f}, "
+                f"scene_valid={state.scene_valid}, "
+                f"debug_override={self.debug_allow_invalid_scene}, "
+                f"imu_stable={state.imu_stable}, "
+                f"supervision_valid={state.supervision_valid}, "
+                f"motion_fault={state.motion_fault_active}, "
+                f"process_fault={state.process_fault_active}, "
+                f"versions_match={versions_match}, "
+                f"geometry={state.geometry_version}/{req.geometry_version}, "
+                f"pose={state.pose_version}/{req.pose_version}, "
+                f"scene={state.scene_version}/{req.scene_version}"
+            )
+
+        return valid
+
+    # ========================================================
+    # LIDAR CALLBACK
+    # ========================================================
 
     def cloud(self, msg):
         with self.lock:
             if self.window is None:
                 return
-            stamp = Time.from_msg(msg.header.stamp).nanoseconds
-            if self.start_ns <= stamp < self.start_ns + 500_000_000 and len(self.window) < 32:
+
+            stamp = Time.from_msg(
+                msg.header.stamp
+            ).nanoseconds
+
+            if (
+                self.start_ns <= stamp
+                < self.start_ns + 500_000_000
+                and len(self.window) < 32
+            ):
                 self.window[stamp] = msg
 
-    def rpc(self, client, request):
-        if not client.wait_for_service(timeout_sec=1.0):
-            raise RuntimeError('MoveGroup service unavailable')
-        future = client.call_async(request)
-        ready = threading.Event()
-        future.add_done_callback(lambda _: ready.set())
-        if not ready.wait(3.0):
-            raise RuntimeError('MoveGroup service timed out')
-        return future.result()
+    # ========================================================
+    # TF LOOKUP
+    # ========================================================
 
     def lookup(self, frame, link, stamp):
-        t = self.tf.lookup_transform(frame, link, stamp, timeout=Duration(seconds=0.15)).transform
-        return matrix(t.translation, t.rotation)
+        result = self.tf.lookup_transform(
+            frame,
+            link,
+            stamp,
+            timeout=Duration(seconds=0.15),
+        )
 
-    def filtered(self, cloud, frame, mesh_pose, profile, initial):
+        return matrix(
+            result.transform.translation,
+            result.transform.rotation,
+        )
+
+    # ========================================================
+    # RVIZ CAPSULE MARKERS
+    # ========================================================
+
+    def publish_mesh_capsule_markers(
+        self,
+        poses,
+        frame,
+        stamp,
+    ):
+        markers = MarkerArray()
+
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        markers.markers.append(clear)
+
+        marker_id = 0
+
+        def add_marker(
+            marker_type,
+            position,
+            quaternion,
+            scale,
+            namespace,
+        ):
+            nonlocal marker_id
+
+            marker = Marker()
+
+            marker.header.frame_id = frame
+            marker.header.stamp = stamp.to_msg()
+
+            marker.ns = namespace
+            marker.id = marker_id
+            marker_id += 1
+
+            marker.type = marker_type
+            marker.action = Marker.ADD
+
+            marker.pose.position.x = float(position[0])
+            marker.pose.position.y = float(position[1])
+            marker.pose.position.z = float(position[2])
+
+            marker.pose.orientation.x = float(quaternion[0])
+            marker.pose.orientation.y = float(quaternion[1])
+            marker.pose.orientation.z = float(quaternion[2])
+            marker.pose.orientation.w = float(quaternion[3])
+
+            marker.scale.x = float(scale[0])
+            marker.scale.y = float(scale[1])
+            marker.scale.z = float(scale[2])
+
+            marker.color.r = 0.0
+            marker.color.g = 0.8
+            marker.color.b = 1.0
+            marker.color.a = 0.25
+
+            markers.markers.append(marker)
+
+        for link, shapes in self.link_capsules.items():
+            T_world_link = poses[link]
+
+            for a_local, b_local, radius in shapes:
+                endpoints = transform(
+                    np.stack([a_local, b_local]),
+                    T_world_link,
+                )
+
+                a, b = endpoints
+                axis = b - a
+                length = np.linalg.norm(axis)
+                r = radius + self.padding
+
+                if length > 1e-8:
+                    rotation, _ = Rotation.align_vectors(
+                        [axis / length],
+                        [[0.0, 0.0, 1.0]],
+                    )
+
+                    quaternion = rotation.as_quat()
+
+                    add_marker(
+                        Marker.CYLINDER,
+                        (a + b) * 0.5,
+                        quaternion,
+                        [2*r, 2*r, length],
+                        link,
+                    )
+
+                for endpoint in (a, b):
+                    add_marker(
+                        Marker.SPHERE,
+                        endpoint,
+                        [0.0, 0.0, 0.0, 1.0],
+                        [2*r, 2*r, 2*r],
+                        link,
+                    )
+
+        self.mask_marker_pub.publish(markers)
+
+        self.get_logger().info(
+            f"Published {marker_id} mesh capsule markers "
+            f"in frame {frame}"
+        )
+
+    # ========================================================
+    # LIDAR ROBOT MASK
+    # ========================================================
+
+    def filtered(
+        self,
+        cloud,
+        frame,
+        mesh_pose,
+        profile,
+        initial,
+    ):
         stamp = Time.from_msg(cloud.header.stamp)
-        links = self.arm + ['ur10e_bracket_link', 'ur10e_torch_link', 'camera_base', cloud.header.frame_id]
-        poses = {link: self.lookup(frame, link, stamp) for link in links}
-        if not initial:
+
+        links = list(self.link_capsules.keys())
+        links.extend([
+            cloud.header.frame_id,
+            "camera_base",
+        ])
+
+        poses = {
+            link: self.lookup(frame, link, stamp)
+            for link in dict.fromkeys(links)
+        }
+
+        first_scan = not initial
+
+        if first_scan:
             initial.update(poses)
+
+        # ----------------------------------------------------
+        # Check robot stability
+        # ----------------------------------------------------
+
         for link, pose in poses.items():
             first = initial[link]
-            angle = Rotation.from_matrix(first[:3, :3].T @ pose[:3, :3]).magnitude()
-            if np.linalg.norm(first[:3, 3]-pose[:3, 3]) > 0.01 or angle > 0.02:
-                raise ValueError("Robot moved during capture: " + link)
-        xyz = transform(near_returns(cloud), poses[cloud.header.frame_id])
-        for a, b, r in zip(self.arm, self.arm[1:], self.radii):
-            xyz = xyz[~capsule(xyz, poses[a][:3, 3], poses[b][:3, 3], r+self.padding)]
-        # The mount STL has a +pi/2 X rotation in hb_robot_macro.xacro.
-        local = transform(xyz, np.linalg.inv(poses['robot_mount']))
-        local = np.column_stack((local[:, 0], local[:, 2], -local[:, 1]))
-        xyz = xyz[~self.mount.contains(local, 0.015)]
-        local = transform(xyz, np.linalg.inv(poses['ur10e_bracket_link']))
-        xyz = xyz[~self.bracket.contains(local, self.padding)]
-        torch = transform(xyz, np.linalg.inv(poses['ur10e_torch_link']))
-        xyz = xyz[~capsule(torch, np.zeros(3), np.array([0, 0, 0.40]), 0.018+self.padding)]
-        camera = transform(xyz, np.linalg.inv(poses['camera_base']))
-        xyz = xyz[~np.all(np.abs(camera) <= np.array([0.12, 0.09, 0.07])+self.padding, axis=1)]
-        return xyz[~profile.contains(transform(xyz, np.linalg.inv(mesh_pose)))]
 
-    def capture(self, req, res):
+            angle = Rotation.from_matrix(
+                first[:3, :3].T @ pose[:3, :3]
+            ).magnitude()
+
+            displacement = np.linalg.norm(
+                first[:3, 3] - pose[:3, 3]
+            )
+
+            if displacement > 0.01 or angle > 0.02:
+                raise ValueError(
+                    f"Robot moved during capture: {link}"
+                )
+
+        # ----------------------------------------------------
+        # LiDAR -> planning scene frame
+        # ----------------------------------------------------
+
+        xyz = transform(
+            near_returns(cloud),
+            poses[cloud.header.frame_id],
+        )
+
+        original_count = len(xyz)
+
+        # ----------------------------------------------------
+        # Mesh-derived robot capsules
+        # ----------------------------------------------------
+
+        for link, shapes in self.link_capsules.items():
+            T_world_link = poses[link]
+
+            for a_local, b_local, radius in shapes:
+                endpoints = transform(
+                    np.stack([a_local, b_local]),
+                    T_world_link,
+                )
+
+                a_world, b_world = endpoints
+
+                mask = capsule(
+                    xyz,
+                    a_world,
+                    b_world,
+                    radius + self.padding,
+                )
+
+                removed = int(np.count_nonzero(mask))
+                xyz = xyz[~mask]
+
+                if first_scan:
+                    self.get_logger().info(
+                        f"MASK {link}: "
+                        f"removed={removed}, "
+                        f"remaining={len(xyz)}"
+                    )
+
+        # ----------------------------------------------------
+        # Camera housing box
+        # ----------------------------------------------------
+
+        camera_local = transform(
+            xyz,
+            np.linalg.inv(poses["camera_base"]),
+        )
+
+        camera_mask = np.all(
+            np.abs(camera_local)
+            <= np.array([0.12, 0.09, 0.07])
+            + self.padding,
+            axis=1,
+        )
+
+        xyz = xyz[~camera_mask]
+
+        # ----------------------------------------------------
+        # Accepted workpiece extrusion
+        # ----------------------------------------------------
+
+        workpiece_local = transform(
+            xyz,
+            np.linalg.inv(mesh_pose),
+        )
+
+        workpiece_mask = profile.contains(
+            workpiece_local
+        )
+
+        xyz = xyz[~workpiece_mask]
+
+        # ----------------------------------------------------
+        # Diagnostics
+        # ----------------------------------------------------
+
+        if first_scan:
+            self.get_logger().info(
+                f"MASK TOTAL: "
+                f"{original_count} -> {len(xyz)} points"
+            )
+
+            self.publish_mesh_capsule_markers(
+                poses,
+                frame,
+                stamp,
+            )
+
+        return xyz
+
+    # ========================================================
+    # CLEAR ENVIRONMENT SERVICE
+    # ========================================================
+
+    def clear_environment(self, req, res):
         try:
             scene_req = GetPlanningScene.Request()
-            scene_req.components.components = PlanningSceneComponents.WORLD_OBJECT_GEOMETRY
-            objects = self.rpc(self.get_scene, scene_req).scene.world.collision_objects
-            work = next((o for o in objects if o.id == 'wk_workpiece_collision'), None)
-            if work is None or len(work.meshes) != 1 or len(work.mesh_poses) != 1:
-                raise ValueError('Missing accepted workpiece extrusion')
-            frame = work.header.frame_id
-            mesh = work.meshes[0]
-            profile = Extrusion(np.array([[p.x, p.y, p.z] for p in mesh.vertices]),
-                                np.array([list(t.vertex_indices) for t in mesh.triangles]), self.margin)
-            shape = work.mesh_poses[0]
-            mesh_pose = matrix(work.pose.position, work.pose.orientation) @ matrix(shape.position, shape.orientation)
-            with self.lock:
-                if not self.valid(self.state, req):
-                    raise ValueError('Stale reference, scene or platform stability')
-                self.start_ns = self.get_clock().now().nanoseconds
-                self.window = {}
-                self.request = req
-                self.window_invalid = False
-            # Small delivery allowance; admission is bounded by sensor timestamps.
-            time.sleep(0.60)
-            with self.lock:
-                scans = sorted(self.window.items())
-                self.window = None
-                if self.window_invalid or not self.valid(self.state, req):
-                    raise ValueError('Capture invalidated during acquisition')
-            if len(scans) < 5 or scans[-1][0]-scans[0][0] < 330_000_000:
-                raise ValueError(f'Insufficient timestamp coverage: {len(scans)} distinct clouds')
-            initial = {}
-            cells = occupied_cells([self.filtered(s, frame, mesh_pose, profile, initial)
-                                    for _, s in scans], self.size)
+
+            scene_req.components.components = (
+                PlanningSceneComponents.WORLD_OBJECT_GEOMETRY
+            )
+
+            objects = self.rpc(
+                self.get_scene,
+                scene_req,
+            ).scene.world.collision_objects
+
+            env_ids = [
+                obj.id
+                for obj in objects
+                if obj.id.startswith("cut_environment_")
+            ]
+
+            self.get_logger().info(
+                f"World objects: {[o.id for o in objects]}"
+            )
+
+            if not env_ids:
+                res.success = True
+                res.message = "No environment objects to remove"
+                return res
+
             apply = ApplyPlanningScene.Request()
             apply.scene.is_diff = True
             apply.scene.robot_state.is_diff = True
-            updates = apply.scene.world.collision_objects
+
             for obj in objects:
-                if obj.id.startswith('cut_environment_'):
-                    updates.append(CollisionObject(id=obj.id, header=work.header, operation=CollisionObject.REMOVE))
-            if len(cells):
-                obstacle = CollisionObject(id='cut_environment_'+uuid.uuid4().hex, header=work.header)
-                obstacle.pose.orientation.w = 1.
-                for center, length in voxel_runs(cells):
-                    pose = Pose()
-                    pose.orientation.w = 1.
-                    pose.position.x, pose.position.y, pose.position.z = map(float, center*self.size)
-                    obstacle.primitive_poses.append(pose)
-                    obstacle.primitives.append(SolidPrimitive(type=SolidPrimitive.BOX,
-                        dimensions=[self.size, self.size, self.size*length]))
-                updates.append(obstacle)
-                res.environment_id = obstacle.id
+                if obj.id.startswith("cut_environment_"):
+                    remove = CollisionObject()
+                    remove.id = obj.id
+                    remove.header = obj.header
+                    remove.operation = CollisionObject.REMOVE
+
+                    apply.scene.world.collision_objects.append(
+                        remove
+                    )
+
+            result = self.rpc(
+                self.apply_scene,
+                apply,
+            )
+
+            if not result.success:
+                raise RuntimeError(
+                    "Planning scene rejected environment removal"
+                )
+
+            res.success = True
+            res.message = (
+                f"Removed {len(env_ids)} environment objects"
+            )
+
+        except Exception as exc:
+            res.success = False
+            res.message = str(exc)
+
+        self.get_logger().info(res.message)
+        return res
+
+    # ========================================================
+    # CAPTURE SERVICE
+    # ========================================================
+
+    def capture(self, req, res):
+        try:
+            # ------------------------------------------------
+            # Load robot collision meshes once
+            # ------------------------------------------------
+
+            self.initialize_robot_capsules()
+
+            # ------------------------------------------------
+            # Get accepted workpiece from MoveIt
+            # ------------------------------------------------
+
+            scene_req = GetPlanningScene.Request()
+
+            scene_req.components.components = (
+                PlanningSceneComponents.WORLD_OBJECT_GEOMETRY
+            )
+
+            objects = self.rpc(
+                self.get_scene,
+                scene_req,
+            ).scene.world.collision_objects
+
+            work = next(
+                (
+                    obj for obj in objects
+                    if obj.id == "wk_workpiece_collision"
+                ),
+                None,
+            )
+
+            if (
+                work is None
+                or len(work.meshes) != 1
+                or len(work.mesh_poses) != 1
+            ):
+                raise ValueError(
+                    "Missing accepted workpiece extrusion"
+                )
+
+            frame = work.header.frame_id
+
+            mesh = work.meshes[0]
+
+            profile = Extrusion(
+                np.array([
+                    [p.x, p.y, p.z]
+                    for p in mesh.vertices
+                ]),
+                np.array([
+                    list(t.vertex_indices)
+                    for t in mesh.triangles
+                ]),
+                self.margin,
+            )
+
+            shape = work.mesh_poses[0]
+
+            mesh_pose = (
+                matrix(
+                    work.pose.position,
+                    work.pose.orientation,
+                )
+                @ matrix(
+                    shape.position,
+                    shape.orientation,
+                )
+            )
+
+            # ------------------------------------------------
+            # Open LiDAR acquisition window
+            # ------------------------------------------------
+
             with self.lock:
                 if not self.valid(self.state, req):
-                    raise ValueError('Capture superseded before scene update')
-            if updates and not self.rpc(self.apply_scene, apply).success:
-                raise RuntimeError('MoveGroup rejected environment diff')
+                    raise ValueError(
+                        "Stale reference, scene or platform stability"
+                    )
+
+                self.start_ns = (
+                    self.get_clock().now().nanoseconds
+                )
+
+                self.window = {}
+                self.request = req
+                self.window_invalid = False
+
+            # Admit scans by their sensor timestamps.
+            # Allow a little extra time for ROS delivery.
+            time.sleep(0.60)
+
+            with self.lock:
+                scans = sorted(self.window.items())
+                self.window = None
+
+                state_valid = self.valid(
+                    self.state,
+                    req,
+                )
+
+                if self.window_invalid or not state_valid:
+                    raise ValueError(
+                        "Capture invalidated during acquisition: "
+                        f"window_invalid={self.window_invalid}, "
+                        f"final_state_valid={state_valid}, "
+                        f"scans={len(scans)}"
+                    )
+
+            if (
+                len(scans) < 5
+                or scans[-1][0] - scans[0][0]
+                < 330_000_000
+            ):
+                raise ValueError(
+                    "Insufficient timestamp coverage: "
+                    f"{len(scans)} distinct clouds"
+                )
+
+            # ------------------------------------------------
+            # Filter all captured scans
+            # ------------------------------------------------
+
+            t0 = time.perf_counter()
+
+            initial = {}
+
+            filtered_scans = [
+                self.filtered(
+                    scan,
+                    frame,
+                    mesh_pose,
+                    profile,
+                    initial,
+                )
+                for _, scan in scans
+            ]
+
+            t1 = time.perf_counter()
+
+            # ------------------------------------------------
+            # Multi-scan voxel voting
+            # ------------------------------------------------
+
+            cells = occupied_cells(
+                filtered_scans,
+                self.size,
+            )
+
+            t2 = time.perf_counter()
+
+            self.get_logger().info(
+                f"Filtering: {t1-t0:.3f}s | "
+                f"Voxel voting: {t2-t1:.3f}s | "
+                f"Scans: {len(scans)} | "
+                f"Occupied voxels: {len(cells)}"
+            )
+
+            # ------------------------------------------------
+            # Debug mode: do not modify MoveIt collision scene
+            # ------------------------------------------------
+
+            if self.debug_publish_only:
+                res.success = True
+                res.scene_changed = False
+                res.occupied_voxels = len(cells)
+                res.message = (
+                    f"Debug only: {len(scans)} scans, "
+                    f"{len(cells)} occupied voxels; "
+                    "planning scene unchanged"
+                )
+
+                self.get_logger().info(res.message)
+                return res
+
+            # ------------------------------------------------
+            # Build planning scene diff
+            # ------------------------------------------------
+
+            apply = ApplyPlanningScene.Request()
+            apply.scene.is_diff = True
+            apply.scene.robot_state.is_diff = True
+
+            updates = apply.scene.world.collision_objects
+
+            # Remove previous LiDAR environment objects.
+            # Never remove wk_workpiece_collision.
+            for obj in objects:
+                if obj.id.startswith("cut_environment_"):
+                    remove = CollisionObject()
+                    remove.id = obj.id
+                    remove.header = obj.header
+                    remove.operation = CollisionObject.REMOVE
+                    updates.append(remove)
+
+            # ------------------------------------------------
+            # Add new voxel collision object
+            # ------------------------------------------------
+
+            if len(cells):
+                obstacle = CollisionObject()
+
+                obstacle.id = (
+                    "cut_environment_"
+                    + uuid.uuid4().hex
+                )
+
+                obstacle.header = work.header
+                obstacle.pose.orientation.w = 1.0
+                obstacle.operation = CollisionObject.ADD
+
+                for center, length in voxel_runs(cells):
+                    pose = Pose()
+                    pose.orientation.w = 1.0
+
+                    (
+                        pose.position.x,
+                        pose.position.y,
+                        pose.position.z,
+                    ) = map(
+                        float,
+                        center * self.size,
+                    )
+
+                    primitive = SolidPrimitive()
+                    primitive.type = SolidPrimitive.BOX
+                    primitive.dimensions = [
+                        self.size,
+                        self.size,
+                        self.size * length,
+                    ]
+
+                    obstacle.primitive_poses.append(pose)
+                    obstacle.primitives.append(primitive)
+
+                updates.append(obstacle)
+                res.environment_id = obstacle.id
+
+            # ------------------------------------------------
+            # Final validation before modifying MoveIt
+            # ------------------------------------------------
+
+            with self.lock:
+                if not self.valid(self.state, req):
+                    raise ValueError(
+                        "Capture superseded before scene update"
+                    )
+
+            if updates:
+                result = self.rpc(
+                    self.apply_scene,
+                    apply,
+                )
+
+                if not result.success:
+                    raise RuntimeError(
+                        "MoveGroup rejected environment diff"
+                    )
+
             res.scene_changed = bool(updates)
             res.occupied_voxels = len(cells)
             res.success = True
-            res.message = f'{len(scans)} scans, {len(cells)} occupied voxels'
+
+            res.message = (
+                f"{len(scans)} scans, "
+                f"{len(cells)} occupied voxels"
+            )
+
             self.get_logger().info(res.message)
+
         except Exception as exc:
+            res.success = False
             res.message = str(exc)
-            self.get_logger().error(f'Capture failed: {exc}')
+
+            self.get_logger().error(
+                f"Capture failed: {exc}"
+            )
+
         finally:
             with self.lock:
                 self.window = None
+
         return res
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
     rclpy.init()
+
     node = CaptureNode()
-    executor = MultiThreadedExecutor(num_threads=3)
+
+    executor = MultiThreadedExecutor(
+        num_threads=3
+    )
+
     executor.add_node(node)
+
     try:
         executor.spin()
+
     finally:
         executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
