@@ -121,7 +121,7 @@ def generate_launch_description():
                         "workpiece_margin_m": 0.06,
                           "voxel_size_m": 0.025, 
                           "min_voxel_scans": 3,
-                          "capture_duration_s": 2.5,
+                          "capture_duration_s": 6.0,
                           "debug_allow_invalid_scene": True,
                           "max_state_age_s": 2.0,
                           "robot_description_node": "/robot_state_publisher"

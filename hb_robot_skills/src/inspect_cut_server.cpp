@@ -6,6 +6,7 @@
 #include "hb_robot_interfaces/msg/kerf_observation.hpp"
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/perception_types.hpp"
 #include "hb_robot_perception/imu_stability_monitor.hpp"
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
@@ -255,7 +256,8 @@ class InspectCutServer : public rclcpp::Node {
               Eigen::AngleAxisd(expected.linear().transpose()*camera_pose.linear()).angle()>0.05) {
             finish(Action::Result::REGISTRATION_FAILED, "Measured optical pose differs from planned view"); return;
           }
-          auto raw=kerfObservationCloud(*ob,range_);
+          auto raw=hb_perception::observationToCloud(*ob, range_);
+
           if (!raw || raw->empty()) { finish(Action::Result::ACQUISITION_FAILED, "Empty valid depth cloud"); return; }
           for (auto point : raw->points) {
             const Eigen::Vector3d world=camera_pose*point.getVector3fMap().cast<double>();

@@ -5,7 +5,8 @@
 #include <hb_robot_perception/rgbd_acquisition.hpp>
 #include <hb_robot_perception/imu_stability_monitor.hpp>
 #include <hb_robot_perception/observation_registrar.hpp>
-#include <hb_robot_skills/kerf_observation.hpp>
+// #include <hb_robot_skills/kerf_observation.hpp>
+#include <hb_robot_perception/perception_types.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <pcl/common/transforms.h>
@@ -157,7 +158,7 @@ class RevalidateServer : public rclcpp::Node {
       }
 
 
-      auto raw=hb_robot_skills::kerfObservationCloud(*observation,range_);
+      auto raw=hb_perception::observationToCloud(*observation,range_);
       hb_perception::PointCloud world,reference_cloud;
       pcl::transformPointCloud(*raw,world,tf2::transformToEigen(observation->camera_pose).matrix().cast<float>());
       pcl::fromROSMsg(reference.cloud,reference_cloud);

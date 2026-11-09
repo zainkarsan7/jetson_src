@@ -627,7 +627,7 @@ class CaptureNode(Node):
 
             if (
                 self.start_ns <= stamp
-                < self.start_ns + 500_000_000
+                < self.start_ns + int(self.capture_duration_s*1e9)
                 and len(self.window) < 32
             ):
                 self.window[stamp] = msg

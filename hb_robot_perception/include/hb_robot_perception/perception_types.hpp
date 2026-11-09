@@ -135,6 +135,32 @@ inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_ra
         const auto& rgb = *ob.rgb;
         const auto& info = *ob.rgb_camera_info;
 
+        
+        if (depth.width == 0 || depth.height == 0 ||
+            depth.width != rgb.width ||
+            depth.height != rgb.height ||
+            info.width != depth.width ||
+            info.height != depth.height)
+        {
+            throw std::invalid_argument(
+                "RGB-D image and camera info dimensions mismatch");
+        }
+
+        if (!std::isfinite(info.k[0]) ||
+            !std::isfinite(info.k[4]) ||
+            !std::isfinite(info.k[2]) ||
+            !std::isfinite(info.k[5]) ||
+            info.k[0] <= 0.0 ||
+            info.k[4] <= 0.0)
+        {
+            throw std::invalid_argument(
+                "Invalid RGB camera intrinsics");
+        }
+
+
+
+
+
         const double fx = info.k[0];
         const double fy = info.k[4];
         const double cx = info.k[2];
@@ -183,6 +209,7 @@ inline PointCloud::Ptr observationToCloud(const Observation& ob, double depth_ra
         for (std::uint32_t v = 0; v<depth_mat.rows; ++v){
             const float* depth_row = depth_mat.ptr<float>(v);
             const cv::Vec4b* rgb_row = rgb_mat.ptr<cv::Vec4b>(v);
+
             for (std::uint32_t u=0; u<depth_mat.cols; ++u){
                 // const auto* depth_row = reinterpret_cast<const float*>(depth.data.data()+v*depth.step);
                 const float raw_depth = depth_row[u];
