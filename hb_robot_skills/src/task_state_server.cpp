@@ -1,19 +1,27 @@
 
 #include "hb_robot_skills/scene_revision_tracker.hpp"
+#include "hb_robot_skills/workpiece_commit_validation.hpp"
 
 #include <hb_robot_interfaces/recovery.hpp>
+#include <hb_robot_interfaces/msg/task_state.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
+#include <hb_robot_interfaces/msg/profile_estimate.hpp>
 #include <hb_robot_interfaces/msg/torch_status.hpp>
 #include <hb_robot_interfaces/msg/platform_imu_metrics.hpp>
 #include <hb_robot_interfaces/msg/platform_supervision.hpp>
+#include <hb_robot_interfaces/srv/commit_workpiece.hpp>
 
 #include <hb_robot_perception/imu_stability_monitor.hpp>
 
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit_msgs/msg/planning_scene.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
+
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int64.hpp>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #include <algorithm>
 #include <array>
@@ -23,797 +31,1272 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-using State = hb_robot_interfaces::msg::TaskState;
+using namespace std::chrono_literals;
+
+using State =
+    hb_robot_interfaces::msg::TaskState;
+
+using Reference =
+    hb_robot_interfaces::msg::WorkpieceReference;
+
 using Supervision =
     hb_robot_interfaces::msg::PlatformSupervision;
+
 using RosImuMetrics =
     hb_robot_interfaces::msg::PlatformImuMetrics;
-using ChannelMetrics =
-    hb_perception::ImuChannelMetrics;
 
-using Clock = std::chrono::steady_clock;
+using CommitWorkpiece =
+    hb_robot_interfaces::srv::CommitWorkpiece;
+
+using CollisionObject =
+    moveit_msgs::msg::CollisionObject;
+
+using PlanningScene =
+    moveit_msgs::msg::PlanningScene;
+
+using Clock =
+    std::chrono::steady_clock;
+
+namespace wp = hb_robot_skills::workpiece;
 
 namespace {
 
 RosImuMetrics toRosMetrics(
-    const ChannelMetrics& m,
+    const hb_perception::ImuChannelMetrics& m,
     const std_msgs::msg::Header& header,
     const std::string& name,
     double confidence,
-    double coverage) {
+    double coverage)
+{
+    RosImuMetrics out;
 
-  RosImuMetrics out;
+    out.header = header;
+    out.sensor_name = name;
 
-  out.header = header;
-  out.sensor_name = name;
+    out.valid = m.valid;
+    out.stable = m.stable;
 
-  out.valid = m.valid;
-  out.stable = m.stable;
+    out.sample_count =
+        static_cast<uint32_t>(
+            std::min<std::size_t>(
+                m.samples_count,
+                std::numeric_limits<uint32_t>::max()));
 
-  out.sample_count =
-      static_cast<uint32_t>(
-          std::min<std::size_t>(
-              m.samples_count,
-              std::numeric_limits<uint32_t>::max()));
+    out.sample_age = m.sample_age_s;
+    out.reception_gaps = m.reception_gaps;
 
-  out.sample_age = m.sample_age_s;
-  out.reception_gaps = m.reception_gaps;
+    const auto copyVector =
+        [](
+            geometry_msgs::msg::Vector3& dst,
+            const std::array<double, 3>& src)
+    {
+        dst.x = src[0];
+        dst.y = src[1];
+        dst.z = src[2];
+    };
 
-  auto copyVector = [](
-      geometry_msgs::msg::Vector3& dst,
-      const std::array<double, 3>& src) {
-    dst.x = src[0];
-    dst.y = src[1];
-    dst.z = src[2];
-  };
+    copyVector(
+        out.gyro_mean_rad_s,
+        m.gyro_mean);
 
-  copyVector(out.gyro_mean_rad_s, m.gyro_mean);
-  copyVector(out.gyro_stddev_rad_s, m.gyro_stddev);
-  copyVector(out.accel_mean_m_s2, m.accel_mean);
-  copyVector(out.accel_stddev_m_s2, m.accel_stddev);
+    copyVector(
+        out.gyro_stddev_rad_s,
+        m.gyro_stddev);
 
-  out.gyro_residual_rms_rad_s =
-      m.ang_vel_rms_rad_s;
+    copyVector(
+        out.accel_mean_m_s2,
+        m.accel_mean);
 
-  out.accel_residual_rms_m_s2 =
-      m.lin_acc_rms_m_s2;
+    copyVector(
+        out.accel_stddev_m_s2,
+        m.accel_stddev);
 
-  out.gyro_peak_rad_s =
-      m.peak_ang_vel_rad_s;
+    out.gyro_residual_rms_rad_s =
+        m.ang_vel_rms_rad_s;
 
-  out.accel_deviation_peak_m_s2 =
-      m.peak_acc_deviation_m_s2;
+    out.accel_residual_rms_m_s2 =
+        m.lin_acc_rms_m_s2;
 
-  out.gyro_latest_rad_s =
-      m.latest_ang_vel_rad_s;
+    out.gyro_peak_rad_s =
+        m.peak_ang_vel_rad_s;
 
-  out.accel_deviation_latest_m_s2 =
-      m.latest_acc_deviation_m_s2;
+    out.accel_deviation_peak_m_s2 =
+        m.peak_acc_deviation_m_s2;
 
-  out.accel_mean_norm_m_s2 =
-      m.accel_mean_norm_m_s2;
+    out.gyro_latest_rad_s =
+        m.latest_ang_vel_rad_s;
 
-  out.stable_confidence = confidence;
-  out.confidence_coverage_s = coverage;
+    out.accel_deviation_latest_m_s2 =
+        m.latest_acc_deviation_m_s2;
 
-  out.gyro_rms_pass = m.gyro_rms_pass;
-  out.accel_rms_pass = m.accel_rms_pass;
-  out.mean_gyro_pass = m.mean_gyro_pass;
+    out.accel_mean_norm_m_s2 =
+        m.accel_mean_norm_m_s2;
 
-  return out;
+    out.stable_confidence = confidence;
+    out.confidence_coverage_s = coverage;
+
+    out.gyro_rms_pass = m.gyro_rms_pass;
+    out.accel_rms_pass = m.accel_rms_pass;
+    out.mean_gyro_pass = m.mean_gyro_pass;
+
+    return out;
 }
 
 }  // namespace
 
 class TaskStateServer : public rclcpp::Node {
 public:
-  TaskStateServer()
-      : Node("task_state_server") {
+    TaskStateServer()
+        : rclcpp::Node("task_state_server")
+    {
+        const uint64_t initial_version =
+            static_cast<uint64_t>(
+                now().nanoseconds());
 
-    state_.geometry_version =
-        static_cast<uint64_t>(
-            now().nanoseconds());
+        state_.geometry_version =
+            initial_version;
 
-    state_.pose_version =
-        state_.geometry_version;
+        state_.pose_version =
+            initial_version;
 
-    // Initial state must not authorize execution.
-    state_.scene_valid = false;
-    state_.workpiece_pose_valid = false;
-    state_.supervision_valid = false;
-    state_.imu_stable = false;
-    state_.path_valid = false;
+        state_.scene_valid = false;
+        state_.workpiece_pose_valid = false;
 
-    rcl_interfaces::msg::ParameterDescriptor read_only;
-    read_only.read_only = true;
+        state_.supervision_valid = false;
+        state_.imu_stable = false;
 
-    auto positive = [&](const std::string& name,
-                        double fallback) {
-      const double value =
-          declare_parameter<double>(
-              name, fallback, read_only);
+        state_.path_valid = false;
 
-      if (!std::isfinite(value) || value <= 0.0)
-        throw std::invalid_argument(
-            "Invalid parameter: " + name);
+        state_.kerf_status =
+            State::INVALID_OBSERVATION;
 
-      return value;
-    };
+        last_untrusted_ =
+            now().nanoseconds();
 
-    hb_perception::ImuStabilityConfig config;
+        rcl_interfaces::msg::ParameterDescriptor
+            read_only;
 
-    config.max_ang_vel_rms =
-        positive("platform_imu.max_gyro_rms", 0.01);
+        read_only.read_only = true;
 
-    config.max_lin_acc_rms =
-        positive("platform_imu.max_accel_rms", 0.1);
+        const auto positive =
+            [this, &read_only](
+                const std::string& name,
+                double fallback)
+        {
+            const double value =
+                declare_parameter<double>(
+                    name,
+                    fallback,
+                    read_only);
 
-    config.max_mean_ang_vel =
-        positive("platform_imu.max_mean_gyro", 0.03);
+            if (!std::isfinite(value) ||
+                value <= 0.0)
+            {
+                throw std::invalid_argument(
+                    "Invalid parameter: " + name);
+            }
 
-    const double confidence_window_s =
-        positive(
-            "platform_imu.confidence_window_s", 2.0);
+            return value;
+        };
 
-    config.confidence_window =
-        std::chrono::milliseconds(
-            static_cast<int64_t>(
-                std::lround(
-                    confidence_window_s * 1000.0)));
+        hb_perception::ImuStabilityConfig config;
 
-    grace_s_ = positive(
-        "platform_imu.supervision_grace_s", 0.8);
+        config.max_ang_vel_rms =
+            positive(
+                "platform_imu.max_gyro_rms",
+                0.01);
 
-    acquire_confidence_ = positive(
-        "platform_imu.confidence_acquire", 0.90);
+        config.max_lin_acc_rms =
+            positive(
+                "platform_imu.max_accel_rms",
+                0.1);
 
-    release_confidence_ = positive(
-        "platform_imu.confidence_release", 0.65);
+        config.max_mean_ang_vel =
+            positive(
+                "platform_imu.max_mean_gyro",
+                0.03);
 
-    hard_peak_gyro_ = positive(
-        "platform_imu.hard_peak_gyro_rad_s", 0.20);
+        const double confidence_window_s =
+            positive(
+                "platform_imu.confidence_window_s",
+                2.0);
 
-    hard_peak_accel_ = positive(
-        "platform_imu.hard_peak_accel_m_s2", 0.80);
+        config.confidence_window =
+            std::chrono::milliseconds(
+                static_cast<int64_t>(
+                    std::lround(
+                        confidence_window_s *
+                        1000.0)));
 
-    const auto bias =
-        declare_parameter<std::vector<double>>(
-            "platform_imu.mpu6050_gyro_bias",
-            {-0.0787, 0.0088, -0.0031});
+        grace_s_ =
+            positive(
+                "platform_imu.supervision_grace_s",
+                0.8);
 
-    if (bias.size() != 3 ||
-        !std::all_of(
+        acquire_confidence_ =
+            positive(
+                "platform_imu.confidence_acquire",
+                0.90);
+
+        release_confidence_ =
+            positive(
+                "platform_imu.confidence_release",
+                0.65);
+
+        hard_peak_gyro_ =
+            positive(
+                "platform_imu.hard_peak_gyro_rad_s",
+                0.20);
+
+        hard_peak_accel_ =
+            positive(
+                "platform_imu.hard_peak_accel_m_s2",
+                0.80);
+
+        const auto bias =
+            declare_parameter<std::vector<double>>(
+                "platform_imu.mpu6050_gyro_bias",
+                {-0.0787, 0.0088, -0.0031});
+
+        if (bias.size() != 3 ||
+            !std::all_of(
+                bias.begin(),
+                bias.end(),
+                [](double value)
+                {
+                    return std::isfinite(value);
+                }))
+        {
+            throw std::invalid_argument(
+                "Invalid MPU6050 gyro bias");
+        }
+
+        std::copy(
             bias.begin(),
             bias.end(),
-            [](double v) {
-              return std::isfinite(v);
-            })) {
-      throw std::invalid_argument(
-          "Invalid MPU6050 gyro bias");
+            config.mpu6050_gyro_bias.begin());
+
+        if (acquire_confidence_ > 1.0 ||
+            release_confidence_ >=
+                acquire_confidence_)
+        {
+            throw std::invalid_argument(
+                "Invalid IMU confidence thresholds");
+        }
+
+        const auto primary_topic =
+            declare_parameter<std::string>(
+                "platform_imu_topic",
+                "/hb_robot_lidar/imu");
+
+        config.auxiliary_accel_topic =
+            declare_parameter<std::string>(
+                "platform_accel_topic",
+                "/mpu6050/imu",
+                read_only);
+
+        if (config.auxiliary_accel_topic.empty())
+        {
+            throw std::invalid_argument(
+                "Two-channel IMU supervision "
+                "requires platform_accel_topic");
+        }
+
+        imu_callbacks_ =
+            create_callback_group(
+                rclcpp::CallbackGroupType::
+                    MutuallyExclusive);
+
+        imu_ =
+            std::make_unique<
+                hb_perception::ImuStabilityMonitor>(
+                *this,
+                primary_topic,
+                config,
+                imu_callbacks_);
+
+        // A separate callback group lets the commit
+        // service call MoveIt without blocking the
+        // TaskState scene and supervision callbacks.
+        commit_callbacks_ =
+            create_callback_group(
+                rclcpp::CallbackGroupType::
+                    MutuallyExclusive);
+
+        const auto transient_qos =
+            rclcpp::QoS(1)
+                .reliable()
+                .transient_local();
+
+        pub_ =
+            create_publisher<State>(
+                "/task_state",
+                transient_qos);
+
+        supervision_pub_ =
+            create_publisher<Supervision>(
+                "/platform_supervision",
+                rclcpp::QoS(10));
+
+        accepted_reference_pub_ =
+            create_publisher<Reference>(
+                "/workpiece_reference/accepted",
+                transient_qos);
+
+        accepted_estimate_pub_ =
+            create_publisher<
+                hb_robot_interfaces::msg::ProfileEstimate>(
+                "/profile_inspection/accepted_estimate",
+                transient_qos);
+
+        // No legacy /workpiece_reference subscription.
+        // New workpieces are accepted only through
+        // /task_state/commit_workpiece.
+
+        scene_ =
+            create_subscription<PlanningScene>(
+                "/monitored_planning_scene",
+                rclcpp::QoS(10),
+                [this](
+                    PlanningScene::ConstSharedPtr msg)
+                {
+                    onPlanningScene(*msg);
+                });
+
+        torch_ =
+            create_subscription<
+                hb_robot_interfaces::msg::TorchStatus>(
+                "/cut_profile/torch_status",
+                rclcpp::QoS(10),
+                [this](
+                    hb_robot_interfaces::msg::
+                        TorchStatus::ConstSharedPtr msg)
+                {
+                    std::lock_guard<std::mutex> lock(
+                        mutex_);
+
+                    state_.process_fault_active =
+                        msg->fault;
+
+                    if (msg->fault)
+                    {
+                        invalidateLocked(
+                            "Torch process fault");
+                    }
+                });
+
+        fault_ =
+            create_subscription<std_msgs::msg::Bool>(
+                "/motion_fault",
+                rclcpp::QoS(10),
+                [this](
+                    std_msgs::msg::Bool::ConstSharedPtr msg)
+                {
+                    std::lock_guard<std::mutex> lock(
+                        mutex_);
+
+                    state_.motion_fault_active =
+                        msg->data;
+
+                    if (msg->data)
+                    {
+                        invalidateLocked(
+                            "/motion_fault asserted");
+                    }
+                });
+
+        invalidation_ =
+            create_subscription<std_msgs::msg::Bool>(
+                "/workpiece_pose_invalidated",
+                rclcpp::QoS(10),
+                [this](
+                    std_msgs::msg::Bool::ConstSharedPtr msg)
+                {
+                    if (!msg->data)
+                        return;
+
+                    std::lock_guard<std::mutex> lock(
+                        mutex_);
+
+                    invalidateLocked(
+                        "/workpiece_pose_invalidated asserted");
+                });
+
+        execution_ =
+            create_subscription<
+                std_msgs::msg::UInt64>(
+                "/cut_profile/execution_version",
+                transient_qos,
+                [this](
+                    std_msgs::msg::UInt64::ConstSharedPtr msg)
+                {
+                    std::lock_guard<std::mutex> lock(
+                        mutex_);
+
+                    state_.execution_version =
+                        msg->data;
+
+                    state_.kerf_status =
+                        State::INVALID_OBSERVATION;
+                });
+
+        commit_service_ =
+            create_service<CommitWorkpiece>(
+                "/task_state/commit_workpiece",
+                [this](
+                    const std::shared_ptr<
+                        CommitWorkpiece::Request> request,
+                    std::shared_ptr<
+                        CommitWorkpiece::Response> response)
+                {
+                    commitWorkpiece(request, response);
+                },
+                rmw_qos_profile_services_default,
+                commit_callbacks_);
+
+        timer_ =
+            create_wall_timer(
+                50ms,
+                [this]()
+                {
+                    updateSupervision();
+                });
+
+        RCLCPP_INFO(
+            get_logger(),
+            "TaskStateServer initialized: "
+            "IMU=%s + %s "
+            "confidence_window=%.2f "
+            "acquire=%.2f release=%.2f "
+            "grace=%.2f",
+            primary_topic.c_str(),
+            config.auxiliary_accel_topic.c_str(),
+            confidence_window_s,
+            acquire_confidence_,
+            release_confidence_,
+            grace_s_);
     }
 
-    std::copy(
-        bias.begin(),
-        bias.end(),
-        config.mpu6050_gyro_bias.begin());
+private:
+    void invalidateLocked(
+        const std::string& reason)
+    {
+        last_untrusted_ =
+            now().nanoseconds();
 
-    if (acquire_confidence_ > 1.0 ||
-        release_confidence_ >= acquire_confidence_) {
-      throw std::invalid_argument(
-          "Invalid confidence thresholds");
+        invalidation_reason_ = reason;
+
+        state_.workpiece_pose_valid = false;
+        state_.path_valid = false;
+
+        state_.kerf_status =
+            State::INVALID_OBSERVATION;
+
+        RCLCPP_WARN(
+            get_logger(),
+            "Workpiece pose invalidated: %s",
+            reason.c_str());
     }
 
-    const auto primary_topic =
-        declare_parameter<std::string>(
-            "platform_imu_topic",
-            "/hb_robot_lidar/imu");
+    bool supervisionTrustedLocked(
+        const hb_perception::ImuStabilityMetrics& metrics)
+        const
+    {
+        return metrics.valid &&
+               metrics.stable &&
+               metrics.stable_confidence >=
+                   acquire_confidence_ &&
+               trusted_stable_ &&
+               !uncertainty_active_ &&
+               !supervision_latched_ &&
+               state_.supervision_valid &&
+               state_.imu_stable &&
+               !state_.motion_fault_active &&
+               !state_.process_fault_active;
+    }
 
-    config.auxiliary_accel_topic =
-        declare_parameter<std::string>(
-            "platform_accel_topic",
-            "/mpu6050/imu",
-            read_only);
+    void publishStateLocked()
+    {
+        state_.header.stamp = now();
+        pub_->publish(state_);
+    }
 
-    if (config.auxiliary_accel_topic.empty())
-      throw std::invalid_argument(
-          "Two-channel supervision requires "
-          "platform_accel_topic");
+    void onPlanningScene(
+        const PlanningScene& scene)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
 
-    imu_callbacks_ = create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-
-    imu_ = std::make_unique<
-        hb_perception::ImuStabilityMonitor>(
-        *this,
-        primary_topic,
-        config,
-        imu_callbacks_);
-
-    pub_ = create_publisher<State>(
-        "/task_state",
-        rclcpp::QoS(1).transient_local());
-
-    supervision_pub_ =
-        create_publisher<Supervision>(
-            "/platform_supervision",
-            rclcpp::QoS(10));
-
-    RCLCPP_INFO(
-        get_logger(),
-        "Platform IMU: %s + %s; "
-        "confidence_window=%.2f acquire=%.2f "
-        "release=%.2f grace=%.2f",
-        primary_topic.c_str(),
-        config.auxiliary_accel_topic.c_str(),
-        confidence_window_s,
-        acquire_confidence_,
-        release_confidence_,
-        grace_s_);
-
-    ref_ = create_subscription<
-        hb_robot_interfaces::msg::WorkpieceReference>(
-        "/workpiece_reference",
-        rclcpp::QoS(1).transient_local(),
-        [this](
-            hb_robot_interfaces::msg::
-                WorkpieceReference::ConstSharedPtr m) {
-
-          const auto metrics = imu_->metrics();
-
-          const auto stamp =
-              rclcpp::Time(
-                  m->estimate.header.stamp);
-
-          const auto cloud_stamp =
-              rclcpp::Time(
-                  m->cloud.header.stamp);
-
-          const double age =
-              (now() - stamp).seconds();
-
-          const int64_t published =
-              stamp.nanoseconds();
-
-          const int64_t observed =
-              cloud_stamp.nanoseconds();
-
-          if (age < 0.0 ||
-              age > 5.0 ||
-              published <= last_publication_ ||
-              observed <= 0 ||
-              observed > published ||
-              m->cloud.data.empty() ||
-              m->estimate.profile_name.empty() ||
-              m->estimate.header.frame_id.empty() ||
-              m->estimate.header.frame_id !=
-                  m->cloud.header.frame_id) {
-
-            RCLCPP_WARN(
-                get_logger(),
-                "Rejected malformed, expired or "
-                "superseded workpiece reference");
-            return;
-          }
-
-          if (m->relocalized &&
-              (!state_.scene_valid ||
-               m->expected_pose_version !=
-                   state_.pose_version)) {
-
-            RCLCPP_WARN(
-                get_logger(),
-                "Rejected revalidation: expected pose "
-                "version mismatch");
-            return;
-          }
-
-          // Require the observation to belong to the
-          // current trusted interval.
-          //
-          // The raw metrics are checked here because
-          // this node is the supervision authority.
-          // Downstream skills consume PlatformSupervision.
-          //
-          // Reception gap counters are not compared with
-          // previous 50 ms ticks: that comparison does not
-          // prove observation-window continuity.
-          const bool observed_after_untrusted =
-              observed > last_untrusted_;
-
-          const bool platform_confirmed =
-              metrics.valid &&
-              metrics.stable &&
-              metrics.stable_confidence >=
-                  acquire_confidence_ &&
-              trusted_stable_ &&
-              !uncertainty_active_ &&
-              !supervision_latched_ &&
-              !state_.motion_fault_active &&
-              !state_.process_fault_active &&
-              observed_after_untrusted;
-
-          if (!platform_confirmed) {
-            RCLCPP_WARN(
-                get_logger(),
-                "Reference not confirmed: "
-                "valid=%d stable=%d confidence=%.3f "
-                "trusted=%d uncertain=%d latched=%d "
-                "observed_after_untrusted=%d "
-                "uni_gaps=%llu mpu_gaps=%llu",
-                metrics.valid,
-                metrics.stable,
-                metrics.stable_confidence,
-                trusted_stable_,
-                uncertainty_active_,
-                supervision_latched_,
-                observed_after_untrusted,
-                static_cast<unsigned long long>(
-                    metrics.unilidar.reception_gaps),
-                static_cast<unsigned long long>(
-                    metrics.mpu6050.reception_gaps));
-          }
-
-          if (!m->relocalized)
-            ++state_.geometry_version;
-
-          if (!m->relocalized ||
-              m->estimate.pose != measured_pose_)
-            ++state_.pose_version;
-
-          measured_pose_ = m->estimate.pose;
-          last_publication_ = published;
-
-          state_.scene_valid = true;
-          state_.scene_id =
-              std::to_string(published);
-
-          state_.workpiece_pose_valid =
-              platform_confirmed;
-
-          state_.path_valid = false;
-
-          invalidation_reason_ =
-              platform_confirmed
-                  ? ""
-                  : "reference requires a fresh "
-                    "supervised observation";
-
-          RCLCPP_INFO(
-              get_logger(),
-              "Reference accepted: id=%s "
-              "confirmed=%d geometry=%llu pose=%llu",
-              state_.scene_id.c_str(),
-              platform_confirmed,
-              static_cast<unsigned long long>(
-                  state_.geometry_version),
-              static_cast<unsigned long long>(
-                  state_.pose_version));
-        });
-
-    scene_ = create_subscription<
-        moveit_msgs::msg::PlanningScene>(
-        "/monitored_planning_scene",
-        10,
-        [this](
-            moveit_msgs::msg::
-                PlanningScene::ConstSharedPtr m) {
-
-          if (!m->is_diff)
+        if (!scene.is_diff)
+        {
             state_.cut_environment_id.clear();
+        }
 
-          for (const auto& object :
-               m->world.collision_objects) {
-
+        for (const auto& object :
+             scene.world.collision_objects)
+        {
             if (object.id.rfind(
                     "cut_environment_", 0) != 0)
-              continue;
+                continue;
 
             if (object.operation ==
-                object.REMOVE) {
-
-              if (state_.cut_environment_id ==
-                  object.id)
-                state_.cut_environment_id.clear();
-
-            } else {
-              state_.cut_environment_id = object.id;
+                CollisionObject::REMOVE)
+            {
+                if (state_.cut_environment_id ==
+                    object.id)
+                {
+                    state_.cut_environment_id.clear();
+                }
             }
-          }
+            else
+            {
+                state_.cut_environment_id =
+                    object.id;
+            }
+        }
 
-          if (scene_revisions_.changed(*m)) {
+        if (scene_revisions_.changed(scene))
+        {
             ++state_.scene_version;
             state_.path_valid = false;
-
-            std::ostringstream objects;
-
-            for (const auto& object :
-                 m->world.collision_objects) {
-              objects << " " << object.id
-                      << "(op="
-                      << static_cast<int>(
-                             object.operation)
-                      << ")";
-            }
 
             RCLCPP_INFO(
                 get_logger(),
                 "Scene revision=%llu "
-                "is_diff=%d environment=%s "
-                "objects=[%s] attached=%zu "
-                "octomap_bytes=%zu fixed_tf=%zu "
-                "acm_entries=%zu",
+                "environment=%s",
                 static_cast<unsigned long long>(
                     state_.scene_version),
-                m->is_diff,
-                state_.cut_environment_id.c_str(),
-                objects.str().c_str(),
-                m->robot_state
-                    .attached_collision_objects.size(),
-                m->world.octomap.octomap.data.size(),
-                m->fixed_frame_transforms.size(),
-                m->allowed_collision_matrix
-                    .entry_names.size());
-          }
-        });
-
-    torch_ = create_subscription<
-        hb_robot_interfaces::msg::TorchStatus>(
-        "/cut_profile/torch_status",
-        10,
-        [this](
-            hb_robot_interfaces::msg::
-                TorchStatus::ConstSharedPtr m) {
-          state_.process_fault_active = m->fault;
-
-          if (m->fault)
-            invalidate("Torch process fault");
-        });
-
-    fault_ =
-        create_subscription<std_msgs::msg::Bool>(
-            "/motion_fault",
-            10,
-            [this](
-                std_msgs::msg::Bool::ConstSharedPtr m) {
-              state_.motion_fault_active = m->data;
-
-              if (m->data)
-                invalidate("/motion_fault asserted");
-            });
-
-    invalidation_ =
-        create_subscription<std_msgs::msg::Bool>(
-            "/workpiece_pose_invalidated",
-            10,
-            [this](
-                std_msgs::msg::Bool::ConstSharedPtr m) {
-              if (m->data)
-                invalidate(
-                    "/workpiece_pose_invalidated asserted");
-            });
-
-    execution_ =
-        create_subscription<std_msgs::msg::UInt64>(
-            "/cut_profile/execution_version",
-            rclcpp::QoS(1).transient_local(),
-            [this](
-                std_msgs::msg::UInt64::ConstSharedPtr m) {
-              state_.execution_version = m->data;
-              state_.kerf_status =
-                  State::INVALID_OBSERVATION;
-            });
-
-    timer_ = create_wall_timer(
-        std::chrono::milliseconds(50),
-        [this] {
-          updateSupervision();
-        });
-  }
-
-private:
-  void invalidate(const std::string& reason) {
-    last_untrusted_ = now().nanoseconds();
-
-    if (state_.workpiece_pose_valid) {
-      RCLCPP_WARN(
-          get_logger(),
-          "Workpiece pose invalidated "
-          "(pose_version=%llu): %s",
-          static_cast<unsigned long long>(
-              state_.pose_version),
-          reason.c_str());
+                state_.cut_environment_id.c_str());
+        }
     }
 
-    invalidation_reason_ = reason;
+    void commitWorkpiece(
+        const std::shared_ptr<
+            CommitWorkpiece::Request> request,
+        std::shared_ptr<
+            CommitWorkpiece::Response> response)
+    {
+        std::lock_guard<std::mutex> transaction_lock(
+            commit_mutex_);
 
-    state_.workpiece_pose_valid = false;
-    state_.path_valid = false;
-    state_.kerf_status =
-        State::INVALID_OBSERVATION;
-  }
+        response->accepted = false;
 
-  void updateSupervision() {
-    const auto m = imu_->metrics();
-    const auto tick = Clock::now();
+        const bool initial =
+            request->mode ==
+            CommitWorkpiece::Request::INITIAL;
 
-    const bool raw_good =
-        m.valid && m.stable;
+        const bool recovery =
+            request->mode ==
+            CommitWorkpiece::Request::RECOVERY;
 
-    const bool unilidar_hard =
-        m.unilidar.valid &&
-        (m.unilidar.peak_ang_vel_rad_s >=
-             hard_peak_gyro_ ||
-         m.unilidar.peak_acc_deviation_m_s2 >=
-             hard_peak_accel_);
+        auto reject =
+            [&](const std::string& reason)
+        {
+            response->message = reason;
 
-    const bool mpu6050_hard =
-        m.mpu6050.valid &&
-        (m.mpu6050.peak_ang_vel_rad_s >=
-             hard_peak_gyro_ ||
-         m.mpu6050.peak_acc_deviation_m_s2 >=
-             hard_peak_accel_);
+            RCLCPP_ERROR(
+                get_logger(),
+                "Workpiece commit rejected: %s",
+                reason.c_str());
+        };
 
-    const bool hard_motion =
-        unilidar_hard || mpu6050_hard;
-
-    const bool hard_stale =
-        m.unilidar.sample_age_s > grace_s_ ||
-        m.mpu6050.sample_age_s > grace_s_;
-
-    const bool confidence_acquired =
-        raw_good &&
-        m.stable_confidence >=
-            acquire_confidence_;
-
-    const bool confidence_lost =
-        m.stable_confidence <
-            release_confidence_;
-
-    if (hard_motion) {
-      if (!supervision_latched_)
-        invalidate(
-            "Hard IMU motion threshold exceeded");
-
-      trusted_stable_ = false;
-      uncertainty_active_ = false;
-      supervision_latched_ = true;
-
-    } else if (!trusted_stable_) {
-      if (confidence_acquired && !hard_stale) {
-        trusted_stable_ = true;
-        uncertainty_active_ = false;
-        supervision_latched_ = false;
-
-        RCLCPP_INFO(
-            get_logger(),
-            "Platform supervision acquired: "
-            "confidence=%.3f",
-            m.stable_confidence);
-      }
-
-    } else if (!raw_good ||
-               confidence_lost ||
-               hard_stale) {
-
-      if (!uncertainty_active_) {
-        uncertainty_active_ = true;
-        uncertainty_since_ = tick;
-
-        RCLCPP_WARN_THROTTLE(
-    get_logger(),
-    *get_clock(),
-    5000,
-    "Platform supervision UNCERTAIN: "
-    "confidence=%.3f raw_good=%d "
-    "uni_valid=%d uni_stable=%d "
-    "mpu_valid=%d mpu_stable=%d",
-    m.stable_confidence,
-    raw_good,
-    m.unilidar.valid,
-    m.unilidar.stable,
-    m.mpu6050.valid,
-    m.mpu6050.stable);
-      }
-
-      const double uncertain_for =
-          std::chrono::duration<double>(
-              tick - uncertainty_since_).count();
-
-      if (hard_stale ||
-          uncertain_for >= grace_s_) {
-
-        if (!supervision_latched_) {
-          invalidate(
-              hard_stale
-                  ? "Prolonged IMU data loss"
-                  : "Persistent IMU instability "
-                    "or low confidence");
+        if (!initial && !recovery)
+        {
+            reject("Unknown workpiece commit mode");
+            return;
         }
 
-        supervision_latched_ = true;
-        trusted_stable_ = false;
-        uncertainty_active_ = false;
-      }
+        const auto& reference =
+            request->reference;
 
-    } else {
-      if (uncertainty_active_) {
-       RCLCPP_DEBUG(
-    get_logger(),
-    "Platform supervision recovered within grace interval");
-      }
+        const auto& proposed =
+            request->collision_object;
 
-      uncertainty_active_ = false;
-      supervision_latched_ = false;
+        const int64_t published =
+            rclcpp::Time(
+                reference.estimate.header.stamp)
+                .nanoseconds();
+
+        const int64_t observed =
+            rclcpp::Time(
+                reference.cloud.header.stamp)
+                .nanoseconds();
+
+        const double age =
+            (now() -
+             rclcpp::Time(
+                 reference.estimate.header.stamp))
+                .seconds();
+
+        if (published <= 0 ||
+            observed <= 0 ||
+            observed > published ||
+            age < 0.0 ||
+            age > 5.0 ||
+            reference.cloud.data.empty() ||
+            reference.estimate.profile_name.empty())
+        {
+            reject("Malformed or expired reference");
+            return;
+        }
+
+        std::string geometry_error;
+
+        if (!wp::consistent(
+                proposed,
+                reference,
+                geometry_error))
+        {
+            reject(geometry_error);
+            return;
+        }
+
+        State before;
+        std::optional<Reference> old_reference;
+        int64_t supervision_epoch = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (published <= last_publication_)
+            {
+                reject("Superseded reference");
+                return;
+            }
+
+            before = state_;
+            old_reference = accepted_reference_;
+            supervision_epoch = last_untrusted_;
+
+            if (recovery)
+            {
+                if (!old_reference ||
+                    !state_.scene_valid ||
+                    request->expected_geometry_version !=
+                        state_.geometry_version ||
+                    request->expected_pose_version !=
+                        state_.pose_version ||
+                    request->expected_scene_version !=
+                        state_.scene_version)
+                {
+                    reject(
+                        "Recovery expected versions "
+                        "do not match TaskState");
+                    return;
+                }
+
+                if (!reference.relocalized ||
+                    reference.expected_pose_version !=
+                        state_.pose_version)
+                {
+                    reject(
+                        "Invalid recovery reference lineage");
+                    return;
+                }
+
+                if (reference.estimate.profile_name !=
+                    old_reference->estimate.profile_name)
+                {
+                    reject(
+                        "Recovery changed profile identity");
+                    return;
+                }
+            }
+            else if (reference.relocalized)
+            {
+                reject(
+                    "Initial inspection marked as recovery");
+                return;
+            }
+        }
+
+        const auto metrics =
+            imu_->metrics();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (!supervisionTrustedLocked(metrics))
+            {
+                reject(
+                    "Platform supervision not trusted "
+                    "at workpiece commit");
+                return;
+            }
+
+            // INITIAL inspection may contain several
+            // individually stable viewpoints separated
+            // by intentional robot movement.
+            //
+            // RECOVERY requires a fresh observation
+            // from the current trusted interval.
+            if (recovery &&
+                observed <= last_untrusted_)
+            {
+                reject(
+                    "Recovery observation predates "
+                    "the current trusted interval");
+                return;
+            }
+
+            if (last_untrusted_ != supervision_epoch)
+            {
+                reject(
+                    "Supervision changed before commit");
+                return;
+            }
+        }
+
+        // Read the existing authoritative object.
+        const auto objects =
+            planning_scene_interface_.getObjects({
+                wp::kObjectId
+            });
+
+        const auto old_it =
+            objects.find(wp::kObjectId);
+
+        if (recovery)
+        {
+            if (old_it == objects.end())
+            {
+                reject("Existing workpiece mesh missing");
+                return;
+            }
+
+            if (!wp::sameGeometry(
+                    old_it->second,
+                    proposed))
+            {
+                reject(
+                    "Recovery attempted to change "
+                    "workpiece mesh geometry");
+                return;
+            }
+
+            if (old_it->second.header.frame_id !=
+                proposed.header.frame_id)
+            {
+                reject("Recovery changed mesh frame");
+                return;
+            }
+
+            std::string old_error;
+
+            if (!wp::consistent(
+                    old_it->second,
+                    *old_reference,
+                    old_error))
+            {
+                reject(
+                    "Existing mesh/reference mismatch: " +
+                    old_error);
+                return;
+            }
+        }
+
+        bool pose_changed = true;
+
+        if (old_it != objects.end() &&
+            wp::sameGeometry(
+                old_it->second,
+                proposed))
+        {
+            pose_changed =
+                !wp::poseMatches(
+                    wp::meshPose(old_it->second),
+                    wp::meshPose(proposed));
+        }
+
+        // Prevent cutting while the scene is updated.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (state_.geometry_version !=
+                    before.geometry_version ||
+                state_.pose_version !=
+                    before.pose_version ||
+                state_.scene_version !=
+                    before.scene_version ||
+                last_untrusted_ != supervision_epoch ||
+                !state_.supervision_valid ||
+                !state_.imu_stable ||
+                state_.motion_fault_active ||
+                state_.process_fault_active)
+            {
+                reject("TaskState changed before scene update");
+                return;
+            }
+
+            state_.workpiece_pose_valid = false;
+            state_.path_valid = false;
+
+            invalidation_reason_ =
+                "Workpiece commit in progress";
+
+            publishStateLocked();
+        }
+
+        std::vector<CollisionObject> updates;
+
+        if (initial)
+        {
+            CollisionObject remove_temporary;
+
+            remove_temporary.header.frame_id =
+                proposed.header.frame_id;
+
+            remove_temporary.id =
+                "inspection_workpiece";
+
+            remove_temporary.operation =
+                CollisionObject::REMOVE;
+
+            updates.push_back(
+                std::move(remove_temporary));
+        }
+
+        CollisionObject updated = proposed;
+        updated.operation = CollisionObject::ADD;
+
+        updates.push_back(
+            std::move(updated));
+
+        if (!planning_scene_interface_
+                 .applyCollisionObjects(updates))
+        {
+            reject("MoveIt rejected collision update");
+            return;
+        }
+
+        // Verify the stored MoveIt object, not
+        // the locally proposed object.
+        const auto stored =
+            planning_scene_interface_.getObjects({
+                wp::kObjectId,
+                "inspection_workpiece"
+            });
+
+        const auto verified =
+            stored.find(wp::kObjectId);
+
+        std::string readback_error;
+
+        const bool mesh_verified =
+            verified != stored.end() &&
+            wp::sameGeometry(
+                verified->second,
+                proposed) &&
+            wp::consistent(
+                verified->second,
+                reference,
+                readback_error);
+
+        const bool temporary_removed =
+            !initial ||
+            stored.find("inspection_workpiece") ==
+                stored.end();
+
+        if (!mesh_verified || !temporary_removed)
+        {
+            reject(
+                !temporary_removed
+                    ? "Temporary inspection object "
+                      "still present"
+                    : "MoveIt workpiece readback failed: " +
+                      readback_error);
+
+            // Execution stays invalidated.
+            return;
+        }
+
+        // Recheck supervision after MoveIt update.
+        const auto final_metrics =
+            imu_->metrics();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (!supervisionTrustedLocked(
+                    final_metrics) ||
+                last_untrusted_ != supervision_epoch ||
+                state_.geometry_version !=
+                    before.geometry_version ||
+                state_.pose_version !=
+                    before.pose_version ||
+                state_.motion_fault_active ||
+                state_.process_fault_active)
+            {
+                reject(
+                    "Supervision or workpiece versions "
+                    "changed during commit");
+
+                // The scene may have changed.
+                // Do not restore execution permission.
+                return;
+            }
+
+            // Only TaskState advances these versions.
+            if (initial)
+                ++state_.geometry_version;
+
+            if (initial || pose_changed)
+                ++state_.pose_version;
+
+            accepted_reference_ = reference;
+
+            measured_pose_ =
+                reference.estimate.pose;
+
+            last_publication_ = published;
+
+            state_.scene_id =
+                wp::referenceId(reference);
+
+            state_.scene_valid = true;
+            state_.workpiece_pose_valid = true;
+            state_.path_valid = false;
+
+            invalidation_reason_.clear();
+
+            accepted_reference_pub_->publish(
+                reference);
+
+            accepted_estimate_pub_->publish(
+                reference.estimate);
+
+            publishStateLocked();
+
+            response->accepted = true;
+
+            response->message =
+                "Workpiece committed and verified";
+
+            response->reference_id =
+                state_.scene_id;
+
+            response->geometry_version =
+                state_.geometry_version;
+
+            response->pose_version =
+                state_.pose_version;
+
+            response->scene_version =
+                state_.scene_version;
+
+            RCLCPP_INFO(
+                get_logger(),
+                "Workpiece committed: "
+                "id=%s geometry=%llu pose=%llu "
+                "scene=%llu initial=%d",
+                state_.scene_id.c_str(),
+                static_cast<unsigned long long>(
+                    state_.geometry_version),
+                static_cast<unsigned long long>(
+                    state_.pose_version),
+                static_cast<unsigned long long>(
+                    state_.scene_version),
+                initial);
+        }
     }
 
-    // Debounced task-state compatibility flags.
-    // During UNCERTAIN these remain true, but the
-    // PlatformSupervision state is not STABLE.
-    state_.supervision_valid = trusted_stable_;
-    state_.imu_stable = trusted_stable_;
+    void updateSupervision()
+    {
+        const auto metrics =
+            imu_->metrics();
 
-    std::ostringstream status;
+        const auto tick =
+            Clock::now();
 
-    status << std::fixed << std::setprecision(3)
-           << "confidence=" << m.stable_confidence
-           << " coverage_s=" << m.confidence_coverage_s
-           << " raw_valid=" << m.valid
-           << " raw_stable=" << m.stable
-           << " uni_valid=" << m.unilidar.valid
-           << " uni_stable=" << m.unilidar.stable
-           << " mpu_valid=" << m.mpu6050.valid
-           << " mpu_stable=" << m.mpu6050.stable;
+        const bool raw_good =
+            metrics.valid && metrics.stable;
 
-    if (hard_motion) {
-      status << " HARD_MOTION";
-    } else if (uncertainty_active_) {
-      status << " UNCERTAIN";
-    } else if (trusted_stable_) {
-      status << " STABLE";
-    } else {
-      status << " NOT_AUTHORIZED";
+        const bool unilidar_hard =
+            metrics.unilidar.valid &&
+            (metrics.unilidar.peak_ang_vel_rad_s >=
+                 hard_peak_gyro_ ||
+             metrics.unilidar.peak_acc_deviation_m_s2 >=
+                 hard_peak_accel_);
+
+        const bool mpu6050_hard =
+            metrics.mpu6050.valid &&
+            (metrics.mpu6050.peak_ang_vel_rad_s >=
+                 hard_peak_gyro_ ||
+             metrics.mpu6050.peak_acc_deviation_m_s2 >=
+                 hard_peak_accel_);
+
+        const bool hard_motion =
+            unilidar_hard || mpu6050_hard;
+
+        const bool hard_stale =
+            metrics.unilidar.sample_age_s > grace_s_ ||
+            metrics.mpu6050.sample_age_s > grace_s_;
+
+        const bool confidence_acquired =
+            raw_good &&
+            metrics.stable_confidence >=
+                acquire_confidence_;
+
+        const bool confidence_lost =
+            metrics.stable_confidence <
+                release_confidence_;
+
+        State published;
+        Supervision diagnostic;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            if (hard_motion)
+            {
+                if (!supervision_latched_)
+                {
+                    invalidateLocked(
+                        "Hard IMU motion threshold exceeded");
+                }
+
+                trusted_stable_ = false;
+                uncertainty_active_ = false;
+                supervision_latched_ = true;
+            }
+            else if (!trusted_stable_)
+            {
+                if (confidence_acquired &&
+                    !hard_stale)
+                {
+                    trusted_stable_ = true;
+                    uncertainty_active_ = false;
+                    supervision_latched_ = false;
+                }
+            }
+            else if (!raw_good ||
+                     confidence_lost ||
+                     hard_stale)
+            {
+                if (!uncertainty_active_)
+                {
+                    uncertainty_active_ = true;
+                    uncertainty_since_ = tick;
+                }
+
+                const double uncertain_for =
+                    std::chrono::duration<double>(
+                        tick - uncertainty_since_)
+                        .count();
+
+                if (hard_stale ||
+                    uncertain_for >= grace_s_)
+                {
+                    if (!supervision_latched_)
+                    {
+                        invalidateLocked(
+                            hard_stale
+                                ? "Prolonged IMU data loss"
+                                : "Persistent IMU instability");
+                    }
+
+                    supervision_latched_ = true;
+                    trusted_stable_ = false;
+                    uncertainty_active_ = false;
+                }
+            }
+            else
+            {
+                uncertainty_active_ = false;
+                supervision_latched_ = false;
+            }
+
+            state_.supervision_valid =
+                trusted_stable_;
+
+            state_.imu_stable =
+                trusted_stable_;
+
+            std::ostringstream status;
+
+            status << std::fixed
+                   << std::setprecision(3)
+                   << "confidence="
+                   << metrics.stable_confidence
+                   << " coverage_s="
+                   << metrics.confidence_coverage_s
+                   << " raw_valid=" << metrics.valid
+                   << " raw_stable=" << metrics.stable;
+
+            if (hard_motion)
+                status << " HARD_MOTION";
+            else if (uncertainty_active_)
+                status << " UNCERTAIN";
+            else if (trusted_stable_)
+                status << " STABLE";
+            else
+                status << " NOT_AUTHORIZED";
+
+            if (!state_.workpiece_pose_valid &&
+                !invalidation_reason_.empty())
+            {
+                status << "; pose invalidated: "
+                       << invalidation_reason_;
+            }
+
+            state_.status_message = status.str();
+            state_.header.stamp = now();
+
+            published = state_;
+
+            diagnostic.header = published.header;
+
+            diagnostic.unilidar =
+                toRosMetrics(
+                    metrics.unilidar,
+                    diagnostic.header,
+                    "unilidar",
+                    metrics.stable_confidence,
+                    metrics.confidence_coverage_s);
+
+            diagnostic.mpu6050 =
+                toRosMetrics(
+                    metrics.mpu6050,
+                    diagnostic.header,
+                    "mpu6050",
+                    metrics.stable_confidence,
+                    metrics.confidence_coverage_s);
+
+            diagnostic.combined_confidence =
+                metrics.stable_confidence;
+
+            diagnostic.combined_coverage_s =
+                metrics.confidence_coverage_s;
+
+            diagnostic.both_channels_valid =
+                metrics.valid;
+
+            diagnostic.both_channels_stable =
+                metrics.stable;
+
+            diagnostic.supervision_valid =
+                state_.supervision_valid;
+
+            diagnostic.imu_stable =
+                state_.imu_stable;
+
+            diagnostic.hard_motion_detected =
+                hard_motion;
+
+            if (hard_motion || supervision_latched_)
+                diagnostic.state = Supervision::UNTRUSTED;
+            else if (uncertainty_active_)
+                diagnostic.state = Supervision::UNCERTAIN;
+            else if (trusted_stable_)
+                diagnostic.state = Supervision::STABLE;
+            else
+                diagnostic.state = Supervision::UNKNOWN;
+
+            diagnostic.reason =
+                state_.status_message;
+        }
+
+        pub_->publish(published);
+        supervision_pub_->publish(diagnostic);
     }
 
-    if (!state_.workpiece_pose_valid &&
-        !invalidation_reason_.empty()) {
-      status << "; pose invalidated: "
-             << invalidation_reason_;
-    }
+    // Shared authoritative state.
+    std::mutex mutex_;
+    std::mutex commit_mutex_;
 
-    state_.status_message = status.str();
-    state_.header.stamp = now();
+    State state_;
 
-    pub_->publish(state_);
+    std::optional<Reference> accepted_reference_;
 
-    Supervision diagnostic;
-    diagnostic.header = state_.header;
+    hb_robot_skills::SceneRevisionTracker
+        scene_revisions_;
 
-    diagnostic.unilidar = toRosMetrics(
-        m.unilidar,
-        diagnostic.header,
-        "unilidar",
-        m.stable_confidence,
-        m.confidence_coverage_s);
+    moveit::planning_interface::PlanningSceneInterface
+        planning_scene_interface_;
 
-    diagnostic.mpu6050 = toRosMetrics(
-        m.mpu6050,
-        diagnostic.header,
-        "mpu6050",
-        m.stable_confidence,
-        m.confidence_coverage_s);
+    // IMU supervision.
+    rclcpp::CallbackGroup::SharedPtr
+        imu_callbacks_;
 
-    diagnostic.combined_confidence =
-        m.stable_confidence;
+    rclcpp::CallbackGroup::SharedPtr
+        commit_callbacks_;
 
-    diagnostic.combined_coverage_s =
-        m.confidence_coverage_s;
+    std::unique_ptr<
+        hb_perception::ImuStabilityMonitor> imu_;
 
-    diagnostic.both_channels_valid = m.valid;
-    diagnostic.both_channels_stable = m.stable;
+    double acquire_confidence_ = 0.90;
+    double release_confidence_ = 0.65;
+    double grace_s_ = 0.80;
 
-    diagnostic.supervision_valid =
-        state_.supervision_valid;
+    double hard_peak_gyro_ = 0.20;
+    double hard_peak_accel_ = 0.80;
 
-    diagnostic.imu_stable =
-        state_.imu_stable;
+    bool trusted_stable_ = false;
+    bool uncertainty_active_ = false;
+    bool supervision_latched_ = false;
 
-    diagnostic.hard_motion_detected =
-        hard_motion;
+    Clock::time_point uncertainty_since_{};
 
-    if (hard_motion || supervision_latched_) {
-      diagnostic.state =
-          Supervision::UNTRUSTED;
-    } else if (uncertainty_active_) {
-      diagnostic.state =
-          Supervision::UNCERTAIN;
-    } else if (trusted_stable_) {
-      diagnostic.state =
-          Supervision::STABLE;
-    } else {
-      diagnostic.state =
-          Supervision::UNKNOWN;
-    }
+    // Workpiece identity.
+    int64_t last_publication_ = 0;
+    int64_t last_untrusted_ = 0;
 
-    diagnostic.reason =
-        state_.status_message;
+    geometry_msgs::msg::Pose measured_pose_;
+    std::string invalidation_reason_;
 
-    supervision_pub_->publish(diagnostic);
-  }
+    // Publishers.
+    rclcpp::Publisher<State>::SharedPtr pub_;
 
-  hb_robot_skills::SceneRevisionTracker
-      scene_revisions_;
+    rclcpp::Publisher<Supervision>::SharedPtr
+        supervision_pub_;
 
-  State state_;
+    rclcpp::Publisher<Reference>::SharedPtr
+        accepted_reference_pub_;
 
-  rclcpp::CallbackGroup::SharedPtr
-      imu_callbacks_;
+    rclcpp::Publisher<
+        hb_robot_interfaces::msg::ProfileEstimate>::
+        SharedPtr accepted_estimate_pub_;
 
-  std::unique_ptr<
-      hb_perception::ImuStabilityMonitor> imu_;
+    // Subscriptions.
+    rclcpp::Subscription<PlanningScene>::SharedPtr
+        scene_;
 
-  rclcpp::Publisher<State>::SharedPtr pub_;
+    rclcpp::Subscription<
+        hb_robot_interfaces::msg::TorchStatus>::
+        SharedPtr torch_;
 
-  rclcpp::Publisher<Supervision>::SharedPtr
-      supervision_pub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::
+        SharedPtr fault_, invalidation_;
 
-  rclcpp::Subscription<
-      hb_robot_interfaces::msg::WorkpieceReference>::
-      SharedPtr ref_;
+    rclcpp::Subscription<std_msgs::msg::UInt64>::
+        SharedPtr execution_;
 
-  rclcpp::Subscription<
-      hb_robot_interfaces::msg::TorchStatus>::
-      SharedPtr torch_;
+    // Service and timer.
+    rclcpp::Service<CommitWorkpiece>::SharedPtr
+        commit_service_;
 
-  rclcpp::Subscription<
-      moveit_msgs::msg::PlanningScene>::
-      SharedPtr scene_;
-
-  rclcpp::Subscription<std_msgs::msg::Bool>::
-      SharedPtr fault_, invalidation_;
-
-  rclcpp::Subscription<std_msgs::msg::UInt64>::
-      SharedPtr execution_;
-
-  rclcpp::TimerBase::SharedPtr timer_;
-
-  std::string invalidation_reason_;
-
-  int64_t last_publication_ = 0;
-  int64_t last_untrusted_ = now().nanoseconds();
-
-  geometry_msgs::msg::Pose measured_pose_;
-
-  double acquire_confidence_ = 0.90;
-  double release_confidence_ = 0.65;
-  double grace_s_ = 0.80;
-
-  double hard_peak_gyro_ = 0.20;
-  double hard_peak_accel_ = 0.80;
-
-  bool trusted_stable_ = false;
-  bool uncertainty_active_ = false;
-  bool supervision_latched_ = false;
-
-  Clock::time_point uncertainty_since_{};
+    rclcpp::TimerBase::SharedPtr timer_;
 };
 
-int main(int argc, char** argv) {
-  rclcpp::init(argc, argv);
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
 
-  auto node =
-      std::make_shared<TaskStateServer>();
+    auto node =
+        std::make_shared<TaskStateServer>();
 
-  rclcpp::executors::MultiThreadedExecutor executor(
-      rclcpp::ExecutorOptions{}, 2);
+    rclcpp::executors::MultiThreadedExecutor executor(
+        rclcpp::ExecutorOptions{}, 3);
 
-  executor.add_node(node);
-  executor.spin();
+    executor.add_node(node);
+    executor.spin();
 
-  rclcpp::shutdown();
-  return 0;
+    rclcpp::shutdown();
+    return 0;
 }

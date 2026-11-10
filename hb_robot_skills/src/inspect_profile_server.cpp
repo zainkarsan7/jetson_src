@@ -1,182 +1,293 @@
-#include <pcl_conversions/pcl_conversions.h>
+
 #include "hb_robot_skills/inspect_profile_server.hpp"
+
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/voxel_grid.h>
+
+#include <moveit/robot_state/conversions.h>
+#include <shape_msgs/msg/solid_primitive.hpp>
+#include <tf2_eigen/tf2_eigen.hpp>
+#include "hb_robot_skills/motion/transit_planner.hpp"
 #include <algorithm>
-#include <cmath>
 #include <array>
-#include <functional>
-#include <limits>
-#include <optional>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <future>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
-#include <chrono>
-#include <thread>
-#include <pcl_conversions/pcl_conversions.h>
-#include <moveit/robot_state/conversions.h>
-#include "rclcpp/rclcpp.hpp"
-#include <tf2_eigen/tf2_eigen.hpp>
 
-#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
-#include <pcl/filters/voxel_grid.h>
-#include <moveit_msgs/msg/collision_object.hpp>
-#include <shape_msgs/msg/solid_primitive.hpp>
+namespace hb_robot_skills {
 
+using namespace std::chrono_literals;
 
+namespace {
 
-namespace hb_robot_skills{ 
-    using namespace std::chrono_literals;
+using CollisionObject =
+    moveit_msgs::msg::CollisionObject;
 
+using Cloud =
+    pcl::PointCloud<pcl::PointXYZRGB>;
 
-    InspectProfileServer::InspectProfileServer(const rclcpp::NodeOptions & options)
-    :rclcpp::Node("inspect_profile_server",options),
-    scene_model_(std::make_shared<hb_perception::SceneModel>())
+bool finiteRigid(const Eigen::Isometry3d& pose)
 {
+    if (!pose.matrix().allFinite())
+        return false;
 
-    // pass stuff to the private variables using some parameters
-    planning_group_ = declare_parameter<std::string>("planning_group", "manipulator");
-    camera_link_ = declare_parameter<std::string>("camera_link","camera_visor");
-    planning_time_ = declare_parameter<double>("planning_time",5.0);
-    stability_timeout_ = declare_parameter<double>("stability_timeout",5.0);
-    skip_motion_ = declare_parameter<bool>("skip_inspection_motion", true);
-    require_plan_approval_ = declare_parameter<bool>("require_plan_approval",true);
+    const auto& r = pose.linear();
 
-    rgb_topic_ = declare_parameter<std::string>("perception_rgb_topic","/k4a/rgb/image_raw");
-    depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/depth_to_rgb/image_raw");
-    camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
-    scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
-    acquisition_timeout_ = declare_parameter<double>("acquisition_timeout",5.0);
-
-    rms_target_ = declare_parameter<float>("rms_target",0.01);
-    inlier_fraction_target_ = declare_parameter<float>("inlier_fraction_target", 0.4);
-    coverage_target_ = declare_parameter<float>("coverage_target",0.4);
-    if(!has_parameter("platform_imu_topic")){
-        platform_stability_topic_ = declare_parameter<std::string>("platform_imu_topic","hb_robot_lidar/imu");
-    }
-    get_parameter("platform_imu_topic",platform_stability_topic_);
-     
-
-    if(!has_parameter("platform_imu.max_gyro_rms")){
-        max_ang_vel_rms_ = declare_parameter<double>("platform_imu.max_gyro_rms",0.01);
-    }
-    get_parameter("platform_imu.max_gyro_rms",max_ang_vel_rms_);
-    
-    if(!has_parameter("platform_imu.max_accel_rms")){
-        max_lin_acc_rms_ = declare_parameter<double>("platform_imu.max_accel_rms",0.2);
-    }
-    get_parameter("platform_imu.max_accel_rms",max_lin_acc_rms_);
-    
-    if(!has_parameter("platform_imu.max_mean_gyro")){
-        max_mean_ang_vel_ = declare_parameter<double>("platform_imu.max_mean_gyro",0.03);
-    }
-    get_parameter("platform_imu.max_mean_gyro",max_mean_ang_vel_);
-    
+    return std::abs(r.determinant() - 1.0) < 1e-4 &&
+           (r.transpose() * r).isApprox(
+               Eigen::Matrix3d::Identity(), 1e-4);
 }
-    void InspectProfileServer::initialize(){
-        move_group_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
-        move_group_->setPlanningTime(planning_time_);
-        
-        const auto robot_model =
-            move_group_->getRobotModel();
 
-        nbv_planner_ = std::make_unique<motion::NBVPlanner>(robot_model,planning_group_,camera_link_);
-        
-        planning_scene_monitor_ = std::make_shared<
-        planning_scene_monitor::PlanningSceneMonitor>(
-            shared_from_this(), "robot_description"
-        );
-        if(!planning_scene_monitor_->getPlanningScene()) throw std::runtime_error("Planning Scene Montiro failed");
-        planning_scene_monitor_->startSceneMonitor("/monitored_planning_scene");
-        planning_scene_monitor_->startWorldGeometryMonitor();
-        planning_scene_monitor_->startStateMonitor();
-        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
-        tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
+bool matchingPose(
+    const Eigen::Isometry3d& a,
+    const Eigen::Isometry3d& b)
+{
+    return finiteRigid(a) &&
+           finiteRigid(b) &&
+           (a.translation() -
+            b.translation()).norm() <= 1e-4 &&
+           (a.linear() - b.linear()).norm() <= 1e-4;
+}
 
-   
+}  // namespace
 
-        rgbd_acquisition_ =
-            std::make_unique<hb_perception::RGBDAcquisition>(
-                this,
-                tf_buffer_.get(),
-                scene_frame_,
-                hb_perception::RGBDAcquisition::Mode::CaptureWindow,
-                rgb_topic_,
-                depth_topic_,
-                camera_info_topic_);
+InspectProfileServer::InspectProfileServer(
+    const rclcpp::NodeOptions& options)
+    : Node("inspect_profile_server", options),
+      scene_model_(
+          std::make_shared<hb_perception::SceneModel>())
+{
+    planning_group_ =
+        declare_parameter<std::string>(
+            "planning_group", "manipulator");
 
-        RCLCPP_INFO(
-            get_logger(),
-            "Persistent RGBD acquisition initialized");
+    camera_link_ =
+        declare_parameter<std::string>(
+            "camera_link", "camera_visor");
 
+    planning_time_ =
+        declare_parameter<double>(
+            "planning_time", 5.0);
 
+    stability_timeout_ =
+        declare_parameter<double>(
+            "stability_timeout", 5.0);
 
-       
-        
-        platform_supervision_ =
-        std::make_unique<
-            hb_robot_skills::PlatformSupervisionClient>(*this);
+    skip_motion_ =
+        declare_parameter<bool>(
+            "skip_inspection_motion", true);
 
-        const auto qos = rclcpp::QoS(1).transient_local().reliable();
+    require_plan_approval_ =
+        declare_parameter<bool>(
+            "require_plan_approval", true);
 
-        display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",
-        10);
-        scene_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>
-        ("/profile_inspection/scene_cloud",qos);
-        
-        profile_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>
-        ("/profile_inspection/matches",qos);
+    rgb_topic_ =
+        declare_parameter<std::string>(
+            "perception_rgb_topic",
+            "/k4a/rgb/image_raw");
 
-        coverage_marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>
-        ("/profile_inspection/coverage",qos);
+    depth_topic_ =
+        declare_parameter<std::string>(
+            "perception_depth_topic",
+            "/k4a/depth_to_rgb/image_raw");
 
-        profile_estimate_pub_ = create_publisher<hb_robot_interfaces::msg::ProfileEstimate>
-        ("/profile_inspection/estimate",qos);
+    camera_info_topic_ =
+        declare_parameter<std::string>(
+            "perception_camera_info_topic",
+            "/k4a/depth_to_rgb/camera_info");
 
-        camera_pose_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-        "/profile_inspection/camera_poses",
-        qos);
-    
-        rms_pub_ = create_publisher<std_msgs::msg::Float64>
-        ("/profile_inspection/metrics/rms_mm",10);
-        
-        inlier_pub_ = create_publisher<std_msgs::msg::Float64>
-        ("/profile_inspection/metrics/inlier_fraction",10);
+    scene_frame_ =
+        declare_parameter<std::string>(
+            "scene_base_frame", "world");
 
-        coverage_pub_ = create_publisher<std_msgs::msg::Float64>(
-        "/profile_inspection/metrics/coverage",
-        10);
-    
+    acquisition_timeout_ =
+        declare_parameter<double>(
+            "acquisition_timeout", 5.0);
 
+    commit_timeout_ =
+        declare_parameter<double>(
+            "workpiece_commit_timeout", 10.0);
 
-        
-        action_server_ = rclcpp_action::create_server<InspectProfile>(
-            shared_from_this(),
-        "inspect_profile",
-        std::bind(
-            &InspectProfileServer::handleGoal,
-            this,
-            std::placeholders::_1,std::placeholders::_2
-        ),
-        std::bind(
-            &InspectProfileServer::handleCancel,
-            this,
-            std::placeholders::_1
-        ),
-        std::bind(
-            &InspectProfileServer::handleAccepted,
-            this,
-            std::placeholders::_1
-        ));
+    rms_target_ =
+        declare_parameter<double>(
+            "rms_target", 0.01);
 
-        approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
-                "approve_profile_motion",
-                std::bind(&InspectProfileServer::handleApproval,this,
-                    std::placeholders::_1,std::placeholders::_2)
-            );
-        RCLCPP_INFO(get_logger(),"Inspect Profile Server Initialized");  
+    inlier_fraction_target_ =
+        declare_parameter<double>(
+            "inlier_fraction_target", 0.4);
 
+    coverage_target_ =
+        declare_parameter<double>(
+            "coverage_target", 0.4);
+
+    if (planning_time_ <= 0.0 ||
+        stability_timeout_ <= 0.0 ||
+        acquisition_timeout_ <= 0.0 ||
+        commit_timeout_ <= 0.0)
+    {
+        throw std::invalid_argument(
+            "Inspection timeouts must be positive");
     }
+}
 
+InspectProfileServer::~InspectProfileServer()
+{
+    if (move_group_)
+        move_group_->stop();
+
+    approval_cv_.notify_all();
+
+    if (worker_.joinable())
+        worker_.join();
+}
+
+void InspectProfileServer::initialize()
+{
+    move_group_ =
+        std::make_unique<
+            moveit::planning_interface::MoveGroupInterface>(
+            shared_from_this(),
+            planning_group_);
+
+    move_group_->setPlanningTime(planning_time_);
+
+    nbv_planner_ =
+        std::make_unique<motion::NBVPlanner>(
+            move_group_->getRobotModel(),
+            planning_group_,
+            camera_link_);
+
+    planning_scene_monitor_ =
+        std::make_shared<
+            planning_scene_monitor::PlanningSceneMonitor>(
+            shared_from_this(),
+            "robot_description");
+
+    if (!planning_scene_monitor_->getPlanningScene())
+        throw std::runtime_error(
+            "Planning scene monitor unavailable");
+
+    planning_scene_monitor_->startSceneMonitor(
+        "/monitored_planning_scene");
+
+    planning_scene_monitor_->startWorldGeometryMonitor();
+    planning_scene_monitor_->startStateMonitor();
+
+    tf_buffer_ =
+        std::make_unique<tf2_ros::Buffer>(
+            get_clock());
+
+    tf_listener_ =
+        std::make_unique<tf2_ros::TransformListener>(
+            *tf_buffer_);
+
+    rgbd_acquisition_ =
+        std::make_unique<
+            hb_perception::RGBDAcquisition>(
+            this,
+            tf_buffer_.get(),
+            scene_frame_,
+            hb_perception::RGBDAcquisition::
+                Mode::CaptureWindow,
+            rgb_topic_,
+            depth_topic_,
+            camera_info_topic_);
+
+    platform_supervision_ =
+        std::make_unique<PlatformSupervisionClient>(
+            *this);
+
+    commit_client_ =
+        create_client<CommitWorkpiece>(
+            "/task_state/commit_workpiece");
+
+    const auto qos =
+        rclcpp::QoS(1).reliable().transient_local();
+
+    display_traj_pub_ =
+        create_publisher<
+            moveit_msgs::msg::DisplayTrajectory>(
+            "/display_planned_path", 10);
+
+    scene_cloud_pub_ =
+        create_publisher<
+            sensor_msgs::msg::PointCloud2>(
+            "/profile_inspection/scene_cloud", qos);
+
+    profile_marker_pub_ =
+        create_publisher<
+            visualization_msgs::msg::MarkerArray>(
+            "/profile_inspection/matches", qos);
+
+    coverage_marker_pub_ =
+        create_publisher<
+            visualization_msgs::msg::MarkerArray>(
+            "/profile_inspection/coverage", qos);
+
+    camera_pose_pub_ =
+        create_publisher<
+            visualization_msgs::msg::MarkerArray>(
+            "/profile_inspection/camera_poses", qos);
+
+    // Provisional diagnostic estimates only.
+    profile_estimate_pub_ =
+        create_publisher<
+            hb_robot_interfaces::msg::ProfileEstimate>(
+            "/profile_inspection/estimate", qos);
+
+    rms_pub_ =
+        create_publisher<std_msgs::msg::Float64>(
+            "/profile_inspection/metrics/rms_mm", 10);
+
+    inlier_pub_ =
+        create_publisher<std_msgs::msg::Float64>(
+            "/profile_inspection/metrics/inlier_fraction",
+            10);
+
+    coverage_pub_ =
+        create_publisher<std_msgs::msg::Float64>(
+            "/profile_inspection/metrics/coverage",
+            10);
+
+    action_server_ =
+        rclcpp_action::create_server<InspectProfile>(
+            shared_from_this(),
+            "inspect_profile",
+            std::bind(
+                &InspectProfileServer::handleGoal,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2),
+            std::bind(
+                &InspectProfileServer::handleCancel,
+                this,
+                std::placeholders::_1),
+            std::bind(
+                &InspectProfileServer::handleAccepted,
+                this,
+                std::placeholders::_1));
+
+    approval_service_ =
+        create_service<
+            hb_robot_interfaces::srv::ApproveMotion>(
+            "approve_profile_motion",
+            std::bind(
+                &InspectProfileServer::handleApproval,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
+
+    RCLCPP_INFO(
+        get_logger(),
+        "InspectProfile ready; commit service: "
+        "/task_state/commit_workpiece");
+}
 
 rclcpp_action::GoalResponse
 InspectProfileServer::handleGoal(
@@ -185,18 +296,29 @@ InspectProfileServer::handleGoal(
 {
     if (goal->max_views == 0 ||
         goal->samples_per_view == 0 ||
+        !std::isfinite(goal->depth_range) ||
+        !std::isfinite(goal->camera_standoff) ||
         goal->depth_range <= 0.0 ||
         goal->camera_standoff <= 0.0)
     {
         return rclcpp_action::GoalResponse::REJECT;
     }
 
-    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    bool expected = false;
+
+    if (!busy_.compare_exchange_strong(
+            expected, true))
+    {
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+
+    return rclcpp_action::GoalResponse::
+        ACCEPT_AND_EXECUTE;
 }
 
 rclcpp_action::CancelResponse
 InspectProfileServer::handleCancel(
-    const std::shared_ptr<GoalHandleInspectProfile>)
+    const std::shared_ptr<GoalHandle>)
 {
     if (move_group_)
         move_group_->stop();
@@ -207,43 +329,99 @@ InspectProfileServer::handleCancel(
 }
 
 void InspectProfileServer::handleAccepted(
-    const std::shared_ptr<GoalHandleInspectProfile> goal_handle)
+    const std::shared_ptr<GoalHandle> handle)
 {
-    std::thread(
-        [this, goal_handle]()
+    if (worker_.joinable())
+        worker_.join();
+
+    worker_ = std::thread(
+        [this, handle]()
         {
-            execute(goal_handle);
-        }).detach();
+            try
+            {
+                execute(handle);
+            }
+            catch (const std::exception& e)
+            {
+                auto result =
+                    std::make_shared<
+                        InspectProfile::Result>();
+
+                result->success = false;
+                result->result_code =
+                    InspectProfile::Result::
+                        PLANNING_FAILED;
+
+                result->message =
+                    std::string("Inspection exception: ") +
+                    e.what();
+
+                if (handle->is_canceling())
+                    handle->canceled(result);
+                else
+                    handle->abort(result);
+            }
+
+            busy_.store(false);
+        });
 }
 
+void InspectProfileServer::handleApproval(
+    const std::shared_ptr<
+        hb_robot_interfaces::srv::ApproveMotion::Request>
+        request,
+    std::shared_ptr<
+        hb_robot_interfaces::srv::ApproveMotion::Response>
+        response)
+{
+    {
+        std::lock_guard<std::mutex> lock(
+            approval_mutex_);
 
-            InspectProfileServer::MotionOutcome
+        motion_approved_ = request->approve;
+        motion_rejected_ = !request->approve;
+    }
+
+    response->accepted = true;
+
+    response->message =
+        request->approve
+            ? "Motion approved"
+            : "Motion rejected";
+
+    approval_cv_.notify_all();
+}
+
+InspectProfileServer::MotionOutcome
 InspectProfileServer::executeApprovedPlan(
-    const moveit::core::RobotState& start_state,
-    const moveit::planning_interface::MoveGroupInterface::Plan& plan,
-    const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
+    const moveit::core::RobotState& start,
+    const moveit::planning_interface::
+        MoveGroupInterface::Plan& plan,
+    const std::shared_ptr<GoalHandle>& handle,
     const std::string& description)
 {
-    if (goal_handle->is_canceling())
+    if (handle->is_canceling())
         return MotionOutcome::CANCELED;
 
-    moveit_msgs::msg::DisplayTrajectory display_msg;
+    moveit_msgs::msg::DisplayTrajectory display;
 
-    display_msg.model_id =
+    display.model_id =
         move_group_->getRobotModel()->getName();
 
     moveit::core::robotStateToRobotStateMsg(
-        start_state,
-        display_msg.trajectory_start);
+        start,
+        display.trajectory_start);
 
-    display_msg.trajectory.push_back(plan.trajectory_);
-    display_traj_pub_->publish(display_msg);
+    display.trajectory.push_back(
+        plan.trajectory_);
+
+    display_traj_pub_->publish(display);
 
     if (skip_motion_)
     {
         RCLCPP_INFO(
             get_logger(),
-            "Dry-run: planned %s; not executing",
+            "Preview only: %s",
             description.c_str());
 
         return MotionOutcome::REJECTED;
@@ -252,27 +430,32 @@ InspectProfileServer::executeApprovedPlan(
     if (require_plan_approval_)
     {
         {
-            std::lock_guard<std::mutex> lock(approval_mutex_);
+            std::lock_guard<std::mutex> lock(
+                approval_mutex_);
+
             motion_approved_ = false;
             motion_rejected_ = false;
         }
 
         RCLCPP_INFO(
             get_logger(),
-            "Awaiting approval: %s",
+            "Awaiting inspection motion approval: %s",
             description.c_str());
 
-        std::unique_lock<std::mutex> lock(approval_mutex_);
+        std::unique_lock<std::mutex> lock(
+            approval_mutex_);
 
-        approval_cv_.wait(lock, [&]()
-        {
-            return motion_approved_ ||
-                   motion_rejected_ ||
-                   goal_handle->is_canceling() ||
-                   !rclcpp::ok();
-        });
+        approval_cv_.wait(
+            lock,
+            [&]()
+            {
+                return motion_approved_ ||
+                       motion_rejected_ ||
+                       handle->is_canceling() ||
+                       !rclcpp::ok();
+            });
 
-        if (goal_handle->is_canceling())
+        if (handle->is_canceling())
             return MotionOutcome::CANCELED;
 
         if (!rclcpp::ok())
@@ -282,600 +465,202 @@ InspectProfileServer::executeApprovedPlan(
             return MotionOutcome::REJECTED;
     }
 
-    if (goal_handle->is_canceling())
+    if (handle->is_canceling())
         return MotionOutcome::CANCELED;
 
-    const auto execution_result = move_group_->execute(plan);
+    const auto outcome =
+        move_group_->execute(plan);
 
-    if (goal_handle->is_canceling())
+    if (handle->is_canceling())
         return MotionOutcome::CANCELED;
 
-    if (!static_cast<bool>(execution_result))
-        return MotionOutcome::FAILED;
-
-    return MotionOutcome::SUCCESS;
-
-
-
-        }
-
-void InspectProfileServer::handleApproval(
-    const std::shared_ptr<
-        hb_robot_interfaces::srv::ApproveMotion::Request> request,
-    std::shared_ptr<
-        hb_robot_interfaces::srv::ApproveMotion::Response> response)
-{
-    {
-        std::lock_guard<std::mutex> lock(approval_mutex_);
-        motion_approved_ = request->approve;
-        motion_rejected_ = !request->approve;
-    }
-
-    response->accepted = true;
-    response->message =
-        request->approve ? "Motion approved" : "Motion not approved";
-
-    approval_cv_.notify_all();
+    return static_cast<bool>(outcome)
+        ? MotionOutcome::SUCCESS
+        : MotionOutcome::FAILED;
 }
 
 std::optional<
     moveit::planning_interface::MoveGroupInterface::Plan>
 InspectProfileServer::planToState(
-    const moveit::core::RobotState& start_state,
-    const moveit::core::RobotState& target_state)
+    const moveit::core::RobotState& start,
+    const moveit::core::RobotState& target)
 {
-    move_group_->setStartState(start_state);
+    using Plan =
+        moveit::planning_interface::
+            MoveGroupInterface::Plan;
 
-    if (!move_group_->setJointValueTarget(target_state))
-        return std::nullopt;
+    // Conservative inspection-transit limits.
+    constexpr double max_joint_travel_rad = 1.5;
+    constexpr double max_total_travel_rad = 4.0;
+    constexpr double max_step_rad = 0.25;
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    const motion::TransitValidator validator =
+        [&](const Plan& plan) -> bool
+    {
+        const auto& jt =
+            plan.trajectory_.joint_trajectory;
 
-    if (!static_cast<bool>(move_group_->plan(plan)))
-        return std::nullopt;
+        if (jt.joint_names.empty() ||
+            jt.points.empty())
+        {
+            return false;
+        }
 
-    return plan;
+        double total_travel = 0.0;
+        double maximum_joint_travel = 0.0;
+        double maximum_step = 0.0;
 
-    
-}
+        for (std::size_t j = 0;
+             j < jt.joint_names.size();
+             ++j)
+        {
+            double joint_travel = 0.0;
 
-bool InspectProfileServer::updateCuttingCollision(
-            const ProfileEstimate& estimate
-        ){
+            for (std::size_t i = 1;
+                 i < jt.points.size();
+                 ++i)
+            {
+                const auto& previous =
+                    jt.points[i - 1].positions;
 
-            using CollisionObject = moveit_msgs::msg::CollisionObject;
-            using Primitive = shape_msgs::msg::SolidPrimitive;
-            using PointT = pcl::PointXYZRGB;
-            using PointCloud = pcl::PointCloud<PointT>;
+                const auto& current =
+                    jt.points[i].positions;
 
-            if(!estimate.workpiece.cloud ||estimate.workpiece.cloud->points.empty() || estimate.section.cloud->points.empty()){
-                RCLCPP_ERROR(get_logger(),"emtpy wk piece or section cloud");
-                return false;
-            }
-
-        auto makeSphereObject = [&](const std::string id, const PointCloud& cloud, double rad){
-            moveit_msgs::msg::CollisionObject col_obj;
-            col_obj.header.frame_id=scene_frame_;
-            col_obj.id = id;
-            col_obj.operation = moveit_msgs::msg::CollisionObject::ADD;
-            
-            col_obj.primitives.reserve(cloud.size());
-            col_obj.primitive_poses.reserve(cloud.size());
-            for (const auto& p: cloud.points){
-                if(!std::isfinite(p.x)|| !std::isfinite(p.y) || !std::isfinite(p.z)){
-                    continue;
+                if (previous.size() !=
+                        jt.joint_names.size() ||
+                    current.size() !=
+                        jt.joint_names.size())
+                {
+                    return false;
                 }
-                shape_msgs::msg::SolidPrimitive sphere;
-                sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
-                sphere.dimensions = {rad};
-                geometry_msgs::msg::Pose pose;
-                pose.orientation.w = 1.0;
-                pose.position.x = p.x;
-                pose.position.y = p.y;
-                pose.position.z = p.z;
-                col_obj.primitives.push_back(sphere);
-                col_obj.primitive_poses.push_back(pose);
-            
+
+                const double step =
+                    std::abs(
+                        current[j] -
+                        previous[j]);
+
+                if (!std::isfinite(step))
+                    return false;
+
+                joint_travel += step;
+
+                maximum_step =
+                    std::max(
+                        maximum_step,
+                        step);
             }
-        return col_obj;
-        };
-        // ESTIMATE FROM POINTS INSTEAD OF PADDED BOX
-        const Eigen::Isometry3d member_from_world =
-        estimate.world_from_member.inverse();
 
-        double z_min = std::numeric_limits<double>::infinity();
-        double z_max = -std::numeric_limits<double>::infinity();
+            total_travel += joint_travel;
 
-        for (const auto& p : estimate.workpiece.cloud->points)
-        {
-            if (!std::isfinite(p.x) ||
-                !std::isfinite(p.y) ||
-                !std::isfinite(p.z))
-                continue;
-
-            const Eigen::Vector3d world_point(p.x, p.y, p.z);
-
-            const Eigen::Vector3d member_point =
-                member_from_world * world_point;
-
-            z_min = std::min(z_min, member_point.z());
-            z_max = std::max(z_max, member_point.z());
+            maximum_joint_travel =
+                std::max(
+                    maximum_joint_travel,
+                    joint_travel);
         }
 
-        if (!std::isfinite(z_min) ||
-            !std::isfinite(z_max) ||
-            z_max <= z_min)
+        const bool accepted =
+            maximum_joint_travel <=
+                max_joint_travel_rad &&
+            total_travel <=
+                max_total_travel_rad &&
+            maximum_step <= max_step_rad;
+
+        if (!accepted)
         {
-            RCLCPP_ERROR(
+            RCLCPP_WARN(
                 get_logger(),
-                "Invalid workpiece longitudinal extent");
-            return false;
+                "Inspection transit rejected: "
+                "total=%.3f max_joint=%.3f "
+                "max_step=%.3f",
+                total_travel,
+                maximum_joint_travel,
+                maximum_step);
         }
 
-        // Optional longitudinal padding.
-        constexpr double padding = 0.02;
+        return accepted;
+    };
 
-        auto mesh = mesh_builder_.extrude(
-            estimate.match.profile,
-            z_min - padding,
-            z_max + padding
-        );
-        // get z_min z_max from inspection workpiece
-        // const auto psm_objs = planning_scene_interface_.getObjects({"inspection_workpiece"});
-        // const auto it = psm_objs.find("inspection_workpiece");
-        // if(it == psm_objs.end() || it->second.primitives.empty()){
-        //     //collision object mesg is a std pair of string and primitive
-        //     RCLCPP_ERROR(get_logger(),"inspectionworkfpiece not found");
-        //     return false;}
-        // const auto& inspection_box = it->second;
-        // const auto& box = inspection_box.primitives.front();
-        // auto mesh = mesh_builder_.extrude(estimate.match.profile,
-        //     static_cast<double>(-box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0),
-        //     static_cast<double>(box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z]/2.0) );
-
-        if(!mesh){
-            RCLCPP_ERROR(get_logger(),"coudlnt make mesh");
-            return false;
-        }
-
-
-        // const Eigen::Vector3d section_z = estimate.section.frame.linear().col(2).cast<double>();
-        // const Eigen::Vector3d mesh_z = estimate.world_from_member.linear().col(2).cast<double>();
-
-        // RCLCPP_INFO(get_logger(), "section Z: %.4f,%.4f,%.4f | "
-        //             "mesh_z: %.4f,%.4f,%.4f", 
-        //             section_z.x(),section_z.y(),section_z.z(),
-        //             mesh_z.x(),mesh_z.y(),mesh_z.z());
-
-        // RCLCPP_INFO(get_logger(), "profile determinant is %.6f", 
-        // estimate.match.transform.linear().determinant());
-
-        moveit_msgs::msg::CollisionObject profile_mesh_col;
-        profile_mesh_col.header.frame_id = scene_frame_;
-        profile_mesh_col.header.stamp = now();
-        profile_mesh_col.pose.orientation.w = 1.0;
-        profile_mesh_col.id = "wk_workpiece_collision";
-        profile_mesh_col.operation = moveit_msgs::msg::CollisionObject::ADD;
-        profile_mesh_col.meshes.push_back(std::move(*mesh));
-
-        
-
-        const Eigen::Isometry3d& mesh_pose = estimate.world_from_member;
-        const Eigen::Matrix3d rotation = mesh_pose.linear();
-        if (!mesh_pose.matrix().allFinite() ||
-            std::abs(rotation.determinant() - 1.0) > 1e-4 ||
-            !(rotation.transpose() * rotation).isApprox(Eigen::Matrix3d::Identity(), 1e-4))
-        {
-            RCLCPP_ERROR(get_logger(), "Invalid profile rotation before mesh serialization: det=%g",
-                         rotation.determinant());
-            return false;
-        }
-        const auto pose_msg = tf2::toMsg(mesh_pose);
-        Eigen::Isometry3d serialized_pose;
-        tf2::fromMsg(pose_msg, serialized_pose);
-        if (!serialized_pose.matrix().isApprox(mesh_pose.matrix(), 1e-5))
-        {
-            RCLCPP_ERROR(get_logger(), "Profile pose changed during quaternion serialization");
-            return false;
-        }
-        RCLCPP_INFO(get_logger(), "Extrusion pose: fit det=%.6f, pose det=%.6f",
-                    estimate.match.transform.linear().determinant(), rotation.determinant());
-        profile_mesh_col.mesh_poses.push_back(pose_msg);
-        
-
-        
-        
-        // pcl::VoxelGrid<PointT> voxel;
-        // voxel.setInputCloud(estimate.workpiece.cloud);
-        // voxel.setLeafSize(0.025f,0.025f,0.025f);
-        // PointCloud coarse_wkpiece_cloud;
-        // voxel.filter(coarse_wkpiece_cloud);
-
-
-        // auto coarse_wkpiece_col = makeSphereObject("wk_workpiece_collision",coarse_wkpiece_cloud,0.003);
-        // auto fine_section_col = makeSphereObject("wk_section_collision",*estimate.section.cloud,0.003);
-        // if(coarse_wkpiece_col.primitives.empty() || fine_section_col.primitives.empty()){
-        //     RCLCPP_ERROR(get_logger(),"emtpy collision objects");
-        //         return false;
-        // }
-        CollisionObject remove_box;
-        remove_box.header.frame_id = scene_frame_;
-        remove_box.id = "inspection_workpiece";
-        remove_box.operation = CollisionObject::REMOVE;
-
-        const std::vector<CollisionObject> objects{remove_box,profile_mesh_col};
-        if(!planning_scene_interface_.applyCollisionObjects(objects)){
-            RCLCPP_ERROR(get_logger(),"couldnt update planning scene");
-                return false;
-        }
-        // Verify move_group's stored pose, not a second evaluation of the
-        // same local transform. Object and shape poses must both be included.
-        const auto stored_objects = planning_scene_interface_.getObjects({profile_mesh_col.id});
-        const auto stored_it = stored_objects.find(profile_mesh_col.id);
-        if (stored_it == stored_objects.end() || stored_it->second.meshes.size() != 1 ||
-            stored_it->second.mesh_poses.size() != 1 || !stored_it->second.primitives.empty())
-        {
-            RCLCPP_ERROR(get_logger(), "Extrusion readback missing or unexpected geometry");
-            return false;
-        }
-        const auto& stored = stored_it->second;
-        Eigen::Isometry3d object_pose, shape_pose;
-        tf2::fromMsg(stored.pose, object_pose);
-        tf2::fromMsg(stored.mesh_poses.front(), shape_pose);
-        Eigen::Isometry3d scene_from_header = Eigen::Isometry3d::Identity();
-        if (stored.header.frame_id != scene_frame_)
-        {
-            try
-            {
-                scene_from_header = tf2::transformToEigen(tf_buffer_->lookupTransform(
-                    scene_frame_, stored.header.frame_id, tf2::TimePointZero));
-            }
-            catch (const tf2::TransformException& ex)
-            {
-                RCLCPP_ERROR(get_logger(), "Cannot verify extrusion frame: %s", ex.what());
-                return false;
-            }
-        }
-        const Eigen::Isometry3d actual_pose = scene_from_header * object_pose * shape_pose;
-        const double position_error = (actual_pose.translation() - mesh_pose.translation()).norm();
-        const double rotation_error = (actual_pose.linear() - mesh_pose.linear()).norm();
-        if (!actual_pose.matrix().allFinite() || position_error > 1e-4 || rotation_error > 1e-4)
-        {
-            RCLCPP_ERROR(get_logger(), "Extrusion readback mismatch: position=%g m, rotation matrix error=%g",
-                         position_error, rotation_error);
-            return false;
-        }
-        RCLCPP_INFO(get_logger(),"updated planning scene with profile extrusion; pose readback verified");
-
-        // RCLCPP_INFO(get_logger(),"updated planning scene with coarse points %zu, and section points %zu", coarse_wkpiece_col.primitives.size(),
-        // fine_section_col.primitives.size() );
-        return true;
-  
-        }
-
-bool InspectProfileServer::updateWorkpieceCollision(
-    const hb_perception::WorkpieceModel& workpiece)
-{
-    using PointT = pcl::PointXYZRGB;
-    using PointCloud = pcl::PointCloud<PointT>;
-    using CollisionObject = moveit_msgs::msg::CollisionObject;
-    using Primitive = shape_msgs::msg::SolidPrimitive;
-
-    if (!workpiece.cloud || workpiece.cloud->empty())
-        return false;
-
-    // Downsample the extracted workpiece cloud.
-    pcl::VoxelGrid<PointT> voxel;
-    voxel.setInputCloud(workpiece.cloud);
-
-    constexpr float voxel_size = 0.015f; // 15 mm
-    voxel.setLeafSize(voxel_size, voxel_size, voxel_size);
-
-    PointCloud coarse_cloud;
-    voxel.filter(coarse_cloud);
-
-    if (coarse_cloud.empty())
-        return false;
-
-    CollisionObject object;
-    object.header.frame_id = scene_frame_;
-    object.header.stamp = now();
-    object.id = "inspection_workpiece";
-    object.operation = CollisionObject::ADD;
-    object.pose.orientation.w = 1.0;
-
-    // Radius of each collision sphere.
-    constexpr double sphere_radius = 0.012; // 12 mm
-
-    object.primitives.reserve(coarse_cloud.size());
-    object.primitive_poses.reserve(coarse_cloud.size());
-
-    for (const auto& p : coarse_cloud.points)
-    {
-        if (!std::isfinite(p.x) ||
-            !std::isfinite(p.y) ||
-            !std::isfinite(p.z))
-            continue;
-
-        Primitive sphere;
-        sphere.type = Primitive::SPHERE;
-        sphere.dimensions = {sphere_radius};
-
-        geometry_msgs::msg::Pose pose;
-        pose.orientation.w = 1.0;
-        pose.position.x = p.x;
-        pose.position.y = p.y;
-        pose.position.z = p.z;
-
-        object.primitives.push_back(sphere);
-        object.primitive_poses.push_back(pose);
-    }
-
-    if (object.primitives.empty())
-        return false;
-
-    const bool applied =
-        planning_scene_interface_.applyCollisionObject(object);
-
-    if (!applied)
-    {
-        RCLCPP_ERROR(
-            get_logger(),
-            "Failed to apply sphere collision object");
-        return false;
-    }
-
-    RCLCPP_INFO(
+    // Use the existing portfolio, trajectory scoring,
+    // and best-plan selection.
+    //
+    // false: stop exploring fallbacks once a
+    // sufficiently good candidate is found.
+    return motion::planTransit(
+        *move_group_,
         get_logger(),
-        "Workpiece collision spheres: %zu, radius %.3f m",
-        object.primitives.size(),
-        sphere_radius);
-
-    return true;
+        start,
+        target,
+        validator,
+        false);
 }
-// BOX COLLISION OBJECT
 
-// bool InspectProfileServer::updateWorkpieceCollision(
-//     const hb_perception::WorkpieceModel& workpiece)
-// {
-//     if (!workpiece.cloud || workpiece.cloud->empty())
-//         return false;
 
-//     // 1. Longitudinal direction from the smallest eigenvector
-//     //    of the surface-normal covariance.
-//     Eigen::Vector3f z =
-//         extractor_.estimateAxisFromNormals(
-//             workpiece.cloud, 0.025f);
 
-//     if (!z.allFinite() || z.norm() < 1e-6f)
-//     {
-//         RCLCPP_WARN(
-//             get_logger(),
-//             "Invalid normal-derived workpiece axis");
-//         return false;
-//     }
+    // if (!move_group_->setJointValueTarget(target))
+    //     return std::nullopt;
 
-//     z.normalize();
+    // moveit::planning_interface::
+    //     MoveGroupInterface::Plan plan;
 
-//     // Keep the axis sign consistent with the extracted workpiece.
-//     if (z.dot(workpiece.l_axes) < 0.0f)
-//         z = -z;
+    // if (!static_cast<bool>(move_group_->plan(plan)))
+    //     return std::nullopt;
 
-//     // 2. Build an orthonormal frame around the normal-derived axis.
-//     // Prefer the secondary PCA direction for cross-section orientation.
-//     Eigen::Vector3f x =
-//         workpiece.p_axes.col(1);
-
-//     x -= x.dot(z) * z;
-
-//     // If the projected PCA direction is degenerate, use a
-//     // world-axis fallback that is not parallel to z.
-//     if (!x.allFinite() || x.norm() < 1e-5f)
-//     {
-//         const Eigen::Vector3f reference =
-//             std::abs(z.dot(Eigen::Vector3f::UnitX())) < 0.9f
-//                 ? Eigen::Vector3f::UnitX()
-//                 : Eigen::Vector3f::UnitY();
-
-//         x = reference - reference.dot(z) * z;
-//     }
-
-//     x.normalize();
-
-//     Eigen::Vector3f y = z.cross(x).normalized();
-
-//     // Recompute x to remove numerical orthogonality error.
-//     x = y.cross(z).normalized();
-
-//     Eigen::Matrix3f R;
-//     R.col(0) = x;
-//     R.col(1) = y;
-//     R.col(2) = z;
-
-//     // 3. Project every finite cloud point into the new box frame.
-//     Eigen::Vector3f min_local =
-//         Eigen::Vector3f::Constant(
-//             std::numeric_limits<float>::infinity());
-
-//     Eigen::Vector3f max_local =
-//         Eigen::Vector3f::Constant(
-//             -std::numeric_limits<float>::infinity());
-
-//     std::size_t valid_points = 0;
-
-//     for (const auto& p : workpiece.cloud->points)
-//     {
-//         const Eigen::Vector3f world(p.x, p.y, p.z);
-
-//         if (!world.allFinite())
-//             continue;
-
-//         const Eigen::Vector3f local =
-//             R.transpose() * (world - workpiece.centroid);
-
-//         min_local = min_local.cwiseMin(local);
-//         max_local = max_local.cwiseMax(local);
-
-//         ++valid_points;
-//     }
-
-//     if (valid_points < 30 ||
-//         !min_local.allFinite() ||
-//         !max_local.allFinite())
-//     {
-//         RCLCPP_WARN(
-//             get_logger(),
-//             "Insufficient points for workpiece collision box");
-//         return false;
-//     }
-
-//     // 4. Dimensions and center from the actual point bounds.
-//     const Eigen::Vector3f center_local =
-//         0.5f * (min_local + max_local);
-
-//     const Eigen::Vector3f center_world =
-//         workpiece.centroid + R * center_local;
-
-//     const Eigen::Vector3f dimensions =
-//         max_local - min_local;
-
-//     constexpr double padding = 0.02;  // 20 mm on each side
-
-//     Eigen::Quaternionf q(R);
-//     q.normalize();
-
-//     // 5. Construct the MoveIt collision object.
-//     moveit_msgs::msg::CollisionObject object;
-
-//     object.header.frame_id = scene_frame_;
-//     object.header.stamp = now();
-
-//     object.id = "inspection_workpiece";
-//     object.operation =
-//         moveit_msgs::msg::CollisionObject::ADD;
-
-//     shape_msgs::msg::SolidPrimitive box;
-//     box.type = shape_msgs::msg::SolidPrimitive::BOX;
-
-//     box.dimensions.resize(3);
-
-//     box.dimensions[
-//         shape_msgs::msg::SolidPrimitive::BOX_X] =
-//         static_cast<double>(dimensions.x()) + 2.0 * padding;
-
-//     box.dimensions[
-//         shape_msgs::msg::SolidPrimitive::BOX_Y] =
-//         static_cast<double>(dimensions.y()) + 2.0 * padding;
-
-//     box.dimensions[
-//         shape_msgs::msg::SolidPrimitive::BOX_Z] =
-//         static_cast<double>(dimensions.z()) + 2.0 * padding;
-
-//     geometry_msgs::msg::Pose pose;
-
-//     pose.position.x = center_world.x();
-//     pose.position.y = center_world.y();
-//     pose.position.z = center_world.z();
-
-//     pose.orientation.x = q.x();
-//     pose.orientation.y = q.y();
-//     pose.orientation.z = q.z();
-//     pose.orientation.w = q.w();
-
-//     object.primitives.push_back(box);
-//     object.primitive_poses.push_back(pose);
-
-//     // 6. Publish to the MoveIt planning scene.
-//     const bool applied =
-//         planning_scene_interface_.applyCollisionObject(object);
-
-//     if (!applied)
-//     {
-//         RCLCPP_ERROR(
-//             get_logger(),
-//             "Failed to apply workpiece collision object");
-//         return false;
-//     }
-
-//     RCLCPP_INFO(
-//         get_logger(),
-//         "Workpiece collision box: "
-//         "%.3f x %.3f x %.3f m, "
-//         "%zu points",
-//         box.dimensions[
-//             shape_msgs::msg::SolidPrimitive::BOX_X],
-//         box.dimensions[
-//             shape_msgs::msg::SolidPrimitive::BOX_Y],
-//         box.dimensions[
-//             shape_msgs::msg::SolidPrimitive::BOX_Z],
-//         valid_points);
-
-//     return true;
-// }
-
+    // return plan;
 
 
 bool InspectProfileServer::waitForStability()
 {
-    if (!platform_supervision_ ||
-        !std::isfinite(stability_timeout_) ||
-        stability_timeout_ <= 0.0)
-        return false;
-
-    const bool settled = platform_supervision_->waitForStable(
+    const auto timeout =
         std::chrono::milliseconds(
-            static_cast<int64_t>(stability_timeout_ * 1000.0)));
+            static_cast<int64_t>(
+                stability_timeout_ * 1000.0));
 
-    if (!settled) {
-        RCLCPP_ERROR(
+    const bool stable =
+        platform_supervision_->waitForStable(
+            timeout);
+
+    if (!stable)
+    {
+        RCLCPP_WARN(
             get_logger(),
-            "Platform stability timeout: %s",
+            "Platform not stable: %s",
             platform_supervision_->reason().c_str());
     }
 
-    return settled;
+    return stable;
 }
 
 bool InspectProfileServer::acquireSamples(
-    uint32_t sample_count,
+    uint32_t count,
     double depth_range,
-    const std::function<bool()>& canceled
-)
+    const std::function<bool()>& canceled)
 {
-
-    
-    using namespace std::chrono_literals;
-
-    if (!rgbd_acquisition_ || sample_count == 0)
+    if (!rgbd_acquisition_ || count == 0)
         return false;
 
-    const auto start =
-        std::chrono::steady_clock::now();
-
-    const auto deadline = start + 20s;
+    const auto deadline =
+        std::chrono::steady_clock::now() + 20s;
 
     uint32_t integrated = 0;
     uint32_t received = 0;
-    uint32_t timeouts = 0;
     uint32_t rejected = 0;
+    uint32_t timeouts = 0;
 
-    // Require captures after this viewpoint's
-    // stability check has completed.
+    // Boundary is established after stability.
     rclcpp::Time boundary = now();
 
     while (rclcpp::ok() &&
-       !canceled() &&
-       integrated == 0)
-        {
-            auto observation =
-                rgbd_acquisition_->acquireAfter(
-                    boundary,
-                    std::chrono::milliseconds(
-                        static_cast<int64_t>(
-                            acquisition_timeout_ * 1000.0)));
-
-            if (canceled() || !rclcpp::ok())
-                break;
+            integrated == 0 &&
+           !canceled())
+    {
+        
+             
+        // retain the collection strategy here, to compensate for irregular kinect behabiour
+        auto observation =
+            rgbd_acquisition_->acquireAfter(
+                boundary, std::chrono::milliseconds(
+                    static_cast<int64_t>(
+                        acquisition_timeout_ * 1000.0)));
 
         if (!observation)
         {
@@ -885,19 +670,22 @@ bool InspectProfileServer::acquireSamples(
 
         ++received;
 
-        const auto stamp = observation->stamp;
+        boundary = observation->stamp;
 
-        // The next observation must have a later
-        // RGB timestamp, and its depth must also
-        // satisfy this boundary.
-        boundary = stamp;
+        // A viewpoint is accepted only when the
+        // platform is stable at acquisition time.
+        if (!platform_supervision_->stable())
+        {
+            ++rejected;
+            continue;
+        }
 
-        const bool success =
-            scene_model_->addObservation(
+        const auto stamp =
+            observation->stamp;
+
+        if (scene_model_->addObservation(
                 std::move(*observation),
-                depth_range);
-
-        if (success)
+                depth_range))
         {
             if (!first_observation_)
                 first_observation_ = stamp;
@@ -907,195 +695,25 @@ bool InspectProfileServer::acquireSamples(
         else
         {
             ++rejected;
-
-            RCLCPP_WARN(
-                get_logger(),
-                "RGBD observation rejected at %.6f",
-                stamp.seconds());
         }
     }
 
-    const double elapsed =
-        std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - start)
-                .count();
+    RCLCPP_INFO(
+        get_logger(),
+        "Acquisition: integrated=%u/%u "
+        "received=%u rejected=%u timeouts=%u",
+        integrated,
+        count,
+        received,
+        rejected,
+        timeouts);
 
-        RCLCPP_INFO(
-            get_logger(),
-            "RGBD acquisition: integrated=%u/%u "
-            "received=%u timeouts=%u rejected=%u "
-            "elapsed=%.2f s",
-            integrated,
-            sample_count,
-            received,
-            timeouts,
-            rejected,
-            elapsed);
+    if (integrated == 0)
+        rgbd_acquisition_->logCaptureFailure(
+            boundary);
 
-        // One diagnostic snapshot per failed acquisition batch.
-        // Do not log on every acquireAfter() timeout.
-        if (integrated == 0)
-        {
-            rgbd_acquisition_->logCaptureFailure(boundary);
-        }
-    return integrated > 0;
+    return integrated>0;
 }
-
-
-    // bool InspectProfileServer::acquireSamples(
-    //     uint32_t sample_count,
-    //     double depth_range)
-    // {
-    //     if (sample_count == 0)
-    //         return false;
-
-    //     using namespace std::chrono_literals;
-
-    //     const auto start = std::chrono::steady_clock::now();
-
-    //     // Total budget for one viewpoint.
-    //     constexpr auto total_budget = 20s;
-
-    //     const auto deadline = start + total_budget;
-
-    //     uint32_t integrated = 0;
-    //     uint32_t received = 0;
-    //     uint32_t timeouts = 0;
-    //     uint32_t rejected = 0;
-
-    //     // Require observations newer than acquisition start.
-    //     rclcpp::Time boundary = now();
-    //     hb_perception::RGBDAcquisition capture(this, tf_buffer_.get(), scene_frame_,
-    //         hb_perception::RGBDAcquisition::Mode::CaptureWindow, rgb_topic_, depth_topic_, camera_info_topic_);
-
-    //     while (rclcpp::ok() &&
-    //         integrated < sample_count &&
-    //         std::chrono::steady_clock::now() < deadline)
-    //     {
-    //         const auto remaining =
-    //             std::chrono::duration_cast<
-    //                 std::chrono::milliseconds>(
-    //                 deadline - std::chrono::steady_clock::now());
-
-    //         if (remaining <= 0ms)
-    //             break;
-
-    //         const auto wait_time =
-    //             std::min(
-    //                 remaining,
-    //                 std::chrono::milliseconds(
-    //                     static_cast<int64_t>(
-    //                         acquisition_timeout_ * 1000.0)));
-
-    //         auto observation =
-    //             capture.acquireAfter(
-    //                 boundary,
-    //                 wait_time);
-
-    //         if (!observation)
-    //         {
-    //             ++timeouts;
-
-    //             RCLCPP_WARN(
-    //                 get_logger(),
-    //                 "RGBD timeout %u: "
-    //                 "integrated %u/%u",
-    //                 timeouts,
-    //                 integrated,
-    //                 sample_count);
-
-    //             continue;
-    //         }
-
-    //         ++received;
-
-    //         const auto stamp = observation->stamp;
-
-    //         // Advance boundary even if integration fails.
-    //         boundary = stamp;
-
-    //         const bool success =
-    //             scene_model_->addObservation(
-    //                 std::move(*observation),
-    //                 depth_range);
-
-    //         if (success)
-    //         {
-    //             if (!first_observation_)
-    //                 first_observation_ = stamp;
-
-    //             ++integrated;
-    //         }
-    //         else
-    //         {
-    //             ++rejected;
-
-    //             RCLCPP_WARN(
-    //                 get_logger(),
-    //                 "RGBD observation rejected during "
-    //                 "scene integration");
-    //         }
-    //     }
-
-    //     const double elapsed =
-    //         std::chrono::duration<double>(
-    //             std::chrono::steady_clock::now() - start)
-    //             .count();
-
-    //     RCLCPP_INFO(
-    //         get_logger(),
-    //         "RGBD acquisition: "
-    //         "integrated=%u/%u received=%u "
-    //         "timeouts=%u rejected=%u "
-    //         "elapsed=%.2f s",
-    //         integrated,
-    //         sample_count,
-    //         received,
-    //         timeouts,
-    //         rejected,
-    //         elapsed);
-
-    //     return integrated > 0;
-    // }
-// bool InspectProfileServer::acquireSamples(
-//     uint32_t sample_count,
-//     double depth_range)
-// {
-//     if (!rgbd_acquisition_ || sample_count == 0)
-//         return false;
-
-    
-//     uint32_t integrated = 0;
-
-//     // Every acquisition must be newer than this boundary.
-//     rclcpp::Time boundary = now();
-
-//     for (uint32_t i = 0; i < sample_count; ++i)
-//     {
-//         auto observation =
-//             rgbd_acquisition_->acquireAfter(
-//                 boundary,
-//                 std::chrono::milliseconds(
-//                     static_cast<int64_t>(
-//                         acquisition_timeout_ * 1000.0)));
-
-//         if (!observation)
-//             break;
-
-//         const auto stamp = observation->stamp;
-//         boundary = stamp;
-
-//         if (scene_model_->addObservation(
-//                 std::move(*observation), depth_range))
-//         {
-//             if(!first_observation_) first_observation_=stamp;
-//             ++integrated;
-//         }
-//     }
-
-//     return integrated > 0;
-// }
-
 
 void InspectProfileServer::publishSceneCloud()
 {
@@ -1105,6 +723,7 @@ void InspectProfileServer::publishSceneCloud()
         return;
 
     sensor_msgs::msg::PointCloud2 msg;
+
     pcl::toROSMsg(*cloud, msg);
 
     msg.header.frame_id = scene_frame_;
@@ -1121,31 +740,35 @@ InspectProfileServer::estimateProfile()
     if (!cloud || cloud->empty())
         return std::nullopt;
 
-    auto workpiece = extractor_.extract(cloud);
+    auto workpiece =
+        extractor_.extract(cloud);
 
     if (!workpiece)
         return std::nullopt;
 
-    
-    const Eigen::Vector3f normal_axis =
+    const auto axis =
         extractor_.estimateAxisFromNormals(
             workpiece->cloud, 0.025f);
 
-    if (!normal_axis.allFinite() ||
-        normal_axis.norm() < 1e-6f)
+    if (!axis.allFinite() ||
+        axis.norm() < 1e-6f)
     {
         return std::nullopt;
     }
 
     *workpiece =
-        extractor_.withAxis(*workpiece, normal_axis);
+        extractor_.withAxis(
+            *workpiece, axis);
 
     auto section =
         extractor_.extractSection(
             *workpiece, 0.01f, 0.015f);
 
-    if (!section || section->points_2d.size() < 30)
+    if (!section ||
+        section->points_2d.size() < 30)
+    {
         return std::nullopt;
+    }
 
     const auto profiles =
         hb_perception::ProfileLibrary::ipnProfiles();
@@ -1161,47 +784,52 @@ InspectProfileServer::estimateProfile()
     if (!std::isfinite(best.rms_dist))
         return std::nullopt;
 
-     observation_model_.reset();
+    observation_model_.reset();
     observation_model_.setMatch(best);
 
     if (!observation_model_.integrate(*section))
         return std::nullopt;
 
     ProfileEstimate estimate;
-    estimate.workpiece = std::move(*workpiece);
-    estimate.section = std::move(*section);
+
+    estimate.workpiece =
+        std::move(*workpiece);
+
+    estimate.section =
+        std::move(*section);
+
     estimate.match = best;
-    estimate.coverage = observation_model_.coverageFraction();
 
-    Eigen::Isometry3f section_from_profile =
-        Eigen::Isometry3f::Identity();
+    estimate.coverage =
+        observation_model_.coverageFraction();
 
-    section_from_profile.linear().block<2, 2>(0, 0) =
-        best.transform.linear();
+    estimate.world_from_member =
+        matcher_.makeProfilePose(
+            estimate.section,
+            estimate.match).cast<double>();
 
-    section_from_profile.translation().head<2>() =
-        best.transform.translation();
+    if (!finiteRigid(
+            estimate.world_from_member))
+    {
+        return std::nullopt;
+    }
 
-    // estimate.world_from_member = 
-    //     (estimate.section.frame * section_from_profile)
-    //         .cast<double>();
-    estimate.world_from_member = matcher_.makeProfilePose(
-        estimate.section,
-        estimate.match
-    ).cast<double>();
     estimate.sufficient =
         best.rms_dist < rms_target_ &&
-        best.inlier_fraction > inlier_fraction_target_ &&
+        best.inlier_fraction >
+            inlier_fraction_target_ &&
         estimate.coverage > coverage_target_;
 
     return estimate;
 }
-  void InspectProfileServer::publishProfile(
+
+void InspectProfileServer::publishProfile(
     const ProfileEstimate& estimate)
 {
-    const std::vector<hb_perception::ProfileMatch> matches{
-        estimate.match
-    };
+    const std::vector<
+        hb_perception::ProfileMatch> matches{
+            estimate.match
+        };
 
     auto markers =
         matcher_.getVisualization(
@@ -1224,13 +852,16 @@ InspectProfileServer::estimateProfile()
             estimate.match);
 
     msg.header.stamp = stamp;
+
+    // This remains a diagnostic topic.
     profile_estimate_pub_->publish(msg);
 }
 
 void InspectProfileServer::publishCoverage(
     const hb_perception::SectionModel& section)
 {
-    using Marker = visualization_msgs::msg::Marker;
+    using Marker =
+        visualization_msgs::msg::Marker;
 
     visualization_msgs::msg::MarkerArray array;
 
@@ -1239,17 +870,20 @@ void InspectProfileServer::publishCoverage(
     array.markers.push_back(clear);
 
     Marker points;
+
     points.header.frame_id = scene_frame_;
     points.header.stamp = now();
     points.ns = "profile_support";
     points.id = 0;
     points.type = Marker::POINTS;
     points.action = Marker::ADD;
+
     points.pose.orientation.w = 1.0;
     points.scale.x = 0.003;
     points.scale.y = 0.003;
 
-    for (const auto& sample : observation_model_.coverage())
+    for (const auto& sample :
+         observation_model_.coverage())
     {
         const Eigen::Vector2f section_point =
             observation_model_.match().transform *
@@ -1262,33 +896,39 @@ void InspectProfileServer::publishCoverage(
                 section_point.y(),
                 0.0f);
 
-        geometry_msgs::msg::Point p;
-        p.x = world_point.x();
-        p.y = world_point.y();
-        p.z = world_point.z();
+        geometry_msgs::msg::Point point;
 
-        points.points.push_back(p);
+        point.x = world_point.x();
+        point.y = world_point.y();
+        point.z = world_point.z();
+
+        points.points.push_back(point);
 
         const float support =
-            std::clamp(sample.support, 0.0f, 1.0f);
+            std::clamp(
+                sample.support, 0.0f, 1.0f);
 
         std_msgs::msg::ColorRGBA color;
+
         color.r = 1.0f - support;
         color.g = support;
-        color.b = 0.0f;
         color.a = 1.0f;
 
         points.colors.push_back(color);
     }
 
-    array.markers.push_back(std::move(points));
+    array.markers.push_back(
+        std::move(points));
+
     coverage_marker_pub_->publish(array);
-} 
+}
+
 motion::ProfileInspectionRequest
 InspectProfileServer::makeProfileInspectionRequest(
     const InspectProfile::Goal& goal) const
 {
     motion::ProfileInspectionRequest request;
+
     request.cam_dist = goal.camera_standoff;
     request.pos_tol = 0.075;
     request.ang_tol = 0.25;
@@ -1297,17 +937,341 @@ InspectProfileServer::makeProfileInspectionRequest(
     return request;
 }
 
+bool InspectProfileServer::updateWorkpieceCollision(
+    const hb_perception::WorkpieceModel& workpiece)
+{
+    if (!workpiece.cloud ||
+        workpiece.cloud->empty())
+    {
+        return false;
+    }
 
+    pcl::VoxelGrid<pcl::PointXYZRGB> voxel;
+
+    voxel.setInputCloud(workpiece.cloud);
+    voxel.setLeafSize(0.015f, 0.015f, 0.015f);
+
+    Cloud coarse;
+    voxel.filter(coarse);
+
+    if (coarse.empty())
+        return false;
+
+    CollisionObject object;
+
+    object.header.frame_id = scene_frame_;
+    object.header.stamp = now();
+
+    object.id = "inspection_workpiece";
+    object.operation = CollisionObject::ADD;
+    object.pose.orientation.w = 1.0;
+
+    constexpr double radius = 0.012;
+
+    for (const auto& p : coarse.points)
+    {
+        if (!std::isfinite(p.x) ||
+            !std::isfinite(p.y) ||
+            !std::isfinite(p.z))
+        {
+            continue;
+        }
+
+        shape_msgs::msg::SolidPrimitive sphere;
+
+        sphere.type =
+            shape_msgs::msg::SolidPrimitive::SPHERE;
+
+        sphere.dimensions = {radius};
+
+        geometry_msgs::msg::Pose pose;
+
+        pose.orientation.w = 1.0;
+        pose.position.x = p.x;
+        pose.position.y = p.y;
+        pose.position.z = p.z;
+
+        object.primitives.push_back(sphere);
+        object.primitive_poses.push_back(pose);
+    }
+
+    if (object.primitives.empty())
+        return false;
+
+    return planning_scene_interface_
+        .applyCollisionObject(object);
+}
+
+std::optional<CollisionObject>
+InspectProfileServer::buildCuttingCollision(
+    const ProfileEstimate& estimate)
+{
+    if (!estimate.workpiece.cloud ||
+        estimate.workpiece.cloud->empty() ||
+        !estimate.section.cloud ||
+        estimate.section.cloud->empty() ||
+        !finiteRigid(estimate.world_from_member))
+    {
+        return std::nullopt;
+    }
+
+    const Eigen::Isometry3d member_from_world =
+        estimate.world_from_member.inverse();
+
+    double z_min =
+        std::numeric_limits<double>::infinity();
+
+    double z_max =
+        -std::numeric_limits<double>::infinity();
+
+    for (const auto& p :
+         estimate.workpiece.cloud->points)
+    {
+        if (!std::isfinite(p.x) ||
+            !std::isfinite(p.y) ||
+            !std::isfinite(p.z))
+        {
+            continue;
+        }
+
+        const Eigen::Vector3d world(p.x, p.y, p.z);
+
+        const Eigen::Vector3d local =
+            member_from_world * world;
+
+        z_min = std::min(z_min, local.z());
+        z_max = std::max(z_max, local.z());
+    }
+
+    if (!std::isfinite(z_min) ||
+        !std::isfinite(z_max) ||
+        z_max <= z_min)
+    {
+        return std::nullopt;
+    }
+
+    constexpr double padding = 0.02;
+
+    auto mesh =
+        mesh_builder_.extrude(
+            estimate.match.profile,
+            z_min - padding,
+            z_max + padding);
+
+    if (!mesh ||
+        mesh->vertices.empty() ||
+        mesh->triangles.empty())
+    {
+        return std::nullopt;
+    }
+
+    CollisionObject object;
+
+    object.header.frame_id = scene_frame_;
+    object.header.stamp = now();
+
+    object.id = "wk_workpiece_collision";
+    object.operation = CollisionObject::ADD;
+    object.pose.orientation.w = 1.0;
+
+    object.meshes.push_back(std::move(*mesh));
+
+    const auto serialized =
+        tf2::toMsg(estimate.world_from_member);
+
+    Eigen::Isometry3d roundtrip =
+        Eigen::Isometry3d::Identity();
+
+    tf2::fromMsg(serialized, roundtrip);
+
+    if (!matchingPose(
+            roundtrip,
+            estimate.world_from_member))
+    {
+        return std::nullopt;
+    }
+
+    object.mesh_poses.push_back(serialized);
+
+    return object;
+}
+
+bool InspectProfileServer::commitInitialWorkpiece(
+    const ProfileEstimate& estimate,
+    const std::shared_ptr<GoalHandle>& handle,
+    hb_robot_interfaces::msg::WorkpieceReference&
+        committed,
+    std::string& error)
+{
+    if (handle->is_canceling())
+    {
+        error = "Canceled before commit";
+        return false;
+    }
+
+    if (!first_observation_)
+    {
+        error = "No observation timestamp";
+        return false;
+    }
+
+    if (!platform_supervision_->stable())
+    {
+        error = "Platform not stable for commit";
+        return false;
+    }
+
+    auto collision =
+        buildCuttingCollision(estimate);
+
+    if (!collision)
+    {
+        error = "Cannot build final extrusion";
+        return false;
+    }
+
+    hb_robot_interfaces::msg::WorkpieceReference
+        reference;
+
+    reference.estimate =
+        matcher_.getProfileEstimateMsg(
+            scene_frame_,
+            estimate.section,
+            estimate.match);
+
+    // Exactly the same pose used by the mesh.
+    reference.estimate.pose =
+        tf2::toMsg(estimate.world_from_member);
+
+    reference.estimate.header.frame_id =
+        scene_frame_;
+
+    reference.estimate.header.stamp = now();
+
+    pcl::toROSMsg(
+        *estimate.workpiece.cloud,
+        reference.cloud);
+
+    reference.cloud.header =
+        reference.estimate.header;
+
+    reference.cloud.header.stamp =
+        *first_observation_;
+
+    reference.relocalized = false;
+    reference.expected_pose_version = 0;
+
+    // Validate locally before contacting TaskState.
+    if (collision->meshes.size() != 1 ||
+        collision->mesh_poses.size() != 1 ||
+        collision->header.frame_id !=
+            reference.estimate.header.frame_id)
+    {
+        error = "Malformed final collision object";
+        return false;
+    }
+
+    Eigen::Isometry3d mesh_pose =
+        Eigen::Isometry3d::Identity();
+
+    tf2::fromMsg(
+        collision->mesh_poses.front(),
+        mesh_pose);
+
+    if (!matchingPose(
+            mesh_pose,
+            estimate.world_from_member))
+    {
+        error = "Extrusion and reference poses differ";
+        return false;
+    }
+
+    if (!commit_client_->wait_for_service(3s))
+    {
+        error = "TaskState commit service unavailable";
+        return false;
+    }
+
+    auto request =
+        std::make_shared<CommitWorkpiece::Request>();
+
+    request->mode =
+        CommitWorkpiece::Request::INITIAL;
+
+    request->reference = reference;
+    request->collision_object = *collision;
+
+    // INITIAL allocates new authoritative versions.
+    request->expected_geometry_version = 0;
+    request->expected_pose_version = 0;
+    request->expected_scene_version = 0;
+
+    auto future =
+        commit_client_->async_send_request(request);
+
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<
+            std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(
+                commit_timeout_));
+
+    while (rclcpp::ok() &&
+           std::chrono::steady_clock::now() <
+               deadline)
+    {
+        if (future.wait_for(50ms) !=
+            std::future_status::ready)
+        {
+            continue;
+        }
+
+        const auto response = future.get();
+
+        if (!response->accepted)
+        {
+            error =
+                "TaskState rejected commit: " +
+                response->message;
+
+            return false;
+        }
+
+        committed = reference;
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Workpiece committed: "
+            "id=%s geometry=%llu pose=%llu scene=%llu",
+            response->reference_id.c_str(),
+            static_cast<unsigned long long>(
+                response->geometry_version),
+            static_cast<unsigned long long>(
+                response->pose_version),
+            static_cast<unsigned long long>(
+                response->scene_version));
+
+        return true;
+    }
+
+    error =
+        "Commit timed out; outcome unknown. "
+        "Do not retry until TaskState and MoveIt "
+        "have been reconciled";
+
+    return false;
+}
 
 void InspectProfileServer::execute(
-    const std::shared_ptr<GoalHandleInspectProfile> goal_handle)
+    const std::shared_ptr<GoalHandle> handle)
 {
     std::lock_guard<std::mutex> execution_lock(
         execution_mutex_);
 
-    
-    const auto goal = goal_handle->get_goal();
-    auto result = std::make_shared<InspectProfile::Result>();
+    const auto goal = handle->get_goal();
+
+    auto result =
+        std::make_shared<InspectProfile::Result>();
 
     result->success = false;
     result->viewpoints_captured = 0;
@@ -1316,128 +1280,96 @@ void InspectProfileServer::execute(
     scene_model_->clear();
     observation_model_.reset();
 
-    {
-        std::lock_guard<std::mutex> approval_lock(
-            approval_mutex_);
-        motion_approved_ = false;
-    }
-
-
-    auto fillInspectionResult = [&](const std::optional<ProfileEstimate>& estimate, InspectProfile::Result::SharedPtr result){
-        
-        result->profile_name =
-            estimate->match.profile.name;
-
-        result->rms_error =
-            estimate->match.rms_dist;
-
-            result->coverage =
-            estimate->coverage;
-
-        result->inlier_fraction =
-            estimate->match.inlier_fraction;
-
-        result->profile_pose.header.frame_id =
-            scene_frame_;
-
-        result->profile_pose.header.stamp = now();
-
-        result->profile_pose.pose =
-            tf2::toMsg(estimate->world_from_member);
-
-        result->message =
-            "Profile inspection completed";
-    
-    };
-
-    auto fail = [&](uint8_t code, const std::string& message)
+    auto fail =
+        [&](uint8_t code, const std::string& message)
     {
         result->success = false;
         result->result_code = code;
         result->message = message;
-        goal_handle->abort(result);
+
+        RCLCPP_ERROR(
+            get_logger(),
+            "Inspection failed: %s",
+            message.c_str());
+
+        if (handle->is_canceling())
+            handle->canceled(result);
+        else
+            handle->abort(result);
     };
 
-    auto canceled = [&]()
+    auto canceled = [&]() -> bool
     {
-        if (!goal_handle->is_canceling())
+        if (!handle->is_canceling())
             return false;
 
         move_group_->stop();
+
+        result->success = false;
         result->result_code =
             InspectProfile::Result::CANCELLED;
-        result->message = "Inspection cancelled";
-        goal_handle->canceled(result);
+
+        result->message = "Inspection canceled";
+
+        handle->canceled(result);
         return true;
     };
 
-
-    auto publish_trajectory= [&](moveit::core::RobotState& current_state,moveit::planning_interface::MoveGroupInterface::Plan& trajectory){
-        moveit_msgs::msg::DisplayTrajectory display_msg;
-        display_msg.model_id = move_group_->getRobotModel()->getName();
-        moveit::core::robotStateToRobotStateMsg(
-            current_state,
-            display_msg.trajectory_start
-        );
-        display_msg.trajectory.push_back(
-            trajectory.trajectory_
-        );
-        display_traj_pub_->publish(display_msg);
-    };
-        
-
-    // An NBV target requires at least a provisional member axis.
     std::optional<ProfileEstimate> estimate;
 
-    const auto current_state =
-    move_group_->getCurrentState(2.0);
+    const auto initial =
+        move_group_->getCurrentState(2.0);
 
-    if (!current_state)
+    if (!initial)
     {
         fail(
             InspectProfile::Result::PLANNING_FAILED,
-            "Cannot obtain current robot state");
+            "Cannot obtain initial robot state");
         return;
     }
 
-    current_state->update();
+    initial->update();
 
-    const Eigen::Isometry3d inspection_reference_pose = current_state->getGlobalLinkTransform(camera_link_);
+    const Eigen::Isometry3d reference_camera =
+        initial->getGlobalLinkTransform(camera_link_);
 
+    for (uint32_t view = 0;
+         view < goal->max_views;
+         ++view)
+    {
+        if (canceled())
+            return;
 
-
-    for (uint32_t view = 0; view < goal->max_views; ++view)
+        if (!waitForStability())
         {
             if (canceled())
                 return;
 
-            // Wait for central confidence to recover after motion.
-            if (!waitForStability()) {
-                if (canceled()) return;
+            fail(
+                InspectProfile::Result::
+                    ACQUISITION_FAILED,
+                "Platform not stable before acquisition");
+            return;
+        }
 
-                fail(
-                    InspectProfile::Result::ACQUISITION_FAILED,
-                    "Platform did not settle before RGB-D acquisition");
-                return;
-            }
+        const bool acquired =
+            acquireSamples(
+                goal->samples_per_view,
+                goal->depth_range,
+                [&]()
+                {
+                    return handle->is_canceling();
+                });
 
-            if (canceled()) return;
+        if (canceled())
+            return;
 
-            const bool acquired =
-                acquireSamples(goal->samples_per_view, goal->depth_range,canceled);
-
-            if (canceled()) return;
-
-            // Existing acquisition result handling continues here.
-       
-
-        // First iteration observes the current camera position.
-        // Subsequent iterations arrive here after a completed move.
         if (!acquired)
         {
             fail(
-                InspectProfile::Result::ACQUISITION_FAILED,
-                "No fresh RGB-D observation integrated");
+                InspectProfile::Result::
+                    ACQUISITION_FAILED,
+                "RGB-D acquisition failed");
             return;
         }
 
@@ -1452,48 +1384,47 @@ void InspectProfileServer::execute(
         {
             publishProfile(*estimate);
             publishCoverage(estimate->section);
-            if (!updateWorkpieceCollision(estimate->workpiece))
+
+            if (!updateWorkpieceCollision(
+                    estimate->workpiece))
             {
                 fail(
-                    InspectProfile::Result::PLANNING_FAILED,
-                    "Could not update workpiece collision geometry");
+                    InspectProfile::Result::
+                        PLANNING_FAILED,
+                    "Temporary inspection collision "
+                    "update failed");
                 return;
             }
+
+            std_msgs::msg::Float64 rms;
+            rms.data =
+                estimate->match.rms_dist * 1000.0;
+
+            rms_pub_->publish(rms);
+
+            std_msgs::msg::Float64 inliers;
+            inliers.data =
+                estimate->match.inlier_fraction;
+
+            inlier_pub_->publish(inliers);
+
+            std_msgs::msg::Float64 coverage;
+            coverage.data = estimate->coverage;
+
+            coverage_pub_->publish(coverage);
+
             RCLCPP_INFO(
                 get_logger(),
-                "View %u: %s RMS %.2f mm, inliers %.2f, "
-                "coverage %.2f",
+                "View %u: %s RMS=%.2f mm "
+                "inliers=%.3f coverage=%.3f",
                 view + 1,
                 estimate->match.profile.name.c_str(),
-                estimate->match.rms_dist * 1000.0f,
-                estimate->match.inlier_fraction,
-                estimate->coverage);
+                rms.data,
+                inliers.data,
+                coverage.data);
 
-            std_msgs::msg::Float64 rms_msg;
-            rms_msg.data = estimate->match.rms_dist * 1000.0f;
-            rms_pub_->publish(rms_msg);
-
-            std_msgs::msg::Float64 inlier_msg;
-            inlier_msg.data = estimate->match.inlier_fraction;
-            inlier_pub_->publish(inlier_msg);
-
-            std_msgs::msg::Float64 coverage_msg;
-            coverage_msg.data = estimate->coverage;
-            coverage_pub_->publish(coverage_msg);
-
-
-            fillInspectionResult(estimate, result);
-                // remove the suffcienty requirement, just return the result 
-            // if (estimate->sufficient)
-            const bool quality_met = estimate && estimate->match.rms_dist < rms_target_ &&
-            estimate->coverage > coverage_target_ &&
-            estimate->match.inlier_fraction > inlier_fraction_target_;
-            if(quality_met){
-
-
+            if (estimate->sufficient)
                 break;
-            }
-
         }
 
         if (view + 1 >= goal->max_views)
@@ -1502,16 +1433,14 @@ void InspectProfileServer::execute(
         if (!estimate)
         {
             fail(
-                InspectProfile::Result::INSUFFICIENT_GEOMETRY,
-                "Cannot estimate a provisional member axis "
-                "for the next viewpoint");
+                InspectProfile::Result::
+                    INSUFFICIENT_GEOMETRY,
+                "No provisional profile for NBV");
             return;
         }
 
-        if (canceled())
-            return;
-
-        auto request = makeProfileInspectionRequest(*goal);
+        auto request =
+            makeProfileInspectionRequest(*goal);
 
         request.world_from_member =
             estimate->world_from_member;
@@ -1519,351 +1448,395 @@ void InspectProfileServer::execute(
         request.target_world =
             estimate->world_from_member.translation();
 
-        const auto view_start_state = move_group_->getCurrentState(2.0);
+        const auto start =
+            move_group_->getCurrentState(2.0);
 
-        if (!view_start_state)
+        if (!start)
         {
             fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "Cannot obtain current robot state");
+                InspectProfile::Result::
+                    PLANNING_FAILED,
+                "Cannot obtain robot state for NBV");
             return;
         }
 
-        view_start_state->update();
+        start->update();
 
-        request.current_camera_pose = view_start_state->getGlobalLinkTransform(camera_link_);
-         
-        request.reference_camera_pose= inspection_reference_pose;
+        request.current_camera_pose =
+            start->getGlobalLinkTransform(
+                camera_link_);
 
+        request.reference_camera_pose =
+            reference_camera;
 
         const auto candidates =
-    nbv_planner_->debugCandidates(
-        request,
-        estimate->match);
+            nbv_planner_->debugCandidates(
+                request, estimate->match);
 
-        
-
-        for (std::size_t i = 0; i < candidates.size(); ++i)
+        for (std::size_t i = 0;
+             i < candidates.size(); ++i)
         {
-
-
-            const double gain = nbv_planner_->predictedCoverageGain( request, candidates[i].nominal_cam_pose,observation_model_);
+            const double gain =
+                nbv_planner_->predictedCoverageGain(
+                    request,
+                    candidates[i].nominal_cam_pose,
+                    observation_model_);
 
             publishCameraPose(
                 candidates[i].nominal_cam_pose,
                 "nbv_candidates",
                 static_cast<int>(100 + 4 * i),
-                gain
-                );
+                gain);
         }
 
-        
-
-        std::optional<motion::ProfileViewSolution> next_view;
+        std::optional<motion::ProfileViewSolution>
+            next_view;
 
         {
-            // Take a snapshot of the monitored planning scene.
-            planning_scene_monitor::LockedPlanningSceneRO locked(
-                planning_scene_monitor_);
+            planning_scene_monitor::
+                LockedPlanningSceneRO locked(
+                    planning_scene_monitor_);
 
             if (!locked)
             {
                 fail(
-                    InspectProfile::Result::PLANNING_FAILED,
+                    InspectProfile::Result::
+                        PLANNING_FAILED,
                     "Planning scene unavailable");
                 return;
             }
 
-            // diff() creates a planning scene derived from
-            // the monitored scene for candidate checking.
-            auto scene_snapshot = locked->diff();
+            auto snapshot = locked->diff();
 
-            
-            
-            next_view = nbv_planner_->plan(
-                *view_start_state,
-                request,
-               observation_model_,
-               scene_snapshot
-            );
+            next_view =
+                nbv_planner_->plan(
+                    *start,
+                    request,
+                    observation_model_,
+                    snapshot);
         }
 
         if (!next_view)
         {
             fail(
-                InspectProfile::Result::NO_REACHABLE_VIEW,
-                "No valid camera viewpoint found");
+                InspectProfile::Result::
+                    NO_REACHABLE_VIEW,
+                "No reachable next viewpoint");
             return;
         }
-
-        
 
         publishCameraPose(
             next_view->candidate.actual_cam_pose,
             "nbv_ik_solution",
             10,
-            next_view->candidate.predicted_gain
-        
-        );
+            next_view->candidate.predicted_gain);
 
-        auto trajectory = planToState(
-            *view_start_state,
-            next_view->robot_state);
+        auto plan =
+            planToState(
+                *start,
+                next_view->robot_state);
 
-        if (!trajectory)
+        if (!plan)
         {
             fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "MoveIt could not plan to selected viewpoint");
+                InspectProfile::Result::
+                    PLANNING_FAILED,
+                "Cannot plan to next viewpoint");
             return;
         }
 
-        publish_trajectory(*view_start_state,*trajectory);
-        // moveit_msgs::msg::DisplayTrajectory display_msg;
-        // display_msg.model_id = move_group_->getRobotModel()->getName();
-        // moveit::core::robotStateToRobotStateMsg(
-        //     *view_start_state,
-        //     display_msg.trajectory_start
-        // );
-        // display_msg.trajectory.push_back(
-        //     trajectory->trajectory_
-        // );
-        // display_traj_pub_->publish(display_msg);
+        const auto outcome =
+            executeApprovedPlan(
+                *start,
+                *plan,
+                handle,
+                "inspect next viewpoint");
 
-        const auto view_outcome = executeApprovedPlan(
-            *view_start_state,
-            *trajectory,
-            goal_handle,
-            "inspecting profile view"
-        );
-        if(view_outcome == MotionOutcome::CANCELED){
+        if (outcome == MotionOutcome::CANCELED)
+        {
             canceled();
             return;
         }
-        if(view_outcome!=MotionOutcome::SUCCESS){
-            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt get to view");
+
+        if (outcome != MotionOutcome::SUCCESS)
+        {
+            fail(
+                InspectProfile::Result::
+                    PLANNING_FAILED,
+                "Viewpoint motion not completed");
             return;
         }
-
-        if (canceled())
-            return;
-
-        // if (!waitForStability())
-        // {
-        //     fail(
-        //         InspectProfile::Result::MOTION_FAILED,
-        //         "Camera did not settle");
-        //     return;
-        // }
-
-        // Next loop iteration acquires a fresh observation
-        // and refits against the accumulated scene.
     }
 
-    // ADD RETURN HOME ROUTINE
-        moveit::core::RobotState home_state(move_group_->getRobotModel());
-        
-        const auto home_start_state = move_group_->getCurrentState(2.0);
-        if (!home_start_state)
-        {
-            fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "Cannot obtain current robot state");
-            return;
-        }
+    if (canceled())
+        return;
 
-        home_start_state->update();
-
-        const auto* jmg=  move_group_->getRobotModel()->getJointModelGroup(planning_group_);
-
-
-
-        if(!home_state.setToDefaultValues(planning_group_,"inspection_home")){
-            fail(
-                InspectProfile::Result::PLANNING_FAILED,
-                "Cannot get inspection home");
-            return;
-
-        }
-        const auto& joint_names = jmg->getVariableNames();
-        for (const auto jn: joint_names){
-            RCLCPP_INFO(get_logger(), "home state %s: %.2f",jn,home_state.getVariablePosition(jn));
-        }
-
-        auto home_plan = planToState(*home_start_state,home_state);
-
-        if(!home_plan){
-            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt plan home");
-            return;
-        }
-        
-        const auto home_outcome = executeApprovedPlan(
-            *home_start_state,
-            *home_plan,
-            goal_handle,
-            "return to inspection home"
-        );
-        if(home_outcome == MotionOutcome::CANCELED){
-            canceled();
-            return;
-        }
-        if(home_outcome!=MotionOutcome::SUCCESS){
-            fail(InspectProfile::Result::PLANNING_FAILED, "couldnt get home");
-            return;
-        }
-
-    if(!estimate){
+    if (!estimate)
+    {
         fail(
-        InspectProfile::Result::INSUFFICIENT_GEOMETRY,
-        "Inspection budget exhausted without sufficient geometry");
+            InspectProfile::Result::
+                INSUFFICIENT_GEOMETRY,
+            "No final profile estimate");
         return;
     }
-    publishProfile(*estimate);
-    if(!updateCuttingCollision(*estimate)){
-        fail(InspectProfile::Result::PLANNING_FAILED, "couldnt update collision stuff");
-        return;
-    }
-    
 
-    if(!waitForStability()) {
-      fail(InspectProfile::Result::MOTION_FAILED,"No stable reference publication window");
-      return;
+    // Preserve the original inspection policy:
+    // quality is reported, but a fitted estimate
+    // may be returned at the view budget limit.
+    //
+    // The commit coordinator decides whether the
+    // reference can become authoritative.
+
+    const auto home_start =
+        move_group_->getCurrentState(2.0);
+
+    if (!home_start)
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            "Cannot obtain state for inspection home");
+        return;
     }
-    // Only final successful inspection creates a localization reference. Intermediate
-    // nearest-cluster estimates must never silently restore execution permission.
-    if (!reference_pub_) reference_pub_ =
-      create_publisher<hb_robot_interfaces::msg::WorkpieceReference>(
-        "/workpiece_reference", rclcpp::QoS(1).transient_local());
-    hb_robot_interfaces::msg::WorkpieceReference reference;
-    reference.estimate = matcher_.getProfileEstimateMsg(
-      scene_frame_, estimate->section, estimate->match);
-    reference.estimate.header.stamp = now();
-    pcl::toROSMsg(*estimate->workpiece.cloud, reference.cloud);
-    reference.cloud.header = reference.estimate.header;
-    if(!first_observation_) {fail(InspectProfile::Result::ACQUISITION_FAILED,"Missing observation timestamp");return;}
-    // The fit integrates several views. Confirm it only if the whole interval
-    // was supervised. The publication stamp identifies this particular fit.
-    reference.cloud.header.stamp=*first_observation_;
-    result->profile_pose.header=reference.estimate.header;
-    reference_pub_->publish(reference);
-    result->success= true;
+
+    home_start->update();
+
+    moveit::core::RobotState home(
+        move_group_->getRobotModel());
+
+    if (!home.setToDefaultValues(
+            planning_group_,
+            "inspection_home"))
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            "Missing inspection_home state");
+        return;
+    }
+
+    const auto home_plan =
+        planToState(*home_start, home);
+
+    if (!home_plan)
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            "Cannot plan inspection home");
+        return;
+    }
+
+    const auto home_outcome =
+        executeApprovedPlan(
+            *home_start,
+            *home_plan,
+            handle,
+            "return inspection home");
+
+    if (home_outcome == MotionOutcome::CANCELED)
+    {
+        canceled();
+        return;
+    }
+
+    if (home_outcome != MotionOutcome::SUCCESS)
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            "Inspection home not completed");
+        return;
+    }
+
+    if (canceled())
+        return;
+
+    if (!waitForStability())
+    {
+        fail(
+            InspectProfile::Result::MOTION_FAILED,
+            "Platform not stable for final commit");
+        return;
+    }
+
+    hb_robot_interfaces::msg::WorkpieceReference
+        committed;
+
+    std::string error;
+
+    if (!commitInitialWorkpiece(
+            *estimate,
+            handle,
+            committed,
+            error))
+    {
+        fail(
+            InspectProfile::Result::PLANNING_FAILED,
+            error);
+        return;
+    }
+
+    result->profile_name =
+        estimate->match.profile.name;
+
+    result->rms_error =
+        estimate->match.rms_dist;
+
+    result->coverage =
+        estimate->coverage;
+
+    result->inlier_fraction =
+        estimate->match.inlier_fraction;
+
+    result->profile_pose.header =
+        committed.estimate.header;
+
+    result->profile_pose.pose =
+        committed.estimate.pose;
+
+    result->success = true;
     result->result_code =
         InspectProfile::Result::SUCCESS;
-    goal_handle->succeed(result);
-    
-   
-   
+
+    result->message =
+        "Profile inspection completed; "
+        "workpiece committed by TaskState";
+
+    handle->succeed(result);
 }
 
 void InspectProfileServer::publishCameraPose(
     const Eigen::Isometry3d& pose,
     const std::string& ns,
-    int id_base,
-    std::optional<double> predicted_gain
-)
+    int id,
+    std::optional<double> gain)
 {
     visualization_msgs::msg::MarkerArray array;
 
-    constexpr double axis_length = 0.15;
-    constexpr double shaft_diameter = 0.006;
-    constexpr double head_diameter = 0.014;
+    constexpr double length = 0.15;
+    constexpr double shaft = 0.006;
+    constexpr double head = 0.014;
     constexpr double head_length = 0.02;
 
-    const std::array<std::array<float, 3>, 3> colors{{
-        {{1.0f, 0.0f, 0.0f}}, // +X forward: red
-        {{0.0f, 1.0f, 0.0f}}, // +Y left: green
-        {{0.0f, 0.0f, 1.0f}}  // +Z up: blue
-    }};
+    const std::array<std::array<float, 3>, 3>
+        colors{{
+            {{1.0f, 0.0f, 0.0f}},
+            {{0.0f, 1.0f, 0.0f}},
+            {{0.0f, 0.0f, 1.0f}}
+        }};
 
-    for (int i = 0; i < 3; ++i)
+    for (int axis = 0; axis < 3; ++axis)
     {
         visualization_msgs::msg::Marker marker;
 
-        marker.header.frame_id = move_group_->getRobotModel()->getModelFrame();
+        marker.header.frame_id =
+            move_group_->getRobotModel()
+                ->getModelFrame();
+
         marker.header.stamp = now();
+
         marker.ns = ns;
-        marker.pose.orientation.w=1.0;
-        marker.id = id_base + i;
-        marker.type = visualization_msgs::msg::Marker::ARROW;
-        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.id = id + axis;
 
-        const Eigen::Vector3d origin = pose.translation();
-        const Eigen::Vector3d endpoint =
-            origin + axis_length * pose.linear().col(i);
+        marker.type =
+            visualization_msgs::msg::Marker::ARROW;
 
-        geometry_msgs::msg::Point start;
-        start.x = origin.x();
-        start.y = origin.y();
-        start.z = origin.z();
+        marker.action =
+            visualization_msgs::msg::Marker::ADD;
 
-        geometry_msgs::msg::Point end;
-        end.x = endpoint.x();
-        end.y = endpoint.y();
-        end.z = endpoint.z();
+        marker.pose.orientation.w = 1.0;
 
-        marker.points = {start, end};
+        const Eigen::Vector3d origin =
+            pose.translation();
 
-        marker.scale.x = shaft_diameter;
-        marker.scale.y = head_diameter;
+        const Eigen::Vector3d end =
+            origin +
+            length * pose.linear().col(axis);
+
+        geometry_msgs::msg::Point p0, p1;
+
+        p0.x = origin.x();
+        p0.y = origin.y();
+        p0.z = origin.z();
+
+        p1.x = end.x();
+        p1.y = end.y();
+        p1.z = end.z();
+
+        marker.points = {p0, p1};
+
+        marker.scale.x = shaft;
+        marker.scale.y = head;
         marker.scale.z = head_length;
 
-        marker.color.r = colors[i][0];
-        marker.color.g = colors[i][1];
-        marker.color.b = colors[i][2];
+        marker.color.r = colors[axis][0];
+        marker.color.g = colors[axis][1];
+        marker.color.b = colors[axis][2];
         marker.color.a = 1.0f;
 
-        array.markers.push_back(std::move(marker));
+        array.markers.push_back(
+            std::move(marker));
     }
 
-    if(predicted_gain){
+    if (gain)
+    {
         visualization_msgs::msg::Marker label;
 
-        label.header.frame_id = move_group_->getRobotModel()->getModelFrame();
+        label.header.frame_id =
+            move_group_->getRobotModel()
+                ->getModelFrame();
+
         label.header.stamp = now();
+
         label.ns = ns;
-        label.pose.orientation.w=1.0;
-        label.id = id_base + 3;
-        label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        label.action = visualization_msgs::msg::Marker::ADD;
-        label.pose.position.x= pose.translation().x();
-        label.pose.position.y= pose.translation().y();
-        label.pose.position.z= pose.translation().z()+0.1;
-        
+        label.id = id + 3;
+
+        label.type =
+            visualization_msgs::msg::Marker::
+                TEXT_VIEW_FACING;
+
+        label.action =
+            visualization_msgs::msg::Marker::ADD;
+
+        label.pose.orientation.w = 1.0;
+
+        label.pose.position.x =
+            pose.translation().x();
+
+        label.pose.position.y =
+            pose.translation().y();
+
+        label.pose.position.z =
+            pose.translation().z() + 0.1;
+
         label.scale.z = 0.045;
 
         label.color.r = 1.0f;
         label.color.g = 1.0f;
         label.color.b = 1.0f;
         label.color.a = 1.0f;
-        std::ostringstream ss;
-        ss <<std::fixed<<std::setprecision(3)<<"Gain: "<<*predicted_gain;
-        label.text =ss.str();
-        
-        array.markers.push_back(std::move(label));
+
+        std::ostringstream text;
+
+        text << std::fixed
+             << std::setprecision(3)
+             << "Gain: " << *gain;
+
+        label.text = text.str();
+
+        array.markers.push_back(
+            std::move(label));
     }
 
-    RCLCPP_INFO(
-    get_logger(),
-    "Publishing camera pose '%s' in frame '%s' "
-    "at [%.3f, %.3f, %.3f]",
-    ns.c_str(),
-    move_group_->getRobotModel()->getModelFrame().c_str(),
-    pose.translation().x(),
-    pose.translation().y(),
-    pose.translation().z());
     camera_pose_pub_->publish(array);
 }
 
-
-
-}
+}  // namespace hb_robot_skills
 
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
 
     auto node =
-        std::make_shared<hb_robot_skills::InspectProfileServer>();
+        std::make_shared<
+            hb_robot_skills::InspectProfileServer>();
 
     try
     {
@@ -1873,7 +1846,7 @@ int main(int argc, char** argv)
     {
         RCLCPP_FATAL(
             node->get_logger(),
-            "Initialization failed: %s",
+            "Inspection initialization failed: %s",
             e.what());
 
         rclcpp::shutdown();
@@ -1881,6 +1854,7 @@ int main(int argc, char** argv)
     }
 
     rclcpp::executors::MultiThreadedExecutor executor;
+
     executor.add_node(node);
     executor.spin();
 

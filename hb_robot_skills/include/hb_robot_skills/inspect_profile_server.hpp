@@ -1,24 +1,42 @@
+
 #pragma once
+
 #include <memory>
-#include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <thread>
 #include <mutex>
-#include <thread>
+#include <atomic>
 #include <string>
+#include <vector>
+#include <optional>
 #include <functional>
+#include <condition_variable>
+
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
-#include <moveit_msgs/msg/move_it_error_codes.hpp>
-#include <moveit_msgs/msg/display_trajectory.hpp>
-#include <moveit/move_group_interface/move_group_interface.h>
-#include <moveit/robot_state/robot_state.h>
 #include <Eigen/Geometry>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
+
+#include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/robot_state/robot_state.h>
+#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+
+#include <moveit_msgs/msg/display_trajectory.hpp>
+#include <moveit_msgs/msg/collision_object.hpp>
+
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <std_msgs/msg/float64.hpp>
+
+#include <hb_robot_interfaces/action/inspect_profile.hpp>
+#include <hb_robot_interfaces/srv/approve_motion.hpp>
+#include <hb_robot_interfaces/srv/commit_workpiece.hpp>
+#include <hb_robot_interfaces/msg/profile_estimate.hpp>
+#include <hb_robot_interfaces/msg/workpiece_reference.hpp>
+
 #include "hb_robot_perception/rgbd_acquisition.hpp"
 #include "hb_robot_perception/scene_model.hpp"
 #include "hb_robot_perception/workpiece_extractor.hpp"
@@ -26,203 +44,218 @@
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/profile_observation_model.hpp"
 #include "hb_robot_perception/profile_mesh_builder.hpp"
+
 #include "hb_robot_skills/platform_supervision_client.hpp"
-
-
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
-#include <hb_robot_interfaces/action/inspect_profile.hpp>
-#include "hb_robot_interfaces/srv/approve_motion.hpp"
-#include "hb_robot_interfaces/msg/profile_estimate.hpp"
-#include <condition_variable>
-#include <moveit/planning_scene/planning_scene.h>
-#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
-#include <moveit_msgs/msg/collision_object.hpp>
-#include <shape_msgs/msg/solid_primitive.hpp>
-#include <std_msgs/msg/float64.hpp>
 
-namespace hb_robot_skills{
+namespace hb_robot_skills {
 
+class InspectProfileServer : public rclcpp::Node {
+public:
+    using InspectProfile =
+        hb_robot_interfaces::action::InspectProfile;
 
+    using GoalHandle =
+        rclcpp_action::ServerGoalHandle<InspectProfile>;
 
+    using CommitWorkpiece =
+        hb_robot_interfaces::srv::CommitWorkpiece;
 
-class InspectProfileServer: public rclcpp::Node{
-    public:
+    explicit InspectProfileServer(
+        const rclcpp::NodeOptions& options =
+            rclcpp::NodeOptions());
 
-        using InspectProfile = hb_robot_interfaces::action::InspectProfile;
-        using GoalHandleInspectProfile = rclcpp_action::ServerGoalHandle<InspectProfile>;
+    ~InspectProfileServer() override;
 
-        explicit InspectProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-    
-        void initialize();
+    void initialize();
 
-    private:
+private:
+    enum class MotionOutcome {
+        SUCCESS,
+        REJECTED,
+        CANCELED,
+        FAILED
+    };
 
-        enum class MotionOutcome{
-                SUCCESS,
-                REJECTED,
-                CANCELED,
-                FAILED
-            };
+    struct ProfileEstimate {
+        hb_perception::WorkpieceModel workpiece;
+        hb_perception::SectionModel section;
+        hb_perception::ProfileMatch match;
 
-        MotionOutcome executeApprovedPlan(
-            const moveit::core::RobotState& start_state,
-            const moveit::planning_interface::MoveGroupInterface::Plan& plan,
-            const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
-            const std::string& description
-        );
+        Eigen::Isometry3d world_from_member =
+            Eigen::Isometry3d::Identity();
 
+        float coverage = 0.0f;
+        bool sufficient = false;
+    };
 
-    ///APPROVAL STUFF
-        rclcpp::Publisher<hb_robot_interfaces::msg::WorkpieceReference>::SharedPtr reference_pub_;
-        rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
-        std::mutex approval_mutex_;
-        std::condition_variable approval_cv_;
-        bool motion_approved_{false};
+    rclcpp_action::GoalResponse handleGoal(
+        const rclcpp_action::GoalUUID&,
+        std::shared_ptr<const InspectProfile::Goal>);
 
-        void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
-        std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
+    rclcpp_action::CancelResponse handleCancel(
+        const std::shared_ptr<GoalHandle>);
 
-        rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID & uuid, 
-            std::shared_ptr<const InspectProfile::Goal> goal);
+    void handleAccepted(
+        const std::shared_ptr<GoalHandle>);
 
-        rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandleInspectProfile> goal_handle);
+    void execute(
+        const std::shared_ptr<GoalHandle>);
 
-        void handleAccepted(const std::shared_ptr<GoalHandleInspectProfile> goal_handle);
-        void execute(const std::shared_ptr<GoalHandleInspectProfile> goal_handle);
-        motion::ProfileInspectionRequest makeProfileInspectionRequest(
-            const InspectProfile::Goal& goal) const;
+    MotionOutcome executeApprovedPlan(
+        const moveit::core::RobotState& start,
+        const moveit::planning_interface::
+            MoveGroupInterface::Plan& plan,
+        const std::shared_ptr<GoalHandle>& handle,
+        const std::string& description);
 
-        
-        
-        bool moveToView(const moveit::core::RobotState& target_state);
-        bool waitForStability();
-        bool acquireSamples(uint32_t sample_count, double depth_range,const std::function<bool()>& canceled);
-        bool registerView();
-        bool moveHome();
+    void handleApproval(
+        const std::shared_ptr<
+            hb_robot_interfaces::srv::ApproveMotion::Request>,
+        std::shared_ptr<
+            hb_robot_interfaces::srv::ApproveMotion::Response>);
 
-        void publishFeedback(const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
-            uint32_t views_captured, uint32_t total_viewpoints, uint8_t phase);
-        
+    std::optional<
+        moveit::planning_interface::MoveGroupInterface::Plan>
+    planToState(
+        const moveit::core::RobotState& start,
+        const moveit::core::RobotState& target);
 
-        void abortGoal(const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
-            uint8_t result_code,
-            uint32_t viewpoints_captured,
-            const std::string& message);
-        
-        void cancelGoal(const std::shared_ptr<GoalHandleInspectProfile>& goal_handle,
-                        uint32_t viewpoints_captured
-        );
+    motion::ProfileInspectionRequest
+    makeProfileInspectionRequest(
+        const InspectProfile::Goal&) const;
 
-        bool updateWorkpieceCollision(
-            const hb_perception::WorkpieceModel& workpiece
+    bool waitForStability();
 
-        );
+    bool acquireSamples(
+        uint32_t count,
+        double depth_range,
+        const std::function<bool()>& canceled);
 
-        
+    std::optional<ProfileEstimate> estimateProfile();
 
+    void publishProfile(
+        const ProfileEstimate&);
 
-        void publishCameraPose(
-            const Eigen::Isometry3d& pose,
-            const std::string& ns,
-            int id_base,
-            std::optional<double> predicted_gain = std::nullopt
-        );
+    void publishCoverage(
+        const hb_perception::SectionModel&);
 
+    void publishSceneCloud();
 
-        struct ProfileEstimate{
-            hb_perception::WorkpieceModel workpiece;
-            hb_perception::SectionModel section;    
-            hb_perception::ProfileMatch match;
-            Eigen::Isometry3d world_from_member =  Eigen::Isometry3d::Identity();
-            float coverage = 0.0f;
-            bool sufficient = false;
-        };
-        bool updateCuttingCollision(
-            const ProfileEstimate& estimate
-        );
+    void publishCameraPose(
+        const Eigen::Isometry3d&,
+        const std::string& ns,
+        int id,
+        std::optional<double> gain = std::nullopt);
 
-        hb_perception::WorkpieceExtractor extractor_;
-        hb_perception::ProfileMatcher matcher_;
-        hb_perception::ProfileObservationModel observation_model_;
-        std::vector<hb_perception::ProfileModel> profiles_;
-        hb_perception::ProfileMeshBuilder mesh_builder_;
+    bool updateWorkpieceCollision(
+        const hb_perception::WorkpieceModel&);
 
-        std::optional<ProfileEstimate> estimateProfile();
-        void publishProfile(const ProfileEstimate& estimate);
-        void publishCoverage(const hb_perception::SectionModel& section);
-        void publishSceneCloud();
-        std::optional<moveit::planning_interface::MoveGroupInterface::Plan>planToState(
-            const moveit::core::RobotState& start_state,
-            const moveit::core::RobotState& target_state
-        );
+    std::optional<moveit_msgs::msg::CollisionObject>
+    buildCuttingCollision(
+        const ProfileEstimate&);
 
-        std::unique_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
-        planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+    bool commitInitialWorkpiece(
+        const ProfileEstimate&,
+        const std::shared_ptr<GoalHandle>&,
+        hb_robot_interfaces::msg::WorkpieceReference&,
+        std::string& error);
 
-        moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
-        
-        
+    hb_perception::WorkpieceExtractor extractor_;
+    hb_perception::ProfileMatcher matcher_;
+    hb_perception::ProfileObservationModel
+        observation_model_;
+    hb_perception::ProfileMeshBuilder mesh_builder_;
 
-        rclcpp_action::Server<InspectProfile>::SharedPtr action_server_;
-        std::unique_ptr<motion::NBVPlanner> nbv_planner_;
+    std::shared_ptr<hb_perception::SceneModel>
+        scene_model_;
 
-        rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_;
-        rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr scene_cloud_pub_;
-        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr profile_marker_pub_;
-        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr coverage_marker_pub_;
-        rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_pub_;
-        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr camera_pose_pub_;
-        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr rms_pub_;
-        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr inlier_pub_;
-        rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr coverage_pub_;
-    
-        std::string planning_group_;
-        std::string camera_link_;
-        std::string platform_stability_topic_;
-        double planning_time_;
-        double stability_timeout_;
-        std::mutex execution_mutex_;
-        bool skip_motion_{true};
-        bool require_plan_approval_{false};
-        bool motion_rejected_{false};
+    std::unique_ptr<hb_perception::RGBDAcquisition>
+        rgbd_acquisition_;
 
-        std::optional<rclcpp::Time> first_observation_;
-        std::shared_ptr<hb_perception::SceneModel> scene_model_;
-        std::unique_ptr<
-                hb_robot_skills::PlatformSupervisionClient
-            > platform_supervision_;
-        // std::unique_ptr<hb_perception::PlatformMotionSupervisor> platform_motion_supervisor_;
-        // configure acquisition stuff
-        std::string rgb_topic_;
-        std::string depth_topic_;
-        std::string camera_info_topic_;
-        std::string scene_frame_;
-        double acquisition_timeout_;
+    std::unique_ptr<PlatformSupervisionClient>
+        platform_supervision_;
 
-        float rms_target_ = 0.01;
-        float inlier_fraction_target_=  0.8;
-        float coverage_target_ = 0.65;
+    std::unique_ptr<motion::NBVPlanner>
+        nbv_planner_;
 
-        double max_ang_vel_rms_ =0.01;
-        double max_lin_acc_rms_ =0.2;
-        double max_mean_ang_vel_=0.03;
-        
-        
-        // tf buffer stuff
-        std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
-        std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
-        
+    std::unique_ptr<
+        moveit::planning_interface::MoveGroupInterface>
+        move_group_;
 
+    planning_scene_monitor::PlanningSceneMonitorPtr
+        planning_scene_monitor_;
 
-        // Long-lived acquisition, serviced by its own executor.
-        // Only observations are requested on demand.
-        std::unique_ptr<hb_perception::RGBDAcquisition>
-            rgbd_acquisition_;
+    moveit::planning_interface::PlanningSceneInterface
+        planning_scene_interface_;
 
-        
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener>
+        tf_listener_;
+
+    rclcpp_action::Server<InspectProfile>::SharedPtr
+        action_server_;
+
+    rclcpp::Service<
+        hb_robot_interfaces::srv::ApproveMotion>::SharedPtr
+        approval_service_;
+
+    rclcpp::Client<CommitWorkpiece>::SharedPtr
+        commit_client_;
+
+    rclcpp::Publisher<
+        moveit_msgs::msg::DisplayTrajectory>::SharedPtr
+        display_traj_pub_;
+
+    rclcpp::Publisher<
+        sensor_msgs::msg::PointCloud2>::SharedPtr
+        scene_cloud_pub_;
+
+    rclcpp::Publisher<
+        visualization_msgs::msg::MarkerArray>::SharedPtr
+        profile_marker_pub_,
+        coverage_marker_pub_,
+        camera_pose_pub_;
+
+    rclcpp::Publisher<
+        hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr
+        profile_estimate_pub_;
+
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr
+        rms_pub_,
+        inlier_pub_,
+        coverage_pub_;
+
+    std::string planning_group_;
+    std::string camera_link_;
+    std::string rgb_topic_;
+    std::string depth_topic_;
+    std::string camera_info_topic_;
+    std::string scene_frame_;
+
+    double planning_time_ = 5.0;
+    double stability_timeout_ = 5.0;
+    double acquisition_timeout_ = 5.0;
+    double commit_timeout_ = 10.0;
+
+    float rms_target_ = 0.01f;
+    float inlier_fraction_target_ = 0.4f;
+    float coverage_target_ = 0.4f;
+
+    bool skip_motion_ = true;
+    bool require_plan_approval_ = true;
+
+    std::mutex approval_mutex_;
+    std::condition_variable approval_cv_;
+    bool motion_approved_ = false;
+    bool motion_rejected_ = false;
+
+    std::mutex execution_mutex_;
+    std::atomic<bool> busy_{false};
+    std::thread worker_;
+
+    std::optional<rclcpp::Time> first_observation_;
 };
 
-
-}
+}  // namespace hb_robot_skills

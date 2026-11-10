@@ -11,6 +11,8 @@
 #include "hb_robot_skills/motion/cut_planner.hpp"
 #include "hb_robot_skills/motion/torch_controller.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
+#include "hb_robot_interfaces/msg/workpiece_reference.hpp"
+
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
 #include "hb_robot_perception/profile_library.hpp"
@@ -31,6 +33,8 @@
 #include <optional>
 
 namespace hb_robot_skills{
+    using WorkpieceReference =
+        hb_robot_interfaces::msg::WorkpieceReference;
 
     class CutProfileServer: public rclcpp::Node{
         public:
@@ -102,6 +106,7 @@ namespace hb_robot_skills{
             void publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
             const std::string& stage);
 
+            std::optional<WorkpieceReference> latestWorkpieceReference() const;
             
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
@@ -209,6 +214,17 @@ namespace hb_robot_skills{
         rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr flap_client_;
         std::chrono::milliseconds flap_travel_time_{500};
         std::unique_ptr<TorchController> torch_controller_;
+
+
+        
+
+        rclcpp::Subscription<WorkpieceReference>::SharedPtr
+            workpiece_reference_sub_;
+
+        mutable std::mutex reference_mutex_;
+
+        std::optional<WorkpieceReference>
+            latest_reference_;
 
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;

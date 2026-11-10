@@ -1,0 +1,29 @@
+
+# INITIAL creates/replaces the inspected workpiece.
+# RECOVERY updates the existing workpiece pose only.
+
+uint8 INITIAL=0
+uint8 RECOVERY=1
+
+uint8 mode
+
+# Expected TaskState versions at transaction start.
+# INITIAL may use zero values when no accepted
+# workpiece exists yet.
+uint64 expected_geometry_version
+uint64 expected_pose_version
+uint64 expected_scene_version
+
+# The proposed reference and collision object.
+hb_robot_interfaces/WorkpieceReference reference
+moveit_msgs/CollisionObject collision_object
+
+---
+bool accepted
+string message
+
+# Committed reference identity and versions.
+string reference_id
+uint64 geometry_version
+uint64 pose_version
+uint64 scene_version

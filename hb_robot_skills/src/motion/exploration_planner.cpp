@@ -417,35 +417,194 @@ double NBVPlanner::predictedCoverageGain(
 
 
 
-    std::optional<ProfileViewSolution> NBVPlanner::plan(
+//     std::optional<ProfileViewSolution> NBVPlanner::plan(
+//     const moveit::core::RobotState& start_state,
+//     const ProfileInspectionRequest& request,
+//     const hb_perception::ProfileObservationModel& observed_profile,
+//     const planning_scene::PlanningSceneConstPtr& p_scene
+// )const{
+
+//     const auto candidates = generateCandidates(request,observed_profile.match());
+//     std::optional<ProfileViewSolution> best;
+//     double best_score = -std::numeric_limits<double>::infinity();
+
+//     for (const auto& cand : candidates){
+//         auto soln = solveViewConstraints(start_state,cand,request,p_scene);
+//         if(!soln){
+//             std::cerr<<"solution not found"<<std::endl;
+//             continue;
+//         }
+//         soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
+//         soln->candidate.total_score = 10 * soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
+//         std::cout<<"candidate gain: "<<soln->candidate.predicted_gain<<" motion cost: "<<soln->candidate.motion_cost<<" total score: "<< soln->candidate.total_score<<std::endl;
+//         const double score = soln->candidate.predicted_gain; // -0.15*soln->candidate.motion_cost;
+//         if(score>best_score){
+//             best_score = score;
+//             best = std::move(soln);
+//         }
+//     }
+//     return best;
+
+// }
+
+
+
+std::optional<ProfileViewSolution> NBVPlanner::plan(
     const moveit::core::RobotState& start_state,
     const ProfileInspectionRequest& request,
     const hb_perception::ProfileObservationModel& observed_profile,
     const planning_scene::PlanningSceneConstPtr& p_scene
-)const{
+) const
+{
+    const auto candidates =
+        generateCandidates(
+            request,
+            observed_profile.match());
 
-    const auto candidates = generateCandidates(request,observed_profile.match());
     std::optional<ProfileViewSolution> best;
-    double best_score = -std::numeric_limits<double>::infinity();
 
-    for (const auto& cand : candidates){
-        auto soln = solveViewConstraints(start_state,cand,request,p_scene);
-        if(!soln){
-            std::cerr<<"solution not found"<<std::endl;
+    double best_score =
+        -std::numeric_limits<double>::infinity();
+
+    // Initial conservative limits for inspection.
+    constexpr double max_joint_delta_rad = 1.0;
+    constexpr double max_total_joint_delta_rad = 3.0;
+
+    constexpr double gain_weight = 10.0;
+    constexpr double motion_weight = 1.5;
+
+    std::vector<double> q_start;
+
+    start_state.copyJointGroupPositions(
+        joint_model_group_,
+        q_start);
+
+    for (const auto& candidate : candidates)
+    {
+        auto solution =
+            solveViewConstraints(
+                start_state,
+                candidate,
+                request,
+                p_scene);
+
+        if (!solution)
+            continue;
+
+        std::vector<double> q_target;
+
+        solution->robot_state.copyJointGroupPositions(
+            joint_model_group_,
+            q_target);
+
+        if (q_target.size() != q_start.size())
+            continue;
+
+        double total_travel = 0.0;
+        double maximum_joint_travel = 0.0;
+
+        for (std::size_t i = 0;
+             i < q_start.size();
+             ++i)
+        {
+            const double delta =
+                std::abs(q_target[i] - q_start[i]);
+
+            if (!std::isfinite(delta))
+            {
+                total_travel =
+                    std::numeric_limits<double>::infinity();
+                break;
+            }
+
+            total_travel += delta;
+
+            maximum_joint_travel =
+                std::max(
+                    maximum_joint_travel,
+                    delta);
+        }
+
+        // A good camera viewpoint is not useful if
+        // reaching it requires excessive joint motion.
+        if (maximum_joint_travel >
+                max_joint_delta_rad ||
+            total_travel >
+                max_total_joint_delta_rad)
+        {
+            RCLCPP_DEBUG(
+                rclcpp::get_logger("NBVPlanner"),
+                "Reject NBV: joint travel "
+                "total=%.3f max=%.3f",
+                total_travel,
+                maximum_joint_travel);
+
             continue;
         }
-        soln->candidate.predicted_gain = predictedInformationGain(request,*soln,observed_profile);
-        soln->candidate.total_score = 10 * soln->candidate.predicted_gain - 0.15 * soln->candidate.motion_cost;
-        std::cout<<"candidate gain: "<<soln->candidate.predicted_gain<<" motion cost: "<<soln->candidate.motion_cost<<" total score: "<< soln->candidate.total_score<<std::endl;
-        const double score = soln->candidate.predicted_gain; // -0.15*soln->candidate.motion_cost;
-        if(score>best_score){
+
+        const double gain =
+            predictedInformationGain(
+                request,
+                *solution,
+                observed_profile);
+
+        if (!std::isfinite(gain))
+            continue;
+
+        // Same basic philosophy as transit_planner:
+        // discourage concentration of motion
+        // in a single joint.
+        constexpr double preferred_joint_travel = 0.5;
+        constexpr double excess_weight = 8.0;
+
+        const double excess =
+            std::max(
+                0.0,
+                maximum_joint_travel -
+                    preferred_joint_travel);
+
+        const double motion_cost =
+            total_travel +
+            2.0 * maximum_joint_travel +
+            excess_weight * excess * excess;
+
+        const double score =
+            gain_weight * gain -
+            motion_weight * motion_cost;
+
+        solution->candidate.predicted_gain = gain;
+        solution->candidate.motion_cost = motion_cost;
+        solution->candidate.total_score = score;
+
+        RCLCPP_INFO(
+            rclcpp::get_logger("NBVPlanner"),
+            "NBV candidate: gain=%.4f "
+            "joint_total=%.3f joint_max=%.3f "
+            "cost=%.3f score=%.3f",
+            gain,
+            total_travel,
+            maximum_joint_travel,
+            motion_cost,
+            score);
+
+        if (score > best_score)
+        {
             best_score = score;
-            best = std::move(soln);
+            best = std::move(solution);
         }
     }
-    return best;
 
+    if (!best)
+    {
+        RCLCPP_WARN(
+            rclcpp::get_logger("NBVPlanner"),
+            "No NBV candidate satisfies "
+            "joint-motion limits");
+    }
+
+    return best;
 }
+
 
 double NBVPlanner::predictedInformationGain(
         const ProfileInspectionRequest& request,

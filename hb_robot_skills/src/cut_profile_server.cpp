@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "hb_robot_skills/workpiece_commit_validation.hpp"
 
 
 #include "rclcpp/rclcpp.hpp"
@@ -140,6 +141,18 @@ namespace hb_robot_skills{
             }
 
         });
+
+        workpiece_reference_sub_ =
+            create_subscription<WorkpieceReference>(
+                "/workpiece_reference/accepted",
+                rclcpp::QoS(1).reliable().transient_local(),
+                [this](WorkpieceReference::ConstSharedPtr msg)
+                {
+                    std::lock_guard<std::mutex> lock(
+                        reference_mutex_);
+
+                    latest_reference_ = *msg;
+                });
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_cut_motion",
             std::bind(&CutProfileServer::handleApproval,this,
@@ -167,9 +180,9 @@ namespace hb_robot_skills{
 
 
 
-        profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("/profile_inspection/estimate",
-        estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
-        std::placeholders::_1));
+        // profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("/profile_inspection/estimate",
+        // estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
+        // std::placeholders::_1));
 
         auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
         visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
@@ -419,6 +432,14 @@ namespace hb_robot_skills{
           busy_=false;
         });
     }
+    std::optional<WorkpieceReference>
+            CutProfileServer::latestWorkpieceReference() const
+            {
+                std::lock_guard<std::mutex> lock(
+                    reference_mutex_);
+
+                return latest_reference_;
+            }
 
     void CutProfileServer::profileEstimateCallback(
         const hb_robot_interfaces::msg::ProfileEstimate::SharedPtr msg
@@ -996,178 +1017,448 @@ namespace hb_robot_skills{
             return true;
         };
 
+        
+        // ----------------------------------------------------
+        // 1. Acquire one accepted workpiece identity and
+        //    one matching TaskState version snapshot.
+        // ----------------------------------------------------
+
         TaskState planning_versions;
-        if(!readFreshTaskState(planning_versions) || !planning_versions.scene_valid ||
-           goal->geometry_version!=planning_versions.geometry_version ||
-           goal->pose_version!=planning_versions.pose_version ||
-           goal->scene_version!=planning_versions.scene_version) {
-          fail(0,"Planning needs a fresh task heartbeat, a measured reference and matching snapshot versions");return;
-        }
-        publishFeedback(goal_handle,"acquiring estimate");
 
-        const auto estimate_opt = latestProfileEstimate();
-        if(!estimate_opt){
-            result->success = false;
-            result->message= "couldnt get estimate";
-            goal_handle->abort(result);
-            return;
-        }
-        //get the estimate;
-        const auto estimate = *estimate_opt;
-        RCLCPP_INFO(get_logger(),"Using profile estimate %s | rms %.2f | inlier %.2f | score %.2f", 
-        estimate.profile_name.c_str(), estimate.rms_distance,estimate.inlier_fraction,estimate.score);
-        RCLCPP_INFO(get_logger(),
-        "profile frame %s | Moveit planning frame %s",estimate.header.frame_id.c_str(),move_group_->getPlanningFrame().c_str());
-        publishFeedback(goal_handle,"loading profile geom");
-
-        const auto profile_opt = hb_perception::ProfileLibrary::find(estimate.profile_name);
-        if(!profile_opt){
-            result->success = false;
-            std::ostringstream ss;
-            ss << "looking up " << estimate.profile_name.c_str();
-            result->message= ss.str();
-            goal_handle->abort(result);
-            return;
-        }
-
-        publishFeedback(goal_handle,"generating cut plan");
-
-        motion::CutRequest request;
-        request.standoff = goal->standoff;
-        request.ang_tol = goal->ang_tol;
-        request.pos_tol = goal->pos_tol;
-        auto current_state = move_group_->getCurrentState(2.0);
-        if(!current_state){
-            RCLCPP_ERROR(get_logger(),"couldnt get current state");
-            result->success = false;
-            result->message= "couldnt get current state";
-            goal_handle->abort(result);
-            return;
-        }
-        current_state->update();
-
-        RCLCPP_ERROR(get_logger(),"current state dirty after update: %s",current_state->dirty()?"true":"false");
-        
+        if (!readFreshTaskState(planning_versions) ||
+            !planning_versions.scene_valid ||
+            !planning_versions.workpiece_pose_valid ||
+            !planning_versions.supervision_valid ||
+            !planning_versions.imu_stable ||
+            planning_versions.motion_fault_active ||
+            planning_versions.process_fault_active)
         {
-            std::lock_guard<std::mutex>lock(debug_segments_mutex);
-            debug_segs_.clear();
-        }
-        clearCollisionDebug();
-        const moveit::core::RobotState arbitrary_start_state = *current_state;
-
-        // 
-        auto check_psm =[](const planning_scene::PlanningScenePtr& scene_)->bool{
-            if(!scene_){
-                return false;
-            }
-            const auto* world = scene_->getWorld().get();
-
-            return    (!world->hasObject("inspection_workpiece") &&
-                world->hasObject("wk_workpiece_collision"));
-            };
-
-        /// check the planning scene
-        moveit::planning_interface::PlanningSceneInterface psi;
-        const auto objects = psi.getObjects({"inspection_workpiece", "wk_workpiece_collision"});
-        
-        const bool authoritative_ready =
-            objects.count("inspection_workpiece") == 0 &&
-            objects.count("wk_workpiece_collision") == 1
-            ;
-
-        if (!authoritative_ready)
-            {
-                RCLCPP_ERROR(
-                    get_logger(),
-                    "move_group scene is not ready for cutting"
-                );
-
-                fail(0, "Authoritative cutting scene is incomplete");
-                return;
-            }
-        const bool request_psm_update = planning_scene_monitor_->requestPlanningSceneState("/get_planning_scene");
-
-        if(!request_psm_update){
-            fail(0, "Could not refresh planning scene before cutting");
-            return;
-        }
-        RCLCPP_INFO(
-                get_logger(),
-                "retrieved planning_scene");
-
-        planning_scene::PlanningScenePtr scene_snapshot;
-
-        {
-            planning_scene_monitor::LockedPlanningSceneRO locked_scene(
-                planning_scene_monitor_
-            );
-
-            if (!locked_scene) {
-                fail(0, "Could not lock local planning scene");
-                return;
-            }
-
-            scene_snapshot = locked_scene->diff();
-            scene_snapshot->decoupleParent();
-        }
-        
-
-        // Object IDs are reused on every inspection. Their presence does not
-        // establish freshness; always replace the snapshot's cutting geometry
-        // with the authoritative object fetched for this planning operation.
-        scene_snapshot->getWorldNonConst()->removeObject("inspection_workpiece");
-        auto object = objects.at("wk_workpiece_collision");
-        object.operation = moveit_msgs::msg::CollisionObject::ADD;
-        if (!scene_snapshot->processCollisionObjectMsg(object))
-        {
-            fail(0, "Could not copy cutting collision geometry");
+            fail(
+                0,
+                "No valid supervised TaskState "
+                "for cutting planning");
             return;
         }
 
-        // The estimate topic and planning-scene service are independent.
-        // Do not generate edges from an estimate belonging to a different fit.
-        if (object.meshes.size() != 1 || object.mesh_poses.size() != 1 ||
-            !scene_snapshot->knowsFrameTransform(object.header.frame_id) ||
-            !scene_snapshot->knowsFrameTransform(estimate.header.frame_id))
+        if (goal->geometry_version !=
+                planning_versions.geometry_version ||
+            goal->pose_version !=
+                planning_versions.pose_version ||
+            goal->scene_version !=
+                planning_versions.scene_version)
         {
-            fail(0, "Cannot validate cutting estimate against extrusion geometry");
-            return;
-        }
-        Eigen::Isometry3d object_pose, mesh_pose, estimate_pose;
-        tf2::fromMsg(object.pose, object_pose);
-        tf2::fromMsg(object.mesh_poses.front(), mesh_pose);
-        tf2::fromMsg(estimate.pose, estimate_pose);
-        const Eigen::Isometry3d scene_from_mesh =
-            scene_snapshot->getFrameTransform(object.header.frame_id) * object_pose * mesh_pose;
-        const Eigen::Isometry3d scene_from_estimate =
-            scene_snapshot->getFrameTransform(estimate.header.frame_id) * estimate_pose;
-        if (!scene_from_mesh.matrix().allFinite() || !scene_from_estimate.matrix().allFinite() ||
-            (scene_from_mesh.translation() - scene_from_estimate.translation()).norm() > 1e-4 ||
-            (scene_from_mesh.linear() - scene_from_estimate.linear()).norm() > 1e-4)
-        {
-            fail(0, "Profile estimate and extrusion pose disagree; refusing stale cutting geometry");
+            fail(
+                0,
+                "Cut goal versions do not match "
+                "the authoritative TaskState");
             return;
         }
 
-        const auto* world = scene_snapshot->getWorld().get();
+        publishFeedback(
+            goal_handle,
+            "acquiring accepted workpiece");
+
+        const auto reference_opt =
+            latestWorkpieceReference();
+
+        if (!reference_opt)
+        {
+            fail(
+                0,
+                "No TaskState-accepted workpiece reference");
+            return;
+        }
+
+        // This is the reference used for the entire
+        // planning operation. Never silently substitute
+        // a newer estimate midway through planning.
+        const WorkpieceReference reference =
+            *reference_opt;
+
+        const std::string reference_id =
+            hb_robot_skills::workpiece::referenceId(
+                reference);
+
+        if (reference_id.empty() ||
+            reference_id != planning_versions.scene_id)
+        {
+            fail(
+                0,
+                "Accepted workpiece identity does not "
+                "match TaskState.scene_id");
+            return;
+        }
+
+        if (reference.estimate.profile_name.empty() ||
+            reference.estimate.header.frame_id.empty() ||
+            reference.cloud.data.empty())
+        {
+            fail(
+                0,
+                "Accepted workpiece reference is malformed");
+            return;
+        }
+
+        const auto estimate =
+            reference.estimate;
 
         RCLCPP_INFO(
             get_logger(),
-            "FINAL CUTTING SNAPSHOT: box=%d coarse=%d section=%d",
-            world->hasObject("inspection_workpiece"),
-            world->hasObject("wk_workpiece_collision"),
-            world->hasObject("wk_section_collision")
-        );
+            "Accepted workpiece: "
+            "id=%s profile=%s "
+            "geometry=%llu pose=%llu scene=%llu",
+            reference_id.c_str(),
+            estimate.profile_name.c_str(),
+            static_cast<unsigned long long>(
+                planning_versions.geometry_version),
+            static_cast<unsigned long long>(
+                planning_versions.pose_version),
+            static_cast<unsigned long long>(
+                planning_versions.scene_version));
 
-        if (!check_psm(scene_snapshot)) {
-            RCLCPP_ERROR(
-                get_logger(),
-                "Final cutting scene snapshot is invalid"
-            );
+        // ----------------------------------------------------
+        // 2. Load the profile geometry.
+        // ----------------------------------------------------
 
-            fail(0, "Cutting scene validation failed");
+        publishFeedback(
+            goal_handle,
+            "loading accepted profile geometry");
+
+        const auto profile_opt =
+            hb_perception::ProfileLibrary::find(
+                estimate.profile_name);
+
+        if (!profile_opt)
+        {
+            fail(
+                0,
+                "Accepted profile is missing from "
+                "the profile library: " +
+                estimate.profile_name);
             return;
         }
+
+        // ----------------------------------------------------
+        // 3. Acquire the current robot state.
+        // ----------------------------------------------------
+
+        motion::CutRequest request;
+
+        request.standoff = goal->standoff;
+        request.ang_tol = goal->ang_tol;
+        request.pos_tol = goal->pos_tol;
+
+        auto current_state =
+            move_group_->getCurrentState(2.0);
+
+        if (!current_state)
+        {
+            fail(
+                0,
+                "Cannot obtain current robot state");
+            return;
+        }
+
+        current_state->update();
+
+        {
+            std::lock_guard<std::mutex> lock(
+                debug_segments_mutex);
+
+            debug_segs_.clear();
+        }
+
+        clearCollisionDebug();
+
+        const moveit::core::RobotState
+            arbitrary_start_state =
+                *current_state;
+
+        // ----------------------------------------------------
+        // 4. Obtain the authoritative MoveIt workpiece.
+        // ----------------------------------------------------
+
+        publishFeedback(
+            goal_handle,
+            "synchronizing authoritative cutting scene");
+
+        moveit::planning_interface::
+            PlanningSceneInterface psi;
+
+        const auto objects =
+            psi.getObjects({
+                "inspection_workpiece",
+                "wk_workpiece_collision"
+            });
+
+        if (objects.count(
+                "inspection_workpiece") != 0)
+        {
+            fail(
+                0,
+                "Temporary inspection collision "
+                "geometry is still present");
+            return;
+        }
+
+        const auto object_it =
+            objects.find(
+                "wk_workpiece_collision");
+
+        if (object_it == objects.end())
+        {
+            fail(
+                0,
+                "Authoritative workpiece collision "
+                "mesh is missing");
+            return;
+        }
+
+        // Make a local copy. Do not mutate the
+        // authoritative object returned by MoveIt.
+        moveit_msgs::msg::CollisionObject object =
+            object_it->second;
+
+        std::string validation_error;
+
+        if (!hb_robot_skills::workpiece::consistent(
+                object,
+                reference,
+                validation_error))
+        {
+            fail(
+                0,
+                "Accepted reference and MoveIt mesh "
+                "disagree: " + validation_error);
+            return;
+        }
+
+        // ----------------------------------------------------
+        // 5. Refresh and detach the planning scene.
+        // ----------------------------------------------------
+
+        if (!planning_scene_monitor_
+                 ->requestPlanningSceneState(
+                     "/get_planning_scene"))
+        {
+            fail(
+                0,
+                "Could not synchronize the MoveIt "
+                "planning scene");
+            return;
+        }
+
+        planning_scene::PlanningScenePtr
+            scene_snapshot;
+
+        {
+            planning_scene_monitor::
+                LockedPlanningSceneRO locked(
+                    planning_scene_monitor_);
+
+            if (!locked)
+            {
+                fail(
+                    0,
+                    "Cannot lock the planning scene");
+                return;
+            }
+
+            scene_snapshot = locked->diff();
+            scene_snapshot->decoupleParent();
+        }
+
+        if (!scene_snapshot)
+        {
+            fail(
+                0,
+                "Failed to create planning snapshot");
+            return;
+        }
+
+        // Remove any stale temporary geometry from
+        // the local snapshot. The authoritative
+        // MoveIt scene was checked above.
+        scene_snapshot
+            ->getWorldNonConst()
+            ->removeObject(
+                "inspection_workpiece");
+
+        // Replace the snapshot's workpiece object
+        // with the one just read from MoveIt.
+        //
+        // This avoids trusting an older local PSM
+        // copy merely because the object ID matches.
+        scene_snapshot
+            ->getWorldNonConst()
+            ->removeObject(
+                "wk_workpiece_collision");
+
+        object.operation =
+            moveit_msgs::msg::
+                CollisionObject::ADD;
+
+        if (!scene_snapshot
+                 ->processCollisionObjectMsg(object))
+        {
+            fail(
+                0,
+                "Could not install the authoritative "
+                "workpiece into the planning snapshot");
+            return;
+        }
+
+        // ----------------------------------------------------
+        // 6. Validate reference pose against mesh pose.
+        // ----------------------------------------------------
+
+        if (object.meshes.size() != 1 ||
+            object.mesh_poses.size() != 1 ||
+            !scene_snapshot->knowsFrameTransform(
+                object.header.frame_id) ||
+            !scene_snapshot->knowsFrameTransform(
+                estimate.header.frame_id))
+        {
+            fail(
+                0,
+                "Cannot resolve workpiece mesh and "
+                "profile estimate frames");
+            return;
+        }
+
+        Eigen::Isometry3d object_pose =
+            Eigen::Isometry3d::Identity();
+
+        Eigen::Isometry3d mesh_pose =
+            Eigen::Isometry3d::Identity();
+
+        Eigen::Isometry3d estimate_pose =
+            Eigen::Isometry3d::Identity();
+
+        tf2::fromMsg(
+            object.pose,
+            object_pose);
+
+        tf2::fromMsg(
+            object.mesh_poses.front(),
+            mesh_pose);
+
+        tf2::fromMsg(
+            estimate.pose,
+            estimate_pose);
+
+        const Eigen::Isometry3d scene_from_mesh =
+            scene_snapshot->getFrameTransform(
+                object.header.frame_id) *
+            object_pose *
+            mesh_pose;
+
+        const Eigen::Isometry3d scene_from_estimate =
+            scene_snapshot->getFrameTransform(
+                estimate.header.frame_id) *
+            estimate_pose;
+
+        if (!scene_from_mesh.matrix().allFinite() ||
+            !scene_from_estimate.matrix().allFinite())
+        {
+            fail(
+                0,
+                "Nonfinite authoritative workpiece pose");
+            return;
+        }
+
+        const double position_error =
+            (scene_from_mesh.translation() -
+             scene_from_estimate.translation()).norm();
+
+        const double rotation_error =
+            (scene_from_mesh.linear() -
+             scene_from_estimate.linear()).norm();
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Workpiece snapshot validation: "
+            "id=%s position_error=%.4f mm "
+            "rotation_matrix_error=%.8f",
+            reference_id.c_str(),
+            position_error * 1000.0,
+            rotation_error);
+
+        if (position_error > 1e-4 ||
+            rotation_error > 1e-4)
+        {
+            fail(
+                0,
+                "Accepted reference and authoritative "
+                "extrusion pose disagree");
+            return;
+        }
+
+        // ----------------------------------------------------
+        // 7. Validate the detached planning snapshot.
+        // ----------------------------------------------------
+
+        const auto* world =
+            scene_snapshot->getWorld().get();
+
+        if (!world ||
+            world->hasObject(
+                "inspection_workpiece") ||
+            !world->hasObject(
+                "wk_workpiece_collision"))
+        {
+            fail(
+                0,
+                "Final cutting snapshot is incomplete");
+            return;
+        }
+
+        // ----------------------------------------------------
+        // 8. Recheck TaskState after scene acquisition.
+        // ----------------------------------------------------
+
+        TaskState refreshed_versions;
+
+        if (!readFreshTaskState(
+                refreshed_versions) ||
+            !hb_robot::recovery::sameVersions(
+                planning_versions,
+                refreshed_versions) ||
+            refreshed_versions.scene_id !=
+                reference_id ||
+            !refreshed_versions.scene_valid ||
+            !refreshed_versions.workpiece_pose_valid ||
+            !refreshed_versions.supervision_valid ||
+            !refreshed_versions.imu_stable ||
+            refreshed_versions.motion_fault_active ||
+            refreshed_versions.process_fault_active)
+        {
+            fail(
+                0,
+                "Workpiece or scene changed while "
+                "acquiring the planning snapshot");
+            return;
+        }
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Authoritative cutting snapshot ready: "
+            "reference=%s geometry=%llu "
+            "pose=%llu scene=%llu",
+            reference_id.c_str(),
+            static_cast<unsigned long long>(
+                planning_versions.geometry_version),
+            static_cast<unsigned long long>(
+                planning_versions.pose_version),
+            static_cast<unsigned long long>(
+                planning_versions.scene_version));
+
+        publishFeedback(
+            goal_handle,
+            "authoritative cutting snapshot ready");
+
+        // Continue with the existing geometry planner.
+
         RCLCPP_INFO(get_logger(), "cut entering geo planner");
         auto geometry=*profile_opt;
         if(!goal->intervals.empty()) {
@@ -1409,12 +1700,49 @@ namespace hb_robot_skills{
         publishFeedback(goal_handle,"visualizing, cut plan ready");
 
         if(canceled()) return;
+        
         TaskState current_versions;
-        const bool permitted = taskPermitsExecution(&current_versions);
-        // The stored versions describe the detached scene used to plan. A candidate
-        // can be inspected after a gap or a scene edit. executeStored independently
-        // requires live permission, the same versions, matching joints and collision checks.
-        const bool current=permitted && hb_robot::recovery::sameVersions(planning_versions,current_versions);
+
+        const bool permitted =
+            taskPermitsExecution(&current_versions);
+
+        const bool current =
+            permitted &&
+            hb_robot::recovery::sameVersions(
+                planning_versions,
+                current_versions) &&
+            current_versions.scene_id == reference_id;
+
+        
+
+
+
+        
+
+        if (!current)
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "Cut candidate is not executable: "
+                "planned geometry=%llu pose=%llu scene=%llu "
+                "current geometry=%llu pose=%llu scene=%llu "
+                "reference=%s current_reference=%s",
+                static_cast<unsigned long long>(
+                    planning_versions.geometry_version),
+                static_cast<unsigned long long>(
+                    planning_versions.pose_version),
+                static_cast<unsigned long long>(
+                    planning_versions.scene_version),
+                static_cast<unsigned long long>(
+                    current_versions.geometry_version),
+                static_cast<unsigned long long>(
+                    current_versions.pose_version),
+                static_cast<unsigned long long>(
+                    current_versions.scene_version),
+                reference_id.c_str(),
+                current_versions.scene_id.c_str());
+        }
+
         const auto id="cut_plan_"+std::to_string(++next_plan_);
         // Keep original geometry even for a recovery plan, so future interval
         // coordinates always refer to the initial feature, never to a prior slice.

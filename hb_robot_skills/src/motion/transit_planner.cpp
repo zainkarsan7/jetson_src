@@ -4,6 +4,7 @@
 #include <limits>
 
 namespace hb_robot_skills::motion {
+    
 std::optional<MoveGroup::Plan> planTransit(
     MoveGroup& group, const rclcpp::Logger& logger,
     const moveit::core::RobotState& start_state, const moveit::core::RobotState& target_state,

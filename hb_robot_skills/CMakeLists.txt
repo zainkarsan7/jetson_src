@@ -153,7 +153,11 @@ ament_target_dependencies(inspect_cut_server
 target_link_libraries(inspect_cut_server hb_motion hb_robot_perception::hb_perception)
 
 add_executable(task_state_server src/task_state_server.cpp)
-ament_target_dependencies(task_state_server rclcpp hb_robot_interfaces moveit_msgs std_msgs)
+ament_target_dependencies(task_state_server 
+rclcpp hb_robot_interfaces moveit_msgs std_msgs
+moveit_ros_planning_interface
+moveit_ros_planning
+)
 target_link_libraries(task_state_server hb_robot_perception::hb_perception)
 add_executable(revalidate_workpiece_server src/revalidate_workpiece_server.cpp)
 ament_target_dependencies(revalidate_workpiece_server rclcpp rclcpp_action hb_robot_interfaces
