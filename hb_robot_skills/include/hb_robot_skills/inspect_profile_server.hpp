@@ -5,7 +5,7 @@
 #include <mutex>
 #include <thread>
 #include <string>
-
+#include <functional>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -98,7 +98,7 @@ class InspectProfileServer: public rclcpp::Node{
         
         bool moveToView(const moveit::core::RobotState& target_state);
         bool waitForStability();
-        bool acquireSamples(uint32_t sample_count, double depth_range);
+        bool acquireSamples(uint32_t sample_count, double depth_range,const std::function<bool()>& canceled);
         bool registerView();
         bool moveHome();
 

@@ -45,7 +45,7 @@ namespace hb_robot_skills{
     depth_topic_=declare_parameter<std::string>("perception_depth_topic","/k4a/depth_to_rgb/image_raw");
     camera_info_topic_=declare_parameter<std::string>("perception_camera_info_topic","/k4a/depth_to_rgb/camera_info");
     scene_frame_= declare_parameter<std::string>("scene_base_frame","world");
-    acquisition_timeout_ = declare_parameter<double>("acquisition_timeout",2.0);
+    acquisition_timeout_ = declare_parameter<double>("acquisition_timeout",5.0);
 
     rms_target_ = declare_parameter<float>("rms_target",0.01);
     inlier_fraction_target_ = declare_parameter<float>("inlier_fraction_target", 0.4);
@@ -838,8 +838,12 @@ bool InspectProfileServer::waitForStability()
 
 bool InspectProfileServer::acquireSamples(
     uint32_t sample_count,
-    double depth_range)
+    double depth_range,
+    const std::function<bool()>& canceled
+)
 {
+
+    
     using namespace std::chrono_literals;
 
     if (!rgbd_acquisition_ || sample_count == 0)
@@ -860,30 +864,18 @@ bool InspectProfileServer::acquireSamples(
     rclcpp::Time boundary = now();
 
     while (rclcpp::ok() &&
-           integrated < sample_count &&
-           std::chrono::steady_clock::now() < deadline)
-    {
-        const auto remaining =
-            std::chrono::duration_cast<
-                std::chrono::milliseconds>(
-                deadline -
-                std::chrono::steady_clock::now());
+       !canceled() &&
+       integrated == 0)
+        {
+            auto observation =
+                rgbd_acquisition_->acquireAfter(
+                    boundary,
+                    std::chrono::milliseconds(
+                        static_cast<int64_t>(
+                            acquisition_timeout_ * 1000.0)));
 
-        if (remaining <= 0ms)
-            break;
-
-        const auto wait_time = std::min(
-            remaining,
-            std::chrono::milliseconds(
-                std::max<int64_t>(
-                    100,
-                    static_cast<int64_t>(
-                        acquisition_timeout_ * 1000.0))));
-
-        auto observation =
-            rgbd_acquisition_->acquireAfter(
-                boundary,
-                wait_time);
+            if (canceled() || !rclcpp::ok())
+                break;
 
         if (!observation)
         {
@@ -1432,7 +1424,7 @@ void InspectProfileServer::execute(
             if (canceled()) return;
 
             const bool acquired =
-                acquireSamples(goal->samples_per_view, goal->depth_range);
+                acquireSamples(goal->samples_per_view, goal->depth_range,canceled);
 
             if (canceled()) return;
 

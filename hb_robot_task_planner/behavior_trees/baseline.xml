@@ -1,46 +1,73 @@
+
 <?xml version="1.0"?>
 <root main_tree_to_execute="BehaviorTree">
-    <!-- ////////// -->
-    <BehaviorTree ID="BehaviorTree">
-        <Sequence name="BaselineInspectPlanCut">
-            <Action ID="InspectProfile"/>
-            <Action ID="AwaitPlanningReference"/>
-            <Action ID="CaptureCutEnvironment"/>
-            <Action ID="PlanCut"/>
-            <!-- A candidate already exists here. At most one fresh camera observation
-                 may confirm its pose. A changed fit requires a new plan. -->
-            <Fallback>
-                <Condition ID="WorkpiecePoseValid"/>
-                <Sequence>
-                    <Action ID="RevalidateWorkpiece"/>
-                    <Action ID="AwaitGeometry"/>
-                </Sequence>
-            </Fallback>
-            <Condition ID="ValidateTaskState"/>
-            <Action ID="ExecuteCut"/>
-        </Sequence>
-    </BehaviorTree>
-    <!-- ////////// -->
-    <TreeNodesModel>
-        <Action ID="CaptureCutEnvironment"/>
-        <Action ID="AwaitPlanningReference"/>
-        <Action ID="AwaitGeometry"/>
-        <Action ID="Escape"/>
-        <Action ID="ExecuteCut"/>
-        <Action ID="ExecuteRecut"/>
-        <Condition ID="FaultActive"/>
-        <Action ID="InspectKerf"/>
-        <Action ID="InspectProfile"/>
-        <Condition ID="KerfInconclusive"/>
-        <Condition ID="KerfVerified"/>
-        <Action ID="PlanCut"/>
-        <Action ID="PlanRecut"/>
-        <Condition ID="ReferenceExists"/>
-        <Condition ID="ResidualDetected"/>
-        <Action ID="RevalidateWorkpiece"/>
-        <Condition ID="ValidateKerf"/>
-        <Condition ID="ValidateTaskState"/>
+
+  <BehaviorTree ID="BehaviorTree">
+
+    <Sequence name="BaselineMotionDryRun">
+
+      <Action ID="InspectProfile"/>
+
+      <Action ID="AwaitPlanningReference"/>
+
+      <!-- Obtain a fresh, supervised pose
+           before generating the cutting plan. -->
+      <Fallback name="ConfirmPose">
+
         <Condition ID="WorkpiecePoseValid"/>
-    </TreeNodesModel>
-    <!-- ////////// -->
+
+        <Sequence>
+          <Action ID="RevalidateWorkpiece"/>
+          <Action ID="AwaitGeometry"/>
+        </Sequence>
+
+      </Fallback>
+
+      <!-- Capture LiDAR environmental collision
+           geometry after pose confirmation. -->
+      <Action ID="CaptureCutEnvironment"/>
+
+      <!-- Generate and store the full trajectory. -->
+      <Action ID="PlanCut"/>
+
+      <!-- Reject stale plans. -->
+      <Condition ID="CandidateVersionsMatch"/>
+
+      <!-- Require valid platform supervision,
+           pose, scene, and fault state. -->
+      <Condition ID="ValidateTaskState"/>
+
+      <!-- Execute the full trajectory.
+           Torch behavior is controlled by
+           enable_cutting_process in the server. -->
+      <Action ID="ExecuteCut"/>
+
+    </Sequence>
+
+  </BehaviorTree>
+
+  <TreeNodesModel>
+    <Action ID="InspectProfile"/>
+    <Action ID="AwaitPlanningReference"/>
+    <Action ID="RevalidateWorkpiece"/>
+    <Action ID="AwaitGeometry"/>
+    <Action ID="CaptureCutEnvironment"/>
+    <Action ID="PlanCut"/>
+    <Action ID="PlanRecut"/>
+    <Action ID="ExecuteCut"/>
+    <Action ID="ExecuteRecut"/>
+    <Action ID="InspectKerf"/>
+    <Action ID="Escape"/>
+
+    <Condition ID="WorkpiecePoseValid"/>
+    <Condition ID="CandidateVersionsMatch"/>
+    <Condition ID="ValidateTaskState"/>
+    <Condition ID="ReferenceExists"/>
+    <Condition ID="FaultActive"/>
+    <Condition ID="ValidateKerf"/>
+    <Condition ID="KerfVerified"/>
+    <Condition ID="KerfInconclusive"/>
+    <Condition ID="ResidualDetected"/>
+  </TreeNodesModel>
+
 </root>

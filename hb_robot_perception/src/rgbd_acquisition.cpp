@@ -98,6 +98,9 @@ RGBDAcquisition::RGBDAcquisition(
             SyncPolicy(5),
             rgb_sub_,
             depth_sub_);
+    
+    synchronizer_->setMaxIntervalDuration(
+    rclcpp::Duration(std::chrono::milliseconds(500)));
 
     // Intentionally no setMaxIntervalDuration().
     // Intentionally no setInterMessageLowerBound().
@@ -210,6 +213,42 @@ RGBDAcquisition::~RGBDAcquisition()
         expired_count_);
 }
 
+// void RGBDAcquisition::tryMatch()
+// {
+//     if (!latest_rgb_ || !latest_depth_)
+//         return;
+
+//     const rclcpp::Time rgb_stamp(
+//         latest_rgb_->header.stamp);
+
+//     const rclcpp::Time depth_stamp(
+//         latest_depth_->header.stamp);
+
+//     const double skew =
+//         std::abs((rgb_stamp - depth_stamp).seconds());
+
+//     constexpr double max_skew = 0.20;
+
+//     if (skew <= max_skew)
+//     {
+//         synchronizedCallback(
+//             latest_rgb_,
+//             latest_depth_);
+
+//         latest_rgb_.reset();
+//         latest_depth_.reset();
+//     }
+//     else if (rgb_stamp < depth_stamp)
+//     {
+//         latest_rgb_.reset();
+//     }
+//     else
+//     {
+//         latest_depth_.reset();
+//     }
+// }
+
+
 void RGBDAcquisition::synchronizedCallback(
     const Image::ConstSharedPtr& rgb,
     const Image::ConstSharedPtr& depth)
@@ -218,6 +257,10 @@ void RGBDAcquisition::synchronizedCallback(
 
     const rclcpp::Time rgb_stamp(rgb->header.stamp);
     const rclcpp::Time depth_stamp(depth->header.stamp);
+
+    
+// Do NOT return here.
+// Continue processing the pair as before.
 
     if (rgb_stamp.nanoseconds() == 0 ||
         depth_stamp.nanoseconds() == 0)
