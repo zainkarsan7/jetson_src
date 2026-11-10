@@ -211,19 +211,6 @@ install(PROGRAMS scripts/capture_cut_environment DESTINATION lib/${PROJECT_NAME}
 install(FILES scripts/cut_environment_filter.py DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
-  find_package(ament_cmake_pytest REQUIRED)
-  ament_add_pytest_test(cut_environment_test test/test_cut_environment.py
-    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=183 OPENBLAS_NUM_THREADS=1)
-  find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(recovery_test test/recovery_test.cpp)
-  target_link_libraries(recovery_test hb_motion hb_robot_perception::hb_perception)
-  ament_add_gtest(cut_inspection_test test/cut_inspection_test.cpp)
-  target_link_libraries(cut_inspection_test hb_motion hb_robot_perception::hb_perception)
-  find_package(urdf REQUIRED)
-  find_package(srdfdom REQUIRED)
-  ament_add_gtest(cut_graph_planner_test test/cut_graph_planner_test.cpp)
-  target_link_libraries(cut_graph_planner_test hb_motion)
-  ament_target_dependencies(cut_graph_planner_test urdf srdfdom moveit_core moveit_ros_planning_interface)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

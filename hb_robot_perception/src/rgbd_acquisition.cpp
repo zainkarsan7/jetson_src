@@ -362,8 +362,51 @@ RGBDAcquisition::latest() const
     return latest_observation_;
 }
 
+
+void RGBDAcquisition::logCaptureFailure(
+    const rclcpp::Time& boundary)
+{
+    const auto observation = latest();
+
+    if (!observation)
+    {
+        RCLCPP_WARN(
+            node_->get_logger(),
+            "RGBD capture failure: no resolved observation; "
+            "boundary=%.6f",
+            boundary.seconds());
+        return;
+    }
+
+    const rclcpp::Time rgb_stamp = observation->stamp;
+
+    const rclcpp::Time depth_stamp(
+        observation->depth_to_rgb->header.stamp);
+
+    const rclcpp::Time current_time = node_->now();
+
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "RGBD capture failure: "
+        "boundary=%.6f "
+        "latest_rgb=%.6f latest_depth=%.6f "
+        "rgb_age=%.3f s depth_age=%.3f s "
+        "rgb_before_boundary=%.3f s",
+        boundary.seconds(),
+        rgb_stamp.seconds(),
+        depth_stamp.seconds(),
+        (current_time - rgb_stamp).seconds(),
+        (current_time - depth_stamp).seconds(),
+        (boundary - rgb_stamp).seconds());
+}
+
+
 void RGBDAcquisition::logDiagnostics()
 {
+
+   
+
+
     RCLCPP_DEBUG(
         node_->get_logger(),
         "RGBD: rgb=%zu depth=%zu "

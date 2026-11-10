@@ -7,7 +7,7 @@
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/rgbd_acquisition.hpp"
 #include "hb_robot_perception/perception_types.hpp"
-#include "hb_robot_perception/imu_stability_monitor.hpp"
+#include "hb_robot_skills/platform_supervision_client.hpp"
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <tf2_ros/transform_listener.h>
@@ -46,7 +46,6 @@ class InspectCutServer : public rclcpp::Node {
     declare_parameter<std::string>("perception_rgb_topic", "/k4a/rgb/image_raw");
     declare_parameter<std::string>("perception_depth_topic", "/k4a/depth_to_rgb/image_raw");
     declare_parameter<std::string>("perception_camera_info_topic", "/k4a/depth_to_rgb/camera_info");
-    declare_parameter<std::string>("imu_topic", "/k4a/imu");
   }
   ~InspectCutServer() override { if (worker_.joinable()) worker_.join(); }
   void initialize() {
@@ -61,8 +60,11 @@ class InspectCutServer : public rclcpp::Node {
       throw std::runtime_error("Planning frame mismatch or camera optical link absent from robot model");
     tf_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_);
-    stability_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
-      *this, get_parameter("imu_topic").as_string());
+     
+    stability_ =
+    std::make_unique<hb_robot_skills::PlatformSupervisionClient>(
+        *this);
+
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/kerf_cloud", rclcpp::QoS(1).transient_local());
     poses_pub_ = create_publisher<geometry_msgs::msg::PoseArray>("~/viewpoints", rclcpp::QoS(1).transient_local());
     observation_pub_ = create_publisher<hb_robot_interfaces::msg::KerfObservation>("~/observations", 10);
@@ -227,10 +229,26 @@ class InspectCutServer : public rclcpp::Node {
         if (move_->execute(plans.at(edge_id)) != moveit::core::MoveItErrorCode::SUCCESS) {
           finish(Action::Result::MOTION_FAILED, "Inspection motion failed"); return;
         }
-        stability_->reset();
-        if (!stability_->waitForStable(std::chrono::milliseconds(static_cast<int>(stability_timeout_*1000)), canceled)) {
-          finish(Action::Result::STABILITY_TIMEOUT, "No fresh stable IMU window"); return;
-        }
+        
+        if (!stability_->waitForStable(
+        std::chrono::milliseconds(
+            static_cast<int>(stability_timeout_ * 1000)),
+        canceled)) {
+          if (canceled()) {
+        finish(Action::Result::CANCELLED, "Canceled while waiting for stability");
+        return;
+    }
+
+    finish(
+        Action::Result::STABILITY_TIMEOUT,
+        "Platform did not settle: " + stability_->reason());
+    return;
+}
+
+
+
+
+
         auto stamp=now(); // Strictly post-motion and post-stability observations only.
         const auto index=station_ids[edge.to];
         hb_perception::RGBDAcquisition capture(this, tf_.get(), frame_,
@@ -241,7 +259,9 @@ class InspectCutServer : public rclcpp::Node {
         for (uint32_t sample=0;sample<samples;++sample) {
           if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
           const auto ob=capture.acquireAfter(stamp, std::chrono::milliseconds(static_cast<int>(timeout_*1000)));
-          if (!ob || !stability_->metrics().stable || !stability_->metrics().valid) {
+          
+         if (!ob || !stability_->stable()) {
+          
             finish(Action::Result::ACQUISITION_FAILED, "Missing fresh RGB-D or stability lost"); return;
           }
           if (rclcpp::Time(ob->depth_to_rgb->header.stamp)<=stamp ||
@@ -289,11 +309,17 @@ class InspectCutServer : public rclcpp::Node {
         msg.header.frame_id=frame_; msg.header.stamp=stamp; cloud_pub_->publish(msg);
       }
       if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
-      if (cloud.empty()) { finish(Action::Result::ACQUISITION_FAILED, "No measured points in kerf band; missing depth is not free space"); return; }
+      if (cloud.empty()) { 
+        finish(Action::Result::ACQUISITION_FAILED, "No measured points in kerf band; missing depth is not free space"); 
+        return; 
+      }
       finish(Action::Result::SUCCESS, "Post-cut acquisition complete; separation and bridging have not been evaluated");
-    } catch (const std::exception& e) { finish(Action::Result::ACQUISITION_FAILED,e.what()); }
+    } catch (const std::exception& e) { 
+      finish(Action::Result::ACQUISITION_FAILED,e.what()); 
+    }
   }
-  std::mutex state_mutex_;hb_robot::recovery::State state_;
+  std::mutex state_mutex_;
+  hb_robot::recovery::State state_;
   std::chrono::steady_clock::time_point received_{};
   rclcpp::Subscription<hb_robot::recovery::State>::SharedPtr state_sub_;
   rclcpp::TimerBase::SharedPtr state_timer_;
@@ -306,7 +332,8 @@ class InspectCutServer : public rclcpp::Node {
   std::unique_ptr<MoveGroup> move_;
   std::unique_ptr<tf2_ros::Buffer> tf_;
   std::unique_ptr<tf2_ros::TransformListener> listener_;
-  std::unique_ptr<hb_perception::ImuStabilityMonitor> stability_;
+  std::unique_ptr<hb_robot_skills::PlatformSupervisionClient>
+    stability_;
   rclcpp_action::Server<Action>::SharedPtr server_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr poses_pub_;

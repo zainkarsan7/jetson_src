@@ -68,12 +68,16 @@ public:
 
     std::optional<Observation> latest() const;
 
+    void logCaptureFailure(const rclcpp::Time& boundary);
+
 private:
     struct PendingPair {
         Image::ConstSharedPtr rgb;
         Image::ConstSharedPtr depth;
         std::chrono::steady_clock::time_point arrival;
     };
+
+    
 
     void synchronizedCallback(
         const Image::ConstSharedPtr& rgb,

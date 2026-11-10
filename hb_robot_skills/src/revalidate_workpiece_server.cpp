@@ -3,7 +3,7 @@
 #include <hb_robot_interfaces/recovery.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <hb_robot_perception/rgbd_acquisition.hpp>
-#include <hb_robot_perception/imu_stability_monitor.hpp>
+#include "hb_robot_skills/platform_supervision_client.hpp"
 #include <hb_robot_perception/observation_registrar.hpp>
 // #include <hb_robot_skills/kerf_observation.hpp>
 #include <hb_robot_perception/perception_types.hpp>
@@ -47,10 +47,13 @@ class RevalidateServer : public rclcpp::Node {
             "/k4a/depth_to_rgb/image_raw",
             "/k4a/depth_to_rgb/camera_info");
 
+    
+
+
     imu_ =
-        std::make_unique<hb_perception::ImuStabilityMonitor>(
-            *this,
-            "/k4a/imu");
+        std::make_unique<
+            hb_robot_skills::PlatformSupervisionClient>(*this);
+
 
     ref_sub_=create_subscription<Reference>("/workpiece_reference",rclcpp::QoS(1).transient_local(),
       [this](Reference::ConstSharedPtr m){std::lock_guard<std::mutex> lock(mutex_);reference_=*m;});
@@ -190,12 +193,16 @@ class RevalidateServer : public rclcpp::Node {
           result->poorly_constrained=true;finish("Axially ambiguous registration; acquire distinctive reference geometry");return;
         }
       }
-      const auto m=imu_->metrics();
+
+
+      
       {std::lock_guard<std::mutex> lock(mutex_);
+
+
         if(state_.pose_version!=h->get_goal()->expected_pose_version ||
            std::chrono::steady_clock::now()-received_>std::chrono::milliseconds(500) ||
            !state_.supervision_valid || !state_.imu_stable ||
-           !m.valid || !m.stable || canceled()) {finish("State changed during localization");return;}}
+           !imu_->stable() || canceled()) {finish("State changed during localization");return;}}
       Eigen::Isometry3d delta=Eigen::Isometry3d::Identity();
       delta.matrix()=registration.correction.cast<double>();
       moveit::planning_interface::PlanningSceneInterface scene;
@@ -224,7 +231,7 @@ class RevalidateServer : public rclcpp::Node {
         object.operation=moveit_msgs::msg::CollisionObject::ADD;updates.push_back(object);
       }
       if(!unchanged && !scene.applyCollisionObjects(updates)) {finish("Collision scene update failed");return;}
-      if(canceled() || !imu_->metrics().stable) {finish("Interrupted before pose commit");return;}
+      if(canceled() || !imu_->stable()) {finish("Interrupted before pose commit");return;}
       if(!unchanged) reference.estimate.pose=tf2::toMsg(delta*original);
       reference.estimate.header.stamp=now();
       // Keep the baseline cloud as well as its pose when confirming; repeated
@@ -248,8 +255,8 @@ class RevalidateServer : public rclcpp::Node {
   std::atomic<bool> busy_{false};std::thread worker_;
   std::unique_ptr<tf2_ros::Buffer> tf_;std::unique_ptr<tf2_ros::TransformListener> listener_;
   std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
-  std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_;
-  rclcpp::Subscription<Reference>::SharedPtr ref_sub_;
+  std::unique_ptr<hb_robot_skills::PlatformSupervisionClient> imu_;
+      rclcpp::Subscription<Reference>::SharedPtr ref_sub_;
   rclcpp::Subscription<hb_robot::recovery::State>::SharedPtr state_sub_;
   rclcpp::Publisher<Reference>::SharedPtr ref_pub_;
   rclcpp::Publisher<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr estimate_pub_;

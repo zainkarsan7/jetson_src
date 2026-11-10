@@ -219,7 +219,7 @@ def load_link_capsules(robot_description):
 # LIDAR CLOUD EXTRACTION
 # ============================================================
 
-def near_returns(cloud):
+def near_returns(cloud, max_range_m):
     fields = {f.name: f for f in cloud.fields}
 
     coordinates = [fields[k] for k in ("x", "y", "z")]
@@ -263,9 +263,9 @@ def near_returns(cloud):
         raise ValueError("Cloud contains no valid returns")
 
     return xyz[
-        (radius_sq > 0)
-        & (radius_sq <= 4.0)
-    ]
+    (radius_sq > 0)
+    & (radius_sq <= max_range_m ** 2)
+]
 
 
 # ============================================================
@@ -280,6 +280,10 @@ class CaptureNode(Node):
         # ----------------------------------------------------
         # Parameters
         # ----------------------------------------------------
+
+        self.lidar_max_range_m = self.declare_parameter(
+            "lidar_max_range_m", 4.0
+        ).value
 
         self.padding = self.declare_parameter(
             "jacket_padding_m", 0.045
@@ -310,6 +314,10 @@ class CaptureNode(Node):
             "/robot_state_publisher",
         ).value
 
+        self.capture_duration_s = float(
+                self.declare_parameter("capture_duration_s", 6.0).value
+            )
+
         if not (
             0 <= self.padding <= 0.25
             and 0 <= self.margin <= 0.10
@@ -317,6 +325,12 @@ class CaptureNode(Node):
             and self.max_state_age_s > 0
         ):
             raise ValueError("Invalid capture parameters")
+
+
+        if not np.isfinite(self.capture_duration_s) or not (
+            0.5 <= self.capture_duration_s <= 30.0
+        ):
+            raise ValueError("capture_duration_s must be between 0.5 and 30 seconds")
 
         # ----------------------------------------------------
         # TF
@@ -626,10 +640,9 @@ class CaptureNode(Node):
             ).nanoseconds
 
             if (
-                self.start_ns <= stamp
-                < self.start_ns + int(self.capture_duration_s*1e9)
-                and len(self.window) < 32
-            ):
+                    self.start_ns <= stamp
+                    < self.start_ns + int(self.capture_duration_s * 1e9)
+                ):
                 self.window[stamp] = msg
 
     # ========================================================
@@ -810,7 +823,7 @@ class CaptureNode(Node):
         # ----------------------------------------------------
 
         xyz = transform(
-            near_returns(cloud),
+            near_returns(cloud, self.lidar_max_range_m),
             poses[cloud.header.frame_id],
         )
 
@@ -1059,9 +1072,9 @@ class CaptureNode(Node):
                 self.request = req
                 self.window_invalid = False
 
-            # Admit scans by their sensor timestamps.
-            # Allow a little extra time for ROS delivery.
-            time.sleep(0.60)
+            # Keep collecting for the configured duration.
+            # Allow a short extra interval for delayed ROS delivery.
+            time.sleep(self.capture_duration_s + 0.15)
 
             with self.lock:
                 scans = sorted(self.window.items())
@@ -1119,6 +1132,21 @@ class CaptureNode(Node):
                 filtered_scans,
                 self.size,
             )
+
+            cells_once = occupied_cells(
+                filtered_scans, self.size, min_scans=1
+            )
+
+            cells_twice = occupied_cells(
+                filtered_scans, self.size, min_scans=2
+            )
+
+            self.get_logger().info(
+                f"Voxel voting: once={len(cells_once)}, "
+                f"twice={len(cells_twice)}"
+            )
+
+            cells = cells_twice
 
             t2 = time.perf_counter()
 
@@ -1198,9 +1226,9 @@ class CaptureNode(Node):
                     primitive = SolidPrimitive()
                     primitive.type = SolidPrimitive.BOX
                     primitive.dimensions = [
-                        self.size,
-                        self.size,
-                        self.size * length,
+                        self.size/2.0,
+                        self.size/2.0,
+                        self.size/2.0 * length,
                     ]
 
                     obstacle.primitive_poses.append(pose)

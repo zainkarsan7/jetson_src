@@ -110,19 +110,11 @@ namespace hb_robot_skills{
 
 
 
-        hb_perception::ImuStabilityConfig config;
-        if (!has_parameter("platform_accel_topic"))
-            declare_parameter<std::string>("platform_accel_topic", "/mpu6050/imu");
-        config.auxiliary_accel_topic = get_parameter("platform_accel_topic").as_string();
-        config.max_ang_vel_rms =max_ang_vel_rms_ ;
-        config.max_lin_acc_rms =max_lin_acc_rms_ ;
-        config.max_mean_ang_vel=max_mean_ang_vel_;
+       
         
-        imu_stability_monitor_ = std::make_unique<hb_perception::ImuStabilityMonitor>(
-            *this,
-            platform_stability_topic_,
-            config
-        );
+        platform_supervision_ =
+        std::make_unique<
+            hb_robot_skills::PlatformSupervisionClient>(*this);
 
         const auto qos = rclcpp::QoS(1).transient_local().reliable();
 
@@ -825,20 +817,23 @@ bool InspectProfileServer::updateWorkpieceCollision(
 
 bool InspectProfileServer::waitForStability()
 {
-    if (stability_timeout_ < 0.0)
+    if (!platform_supervision_ ||
+        !std::isfinite(stability_timeout_) ||
+        stability_timeout_ <= 0.0)
         return false;
 
-    // Initial implementation: fixed settling delay.
-    // Replace with actual robot/camera stability checks later.
-    rclcpp::sleep_for(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::duration<double>(stability_timeout_)));
+    const bool settled = platform_supervision_->waitForStable(
+        std::chrono::milliseconds(
+            static_cast<int64_t>(stability_timeout_ * 1000.0)));
 
-    
+    if (!settled) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Platform stability timeout: %s",
+            platform_supervision_->reason().c_str());
+    }
 
-    return rclcpp::ok();
-
-
+    return settled;
 }
 
 bool InspectProfileServer::acquireSamples(
@@ -933,19 +928,24 @@ bool InspectProfileServer::acquireSamples(
             std::chrono::steady_clock::now() - start)
                 .count();
 
-    RCLCPP_INFO(
-        get_logger(),
-        "RGBD acquisition: integrated=%u/%u "
-        "received=%u timeouts=%u rejected=%u "
-        "elapsed=%.2f s",
-        integrated,
-        sample_count,
-        received,
-        timeouts,
-        rejected,
-        elapsed);
+        RCLCPP_INFO(
+            get_logger(),
+            "RGBD acquisition: integrated=%u/%u "
+            "received=%u timeouts=%u rejected=%u "
+            "elapsed=%.2f s",
+            integrated,
+            sample_count,
+            received,
+            timeouts,
+            rejected,
+            elapsed);
 
-    // Preserve partial-success behavior.
+        // One diagnostic snapshot per failed acquisition batch.
+        // Do not log on every acquireAfter() timeout.
+        if (integrated == 0)
+        {
+            rgbd_acquisition_->logCaptureFailure(boundary);
+        }
     return integrated > 0;
 }
 
@@ -1415,59 +1415,29 @@ void InspectProfileServer::execute(
 
 
     for (uint32_t view = 0; view < goal->max_views; ++view)
-    {
-        if (canceled())
-            return;
+        {
+            if (canceled())
+                return;
 
+            // Wait for central confidence to recover after motion.
+            if (!waitForStability()) {
+                if (canceled()) return;
 
-        imu_stability_monitor_->reset();
-        const bool stable = imu_stability_monitor_->waitForStable(
-        std::chrono::seconds(10),
-        [&](){
-            return goal_handle->is_canceling();
-            }
-        );
-        if(!stable){
-            if(canceled()){
+                fail(
+                    InspectProfile::Result::ACQUISITION_FAILED,
+                    "Platform did not settle before RGB-D acquisition");
                 return;
             }
-            const auto metrics = imu_stability_monitor_->metrics();
-            const auto config = imu_stability_monitor_->config();
 
+            if (canceled()) return;
 
-            RCLCPP_ERROR(
-                get_logger(),
-                "IMU stability timeout at viewpoint %u/%u after %.2f s\n"
-                "  Gyro RMS:       %.5f rad/s  (limit %.5f)\n"
-                "  Accel RMS:      %.5f m/s^2  (limit %.5f)\n"
-                "  Mean gyro:      %.5f rad/s  (limit %.5f)\n"
-                "  Samples:        %zu         (minimum %zu)\n"
-                "  Stable:         %s",
-                view + 1,
-                goal->max_views,
-                stability_timeout_,
-                metrics.ang_vel_rms_rad_s,
-                config.max_ang_vel_rms,
-                metrics.lin_acc_rms_m_s2,
-                config.max_lin_acc_rms,
-                metrics.mean_ang_vel_rad_s,
-                config.max_mean_ang_vel,
-                metrics.samples_count,
-                config.min_samples,
-                metrics.stable ? "yes" : "no"
-            );
+            const bool acquired =
+                acquireSamples(goal->samples_per_view, goal->depth_range);
 
-            fail(
-                InspectProfile::Result::ACQUISITION_FAILED,
-                "IMU stability timeout before RGB-D acquisition"
-            );
-            return;
-        }
+            if (canceled()) return;
 
-
-        if (canceled()) return;
-        const bool acquired = acquireSamples(goal->samples_per_view, goal->depth_range);
-        if (canceled()) return;
+            // Existing acquisition result handling continues here.
+       
 
         // First iteration observes the current camera position.
         // Subsequent iterations arrive here after a completed move.

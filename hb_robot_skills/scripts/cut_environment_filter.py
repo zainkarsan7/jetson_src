@@ -133,8 +133,22 @@ class MeshSurface:
 
 
 def occupied_cells(scans, size, min_scans=2):
-    votes = [np.unique(np.floor(scan / size).astype(np.int32), axis=0) for scan in scans]
-    cells, counts = np.unique(np.concatenate(votes), axis=0, return_counts=True)
+    votes = [
+        np.unique(
+            np.floor(scan / size).astype(np.int32),
+            axis=0
+        )
+        for scan in scans
+    ]
+
+    cells, counts = np.unique(
+        np.concatenate(votes),
+        axis=0,
+        return_counts=True
+    )
+
+    
+
     return cells[counts >= min_scans]
 
 

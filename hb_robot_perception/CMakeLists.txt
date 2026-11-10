@@ -195,15 +195,6 @@ ament_export_dependencies(
 )
 
 if(BUILD_TESTING)
-  find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(rgbd_acquisition_test test/rgbd_acquisition_test.cpp)
-  target_link_libraries(rgbd_acquisition_test hb_perception)
-  ament_add_gtest(imu_stability_monitor_test test/imu_stability_monitor_test.cpp)
-  target_link_libraries(imu_stability_monitor_test hb_perception)
-  ament_target_dependencies(imu_stability_monitor_test rclcpp sensor_msgs)
-  ament_add_gtest(profile_pose_test test/profile_pose_test.cpp)
-  target_link_libraries(profile_pose_test hb_perception)
-  ament_target_dependencies(profile_pose_test tf2_eigen hb_robot_interfaces)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files

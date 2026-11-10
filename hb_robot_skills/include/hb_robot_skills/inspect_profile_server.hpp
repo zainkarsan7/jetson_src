@@ -25,8 +25,9 @@
 #include "hb_robot_perception/profile_matcher.hpp"
 #include "hb_robot_perception/profile_library.hpp"
 #include "hb_robot_perception/profile_observation_model.hpp"
-#include "hb_robot_perception/imu_stability_monitor.hpp"
 #include "hb_robot_perception/profile_mesh_builder.hpp"
+#include "hb_robot_skills/platform_supervision_client.hpp"
+
 
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
@@ -189,8 +190,10 @@ class InspectProfileServer: public rclcpp::Node{
 
         std::optional<rclcpp::Time> first_observation_;
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
-        std::unique_ptr<hb_perception::ImuStabilityMonitor> imu_stability_monitor_;
-        std::unique_ptr<hb_perception::PlatformMotionSupervisor> platform_motion_supervisor_;
+        std::unique_ptr<
+                hb_robot_skills::PlatformSupervisionClient
+            > platform_supervision_;
+        // std::unique_ptr<hb_perception::PlatformMotionSupervisor> platform_motion_supervisor_;
         // configure acquisition stuff
         std::string rgb_topic_;
         std::string depth_topic_;
