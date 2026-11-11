@@ -381,20 +381,200 @@ namespace hb_robot_skills{
 
     rclcpp_action::GoalResponse CutProfileServer::handleGoal(const rclcpp_action::GoalUUID & , 
     std::shared_ptr<const CutProfile::Goal> goal){
+
+        RCLCPP_INFO(
+            get_logger(),
+            "CutProfile handleGoal entered: "
+            "execute=%d plan_id=%s cut_id=%s",
+            goal->execute,
+            goal->plan_id.c_str(),
+            goal->cut_id.c_str());
+
+        const bool escape_busy = escape_busy_.load();
+        const bool cut_id_empty = goal->cut_id.empty();
+
+        const bool standoff_finite =
+            std::isfinite(goal->standoff);
+        const bool standoff_valid =
+            standoff_finite && goal->standoff >= 0.0;
+
+        const bool pos_tol_finite =
+            std::isfinite(goal->pos_tol);
+        const bool pos_tol_valid =
+            pos_tol_finite && goal->pos_tol > 0.0;
+
+        const bool ang_tol_finite =
+            std::isfinite(goal->ang_tol);
+        const bool ang_tol_valid =
+            ang_tol_finite && goal->ang_tol > 0.0;
+
+        const bool has_intervals =
+            !goal->intervals.empty();
+
+        const bool parent_missing =
+            has_intervals && goal->parent_plan_id.empty();
+
+        RCLCPP_INFO(
+        get_logger(),
+        "[CUT GOAL] RECEIVED "
+        "execute=%d plan_id='%s' cut_id='%s' "
+        "parent_plan_id='%s' "
+        "busy=%d escape_busy=%d "
+        "standoff=%.9f finite=%d valid=%d "
+        "pos_tol=%.9f finite=%d valid=%d "
+        "ang_tol=%.9f finite=%d valid=%d "
+        "intervals=%zu parent_missing=%d "
+        "skip_motion=%d process_enabled=%d "
+        "approval_required=%d",
+        static_cast<int>(goal->execute),
+        goal->plan_id.c_str(),
+        goal->cut_id.c_str(),
+        goal->parent_plan_id.c_str(),
+        static_cast<int>(busy_.load()),
+        static_cast<int>(escape_busy),
+        goal->standoff,
+        static_cast<int>(standoff_finite),
+        static_cast<int>(standoff_valid),
+        goal->pos_tol,
+        static_cast<int>(pos_tol_finite),
+        static_cast<int>(pos_tol_valid),
+        goal->ang_tol,
+        static_cast<int>(ang_tol_finite),
+        static_cast<int>(ang_tol_valid),
+        goal->intervals.size(),
+        static_cast<int>(parent_missing),
+        static_cast<int>(skip_motion_),
+        static_cast<int>(process_enabled_),
+        static_cast<int>(require_plan_approval_));
+
+            // --------------------------------------------------
+            // Gate 1: basic goal validation
+            // --------------------------------------------------
+
+            if (escape_busy ||
+                cut_id_empty ||
+                !standoff_valid ||
+                !pos_tol_valid ||
+                !ang_tol_valid)
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[CUT GOAL] REJECTED: basic validation "
+                    "escape_busy=%d "
+                    "cut_id_empty=%d "
+                    "standoff_invalid=%d "
+                    "pos_tol_invalid=%d "
+                    "ang_tol_invalid=%d",
+                    static_cast<int>(escape_busy),
+                    static_cast<int>(cut_id_empty),
+                    static_cast<int>(!standoff_valid),
+                    static_cast<int>(!pos_tol_valid),
+                    static_cast<int>(!ang_tol_valid));
+
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT GOAL] PASS: basic validation");
+
+            // --------------------------------------------------
+            // Gate 2: interval validation
+            // --------------------------------------------------
+
+            for (std::size_t i = 0;
+                i < goal->intervals.size(); ++i)
+            {
+                const auto& interval = goal->intervals[i];
+
+                if (!hb_robot::recovery::validInterval(interval))
+                {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "[CUT GOAL] REJECTED: "
+                        "invalid interval index=%zu "
+                        "total_intervals=%zu "
+                        "execute=%d plan_id='%s'",
+                        i,
+                        goal->intervals.size(),
+                        static_cast<int>(goal->execute),
+                        goal->plan_id.c_str());
+
+                    return rclcpp_action::GoalResponse::REJECT;
+                }
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT GOAL] PASS: all %zu intervals valid",
+                goal->intervals.size());
+
+            // --------------------------------------------------
+            // Gate 3: recut parent validation
+            // --------------------------------------------------
+
+            if (parent_missing)
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[CUT GOAL] REJECTED: "
+                    "recut intervals provided but "
+                    "parent_plan_id is empty; "
+                    "intervals=%zu cut_id='%s'",
+                    goal->intervals.size(),
+                    goal->cut_id.c_str());
+
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT GOAL] PASS: parent-plan validation");
+
+            // --------------------------------------------------
+            // Gate 4: atomic execution ownership
+            // --------------------------------------------------
+
+            bool idle = false;
+
+            const bool acquired =
+                busy_.compare_exchange_strong(idle, true);
+
+            if (!acquired)
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[CUT GOAL] REJECTED: SERVER BUSY "
+                    "execute=%d plan_id='%s' cut_id='%s' "
+                    "busy_observed=%d "
+                    "escape_busy=%d "
+                    "stored_plan_count=%zu",
+                    static_cast<int>(goal->execute),
+                    goal->plan_id.c_str(),
+                    goal->cut_id.c_str(),
+                    static_cast<int>(idle),
+                    static_cast<int>(escape_busy_.load()),
+                    stored_plans_.size());
+
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT GOAL] ACCEPTED: "
+                "execute=%d plan_id='%s' cut_id='%s' "
+                "busy_acquired=1",
+                static_cast<int>(goal->execute),
+                goal->plan_id.c_str(),
+                goal->cut_id.c_str());
+
+            return
+                rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        }
+
         
-        if(escape_busy_ || goal->cut_id.empty() ||
-           !std::isfinite(goal->standoff) || goal->standoff<0 ||
-           !std::isfinite(goal->pos_tol) || goal->pos_tol<=0 ||
-           !std::isfinite(goal->ang_tol) || goal->ang_tol<=0)
-          return rclcpp_action::GoalResponse::REJECT;
-        for(const auto& i:goal->intervals)
-          if(!hb_robot::recovery::validInterval(i)) return rclcpp_action::GoalResponse::REJECT;
-        if(!goal->intervals.empty() && goal->parent_plan_id.empty())
-          return rclcpp_action::GoalResponse::REJECT;
-        bool idle=false;
-        if(!busy_.compare_exchange_strong(idle,true)) return rclcpp_action::GoalResponse::REJECT;
-        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-    }
+        
+       
 
     void CutProfileServer::requestCutStop(){
 

@@ -470,8 +470,8 @@ std::optional<ProfileViewSolution> NBVPlanner::plan(
     constexpr double max_joint_delta_rad = 1.0;
     constexpr double max_total_joint_delta_rad = 3.0;
 
-    constexpr double gain_weight = 10.0;
-    constexpr double motion_weight = 1.5;
+    double gain_weight = request.exploration_weight;
+    double motion_weight = request.motion_weight;
 
     std::vector<double> q_start;
 

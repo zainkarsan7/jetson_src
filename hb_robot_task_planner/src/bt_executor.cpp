@@ -180,8 +180,14 @@ public:
 
       typename Action::Goal goal;
 
-      if (!build_(goal))
+      if (!build_(goal)){
+
+         RCLCPP_ERROR(
+        rclcpp::get_logger("bt_executor"),
+        "Action '%s': goal construction rejected",
+        registrationName().c_str());
         return BT::NodeStatus::FAILURE;
+         }
 
       typename rclcpp_action::Client<Action>::
           SendGoalOptions options;
@@ -200,18 +206,25 @@ public:
       sent_ = true;
     }
 
-    if (!handle_) {
+    if (!handle_) 
       if (goal_.wait_for(0s) !=
           std::future_status::ready)
         return BT::NodeStatus::RUNNING;
 
       handle_ = goal_.get();
 
-      if (!handle_)
-        return BT::NodeStatus::FAILURE;
+      if (!handle_){
 
+      RCLCPP_ERROR(
+        rclcpp::get_logger("bt_executor"),
+        "Action '%s': goal REJECTED by ROS action server",
+        registrationName().c_str());
+
+
+        return BT::NodeStatus::FAILURE;
+      }
       result_ = client_->async_get_result(handle_);
-    }
+    
 
     if (result_.wait_for(0s) !=
         std::future_status::ready)
@@ -367,6 +380,7 @@ public:
   }
 
   BT::NodeStatus onStart() override {
+    scene_retries_ = 0;
     context_->captured_scene.reset();
 
     expected_ = context_->snapshot();
@@ -390,16 +404,21 @@ public:
         state.pose_version !=
             expected_.pose_version ||
         Clock::now() > deadline_) {
-      RCLCPP_ERROR(
-          rclcpp::get_logger("bt_executor"),
-          "Environment capture expired or reference changed");
-      onHalted();
-      return BT::NodeStatus::FAILURE;
-    }
+            RCLCPP_ERROR(
+                rclcpp::get_logger("bt_executor"),
+                "Environment capture expired or reference changed");
+            onHalted();
+            return BT::NodeStatus::FAILURE;
+          }
 
     if (!response_ && !future_.valid()) {
       if (!client_->service_is_ready())
         return BT::NodeStatus::RUNNING;
+      // Refresh the complete TaskState snapshot before
+      // creating the capture request. The scene monitor
+      // may have processed the commit's final update
+      // after the inspection action returned.
+      expected_ = state;
 
       auto request =
           std::make_shared<Service::Request>();
@@ -414,6 +433,7 @@ public:
       auto pending = client_->async_send_request(request);
       request_id_ = pending.request_id;
       future_ = pending.share();
+      return BT::NodeStatus::RUNNING;
     }
 
     if (!response_) {
@@ -425,14 +445,65 @@ public:
       future_ = {};
 
       if (!response_->success) {
-        RCLCPP_ERROR(
-            rclcpp::get_logger("bt_executor"),
-            "Environment capture failed: %s",
-            response_->message.c_str());
-        response_.reset();
-        return BT::NodeStatus::FAILURE;
-      }
-    }
+
+        // Re-read TaskState at the point of failure.
+        // The scene may have advanced while the
+        // capture service was validating the request.
+        const auto current = context_->snapshot();
+
+        constexpr unsigned max_scene_retries = 2;
+        const bool same_reference =
+                        current.scene_valid &&
+                        current.geometry_version ==
+                            expected_.geometry_version &&
+                        current.pose_version ==
+                            expected_.pose_version;
+
+                    const bool supervision_ok =
+                        context_->authorized(current) &&
+                        !current.motion_fault_active &&
+                        !current.process_fault_active;
+
+                    const bool scene_advanced =
+                        current.scene_version >
+                            expected_.scene_version;
+
+                    if (scene_retries_ < max_scene_retries &&
+                        same_reference &&
+                        supervision_ok &&
+                        scene_advanced &&
+                        Clock::now() < deadline_)
+                    {
+                        ++scene_retries_;
+
+                        RCLCPP_WARN(
+                            rclcpp::get_logger("bt_executor"),
+                            "Capture scene revision changed "
+                            "%llu -> %llu; retry %u/%u",
+                            static_cast<unsigned long long>(
+                                expected_.scene_version),
+                            static_cast<unsigned long long>(
+                                current.scene_version),
+                            scene_retries_,
+                            max_scene_retries);
+
+                        response_.reset();
+                        settled_since_.reset();
+
+                        // Next tick sends a new request using
+                        // a fresh TaskState snapshot.
+                        return BT::NodeStatus::RUNNING;
+                    }
+
+                    RCLCPP_ERROR(
+                        rclcpp::get_logger("bt_executor"),
+                        "Environment capture failed: %s",
+                        response_->message.c_str());
+
+                    response_.reset();
+                    return BT::NodeStatus::FAILURE;
+                }
+            }
 
     const bool acknowledged =
         !response_->environment_id.empty() &&
@@ -506,7 +577,7 @@ private:
 
   Clock::time_point deadline_{};
   std::optional<Clock::time_point> settled_since_;
-
+  unsigned scene_retries_ = 0;
   uint64_t last_scene_version_ = 0;
   std::string last_environment_id_;
 };
@@ -931,7 +1002,20 @@ int main(int argc, char** argv) {
     context->preparing_candidate = false;  
 
     const auto state = context->snapshot();
-
+    RCLCPP_INFO(
+      node->get_logger(),
+      "ExecuteCut request: "
+      "plan_id=%s cut_id=%s "
+      "authorized=%d versions_match=%d "
+      "scene=%llu expected_scene=%llu",
+      context->plan_id.c_str(),
+      context->cut_id.c_str(),
+      context->authorized(state),
+      context->planMatches(state),
+      static_cast<unsigned long long>(
+          state.scene_version),
+      static_cast<unsigned long long>(
+          context->requested_plan_state.scene_version));
     if (!context->authorized(state) ||
         !context->planMatches(state) ||
         !context->captured_scene ||

@@ -21,6 +21,23 @@ bool CutProfileServer::taskPermitsExecution(TaskState* snapshot) const {
 }
 void CutProfileServer::executeStored(const std::string& id,
     const std::shared_ptr<GoalHandleCutProfile>& h) {
+
+
+    RCLCPP_INFO(
+        get_logger(),
+        "executeStored entered: "
+        "plan_id=%s cut_id=%s "
+        "execute=%d skip_motion=%d "
+        "process_enabled=%d approval_required=%d",
+        id.c_str(),
+        h->get_goal()->cut_id.c_str(),
+        h->get_goal()->execute,
+        skip_motion_,
+        process_enabled_,
+        require_plan_approval_);
+
+
+
   auto result=std::make_shared<CutProfile::Result>();
   result->plan_id=id;result->cut_id=h->get_goal()->cut_id;
   auto finish=[&](const std::string& message,bool success=false) {

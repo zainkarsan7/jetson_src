@@ -126,6 +126,22 @@ InspectProfileServer::InspectProfileServer(
         declare_parameter<double>(
             "coverage_target", 0.4);
 
+    exploration_weight_ =
+        declare_parameter<double>(
+            "exploration_weight_", 100.0);
+
+    motion_weight_ =
+        declare_parameter<double>(
+            "motion_weight_", 0.001);
+
+    inspection_pos_tol_ =
+        declare_parameter<double>(
+            "inspection_pos_tol", 0.03);
+    inspection_ang_tol_ =
+        declare_parameter<double>(
+            "inspection_anf_tol_", 0.1);
+
+
     if (planning_time_ <= 0.0 ||
         stability_timeout_ <= 0.0 ||
         acquisition_timeout_ <= 0.0 ||
@@ -930,9 +946,11 @@ InspectProfileServer::makeProfileInspectionRequest(
     motion::ProfileInspectionRequest request;
 
     request.cam_dist = goal.camera_standoff;
-    request.pos_tol = 0.075;
-    request.ang_tol = 0.25;
+    request.pos_tol = inspection_pos_tol_;
+    request.ang_tol = inspection_ang_tol_;
     request.num_candidates = 8;
+    request.exploration_weight = exploration_weight_;
+    request.motion_weight = motion_weight_;
 
     return request;
 }

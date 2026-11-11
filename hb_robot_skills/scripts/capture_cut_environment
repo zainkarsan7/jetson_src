@@ -8,7 +8,6 @@ from pathlib import Path
 from tf2_ros import TransformException
 import numpy as np
 import rclpy
-
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose
 from hb_robot_interfaces.msg import TaskState
@@ -600,7 +599,7 @@ class CaptureNode(Node):
     # ========================================================
 
     def lookup_scan_poses(self, frame, links, stamp):
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + 2.0
         last_error = None
 
         while time.monotonic() < deadline:
@@ -620,7 +619,11 @@ class CaptureNode(Node):
                     )
 
                 return poses
-
+            # except RuntimeError as exc:
+            #     self.get_logger().warning(
+            #         f"Skipping LiDAR scan: {exc}"
+            #     )
+            #     continue
             except TransformException as exc:
                 last_error = exc
                 time.sleep(0.025)

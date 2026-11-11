@@ -243,6 +243,12 @@ private:
     float inlier_fraction_target_ = 0.4f;
     float coverage_target_ = 0.4f;
 
+    double exploration_weight_ = 100.0;
+
+    double motion_weight_ = 0.001;
+    double inspection_pos_tol_ = 0.03;
+    double inspection_ang_tol_ = 0.1;
+        
     bool skip_motion_ = true;
     bool require_plan_approval_ = true;
 

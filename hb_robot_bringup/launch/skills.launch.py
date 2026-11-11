@@ -44,7 +44,13 @@ def generate_launch_description():
         {"skip_inspection_motion": False,
         "platform_imu_topic": LaunchConfiguration("platform_imu_topic"),
         "platform_accel_topic": ParameterValue(LaunchConfiguration("platform_accel_topic"), value_type=str),
-        "require_plan_approval": True },
+        "require_plan_approval": True,
+        "exploration_weight_": 100.0,
+        "motion_weight_": 0.001,
+        "inspection_pos_tol": .03,
+        "inspection_ang_tol": 0.1     
+        
+         },
         ],
     )
 

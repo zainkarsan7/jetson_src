@@ -37,6 +37,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <condition_variable>
 
 using namespace std::chrono_literals;
 
@@ -574,6 +575,40 @@ private:
                     state_.scene_version),
                 state_.cut_environment_id.c_str());
         }
+
+
+        if (commit_scene_pending_)
+        {
+            const auto& objects =
+                scene.world.collision_objects;
+
+            const auto it = std::find_if(
+                objects.begin(),
+                objects.end(),
+                [](const CollisionObject& object)
+                {
+                    return object.id == wp::kObjectId &&
+                        object.operation !=
+                            CollisionObject::REMOVE;
+                });
+
+            if (it != objects.end())
+            {
+                std::string error;
+
+                if (wp::consistent(
+                        *it,
+                        pending_reference_,
+                        error))
+                {
+                    commit_scene_observed_ = true;
+                    scene_cv_.notify_all();
+                }
+            }
+        }
+
+
+
     }
 
     void commitWorkpiece(
@@ -868,10 +903,27 @@ private:
         updates.push_back(
             std::move(updated));
 
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            commit_scene_pending_ = true;
+            commit_scene_observed_ = false;
+            pending_reference_ = reference;
+        }
+
         if (!planning_scene_interface_
                  .applyCollisionObjects(updates))
         {
             reject("MoveIt rejected collision update");
+
+            {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            commit_scene_pending_ = false;
+            commit_scene_observed_ = false;
+
+            }
+
             return;
         }
 
@@ -911,10 +963,47 @@ private:
                       "still present"
                     : "MoveIt workpiece readback failed: " +
                       readback_error);
+            {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            commit_scene_pending_ = false;
+            commit_scene_observed_ = false;
+
+            }
 
             // Execution stays invalidated.
             return;
         }
+
+         
+        
+        
+        
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            const bool synchronized =
+                scene_cv_.wait_for(
+                    lock,
+                    3s,
+                    [&]()
+                    {
+                        return commit_scene_observed_;
+                    });
+
+            commit_scene_pending_ = false;
+            commit_scene_observed_ = false;
+
+            if (!synchronized)
+            {
+                reject(
+                    "MoveIt readback succeeded, but "
+                    "monitored scene synchronization "
+                    "was not confirmed");
+                return;
+            }
+        }
+
 
         // Recheck supervision after MoveIt update.
         const auto final_metrics =
@@ -1032,7 +1121,7 @@ private:
                  hard_peak_accel_);
 
         const bool hard_motion =
-            unilidar_hard || mpu6050_hard;
+            unilidar_hard && mpu6050_hard;
 
         const bool hard_stale =
             metrics.unilidar.sample_age_s > grace_s_ ||
@@ -1053,8 +1142,27 @@ private:
         {
             std::lock_guard<std::mutex> lock(mutex_);
 
+
             if (hard_motion)
-            {
+            {   
+
+                RCLCPP_WARN(
+                        get_logger(),
+                        "Hard IMU trigger: "
+                        "unilidar_valid=%d gyro_peak=%.4f accel_peak=%.4f "
+                        "mpu_valid=%d gyro_peak=%.4f accel_peak=%.4f "
+                        "confidence=%.3f",
+                        metrics.unilidar.valid,
+                        metrics.unilidar.peak_ang_vel_rad_s,
+                        metrics.unilidar.peak_acc_deviation_m_s2,
+                        metrics.mpu6050.valid,
+                        metrics.mpu6050.peak_ang_vel_rad_s,
+                        metrics.mpu6050.peak_acc_deviation_m_s2,
+                        metrics.stable_confidence);
+
+                // Credible disturbance: invalidate the
+                // accepted workpiece, regardless of whether
+                // the robot was commanded to move.
                 if (!supervision_latched_)
                 {
                     invalidateLocked(
@@ -1065,19 +1173,18 @@ private:
                 uncertainty_active_ = false;
                 supervision_latched_ = true;
             }
-            else if (!trusted_stable_)
+            else if (confidence_acquired && !hard_stale)
             {
-                if (confidence_acquired &&
-                    !hard_stale)
-                {
-                    trusted_stable_ = true;
-                    uncertainty_active_ = false;
-                    supervision_latched_ = false;
-                }
+                // Stability has returned.
+                // Restore supervision permission, but never
+                // automatically restore workpiece_pose_valid.
+                trusted_stable_ = true;
+                uncertainty_active_ = false;
+                supervision_latched_ = false;
             }
             else if (!raw_good ||
-                     confidence_lost ||
-                     hard_stale)
+                    confidence_lost ||
+                    hard_stale)
             {
                 if (!uncertainty_active_)
                 {
@@ -1087,36 +1194,34 @@ private:
 
                 const double uncertain_for =
                     std::chrono::duration<double>(
-                        tick - uncertainty_since_)
-                        .count();
+                        tick - uncertainty_since_).count();
 
                 if (hard_stale ||
                     uncertain_for >= grace_s_)
                 {
-                    if (!supervision_latched_)
-                    {
-                        invalidateLocked(
-                            hard_stale
-                                ? "Prolonged IMU data loss"
-                                : "Persistent IMU instability");
-                    }
-
-                    supervision_latched_ = true;
+                    // Sensor instability or missing data:
+                    // block supervision, not the accepted
+                    // workpiece pose.
                     trusted_stable_ = false;
                     uncertainty_active_ = false;
+                    supervision_latched_ = true;
                 }
             }
             else
             {
+                // Within the confidence hysteresis band.
+                // Preserve the existing trusted state.
                 uncertainty_active_ = false;
-                supervision_latched_ = false;
             }
 
             state_.supervision_valid =
-                trusted_stable_;
+                trusted_stable_ && !uncertainty_active_ &&
+                !supervision_latched_ && !hard_motion &&
+                !hard_stale;
 
             state_.imu_stable =
-                trusted_stable_;
+                state_.supervision_valid;
+
 
             std::ostringstream status;
 
@@ -1209,6 +1314,11 @@ private:
     // Shared authoritative state.
     std::mutex mutex_;
     std::mutex commit_mutex_;
+
+    std::condition_variable scene_cv_;
+    bool commit_scene_pending_ = false;
+    bool commit_scene_observed_ = false;
+    Reference pending_reference_;
 
     State state_;
 

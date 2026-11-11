@@ -41,6 +41,9 @@ namespace hb_robot_skills::motion{
         double min_information_gain = 0.05;
         double max_motion_cost = 3.0;
 
+        double exploration_weight = 100.0;
+        double motion_weight = 0.001;
+
         double pos_tol{0.1};
         double ang_tol{0.3};
 
