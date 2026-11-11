@@ -206,7 +206,7 @@ public:
       sent_ = true;
     }
 
-    if (!handle_) 
+    if (!handle_) {
       if (goal_.wait_for(0s) !=
           std::future_status::ready)
         return BT::NodeStatus::RUNNING;
@@ -224,6 +224,7 @@ public:
         return BT::NodeStatus::FAILURE;
       }
       result_ = client_->async_get_result(handle_);
+    }
     
 
     if (result_.wait_for(0s) !=

@@ -271,3 +271,18 @@ ros2 bag record -s mcap <topic_name>
 ros2 bag record -s mcap /hb_robot_lidar/imu k4a/imu mpu6050/imu /platform_supervision /task_state /joint_states
 
 CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build
+
+
+ros2 action send_goal \
+  /cut_profile \
+  hb_robot_interfaces/action/CutProfile \
+  '{
+    plan_id: "cut_plan_1",
+    execute: true,
+    standoff: 0.01,
+    pos_tol: 0.01,
+    ang_tol: 0.3,
+    cut_id: cut_1794405705403804211 
+    scene_version: 6 
+  }' \
+  --feedback

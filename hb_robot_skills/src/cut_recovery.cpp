@@ -40,14 +40,46 @@ void CutProfileServer::executeStored(const std::string& id,
 
   auto result=std::make_shared<CutProfile::Result>();
   result->plan_id=id;result->cut_id=h->get_goal()->cut_id;
-  auto finish=[&](const std::string& message,bool success=false) {
-    result->success=success;result->message=message;
-    result->completed_segments=completed_segments_;result->active_segment=active_segment_;
-    result->execution_version=execution_version_;
-    motion_active_=false;
-    if(h->is_canceling()) h->canceled(result);
-    else if(success) h->succeed(result);else h->abort(result);
+  
+  auto finish = [&](const std::string& message,
+                    bool success = false)
+  {
+      result->success = success;
+      result->message = message;
+
+      result->completed_segments = completed_segments_;
+      result->active_segment = active_segment_;
+      result->execution_version = execution_version_;
+
+      motion_active_ = false;
+
+      RCLCPP_INFO(
+          get_logger(),
+          "[CUT HANDOFF] Execution finished "
+          "plan_id='%s' success=%d "
+          "message='%s'",
+          id.c_str(),
+          static_cast<int>(success),
+          message.c_str());
+
+      // Release admission before any terminal result
+      // becomes visible to the action client.
+      releaseGoalAdmission();
+
+      if (h->is_canceling())
+      {
+          h->canceled(result);
+      }
+      else if (success)
+      {
+          h->succeed(result);
+      }
+      else
+      {
+          h->abort(result);
+      }
   };
+
   completed_segments_=0;active_segment_.clear();
   {std::lock_guard<std::mutex> lock(approval_mutex_);
     motion_approved_=false;motion_rejected_=false;}

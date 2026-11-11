@@ -22,7 +22,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
-
+#include <sstream>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -383,14 +383,22 @@ public:
                     std::lock_guard<std::mutex> lock(
                         mutex_);
 
-                    state_.process_fault_active =
-                        msg->fault;
-
+                    const bool was_faulted =
+                        state_.process_fault_active;
                     if (msg->fault)
                     {
-                        invalidateLocked(
-                            "Torch process fault");
+                        state_.process_fault_active = true;
+                        state_.path_valid = false;
+                        if (!was_faulted)
+                            {
+                                RCLCPP_ERROR(
+                                    get_logger(),
+                                    "Torch process fault latched; "
+                                    "cutting disabled, pose retained");
+                            }
                     }
+
+
                 });
 
         fault_ =
@@ -493,7 +501,7 @@ private:
             now().nanoseconds();
 
         invalidation_reason_ = reason;
-
+        // state_.process_fault_active = true;
         state_.workpiece_pose_valid = false;
         state_.path_valid = false;
 
@@ -561,20 +569,27 @@ private:
                     object.id;
             }
         }
-
-        if (scene_revisions_.changed(scene))
+        std::string revision_reason;
+        if (scene_revisions_.changed(scene, &revision_reason))
         {
             ++state_.scene_version;
             state_.path_valid = false;
 
-            RCLCPP_INFO(
-                get_logger(),
-                "Scene revision=%llu "
-                "environment=%s",
-                static_cast<unsigned long long>(
-                    state_.scene_version),
-                state_.cut_environment_id.c_str());
-        }
+
+            RCLCPP_WARN(
+                    get_logger(),
+                    "[SCENE REVISION] revision=%llu "
+                    "is_diff=%d reason='%s' "
+                    "environment='%s'",
+                    static_cast<unsigned long long>(
+                        state_.scene_version),
+                    static_cast<int>(scene.is_diff),
+                    revision_reason.c_str(),
+                    state_.cut_environment_id.c_str());
+         }
+
+
+        
 
 
         if (commit_scene_pending_)
@@ -975,10 +990,6 @@ private:
             return;
         }
 
-         
-        
-        
-        
         {
             std::unique_lock<std::mutex> lock(mutex_);
 

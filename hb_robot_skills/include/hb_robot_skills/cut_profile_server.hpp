@@ -111,6 +111,7 @@ namespace hb_robot_skills{
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
+            
 
             
             
@@ -208,6 +209,13 @@ namespace hb_robot_skills{
         bool motion_approved_{false};
 
         bool motion_rejected_{false};
+
+
+        void releaseGoalAdmission();
+
+        std::mutex worker_mutex_;
+
+
 
         std::atomic<bool> cut_stop_requested_{false};
         bool setFlapClosed(bool closed);

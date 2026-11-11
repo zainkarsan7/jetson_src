@@ -92,9 +92,13 @@ namespace hb_robot_skills{
           TaskState current;
           if(!taskPermitsExecution(&current) ||
              !hb_robot::recovery::sameVersions(current,execution_state_)) {
-            cut_stop_requested_=true;
-            torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
-            if(move_group_) move_group_->stop();
+
+                if(!cut_stop_requested_.exchange(true)){
+                    RCLCPP_ERROR(get_logger(),"execution supervision lost, stopping motion");
+                    torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
+                    if(move_group_) move_group_->stop();
+                }
+            
           }
         });
         using Escape=hb_robot_interfaces::action::Escape;
@@ -134,12 +138,11 @@ namespace hb_robot_skills{
 
         torch_controller_->setFaultCallback([this](const std::string& reason){
             RCLCPP_ERROR(get_logger(), "TORCH PROCESS FAULT %s", reason.c_str());
-            cut_stop_requested_.store(true);
-            torch_controller_->emergencyShutdown(reason);
-            if(move_group_){
-                move_group_->stop();
-            }
-
+            if(!cut_stop_requested_.exchange(true)){
+                    RCLCPP_ERROR(get_logger(),"execution supervision lost, stopping motion");
+                    torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
+                    if(move_group_) move_group_->stop();
+                }
         });
 
         workpiece_reference_sub_ =
@@ -537,39 +540,31 @@ namespace hb_robot_skills{
 
             bool idle = false;
 
-            const bool acquired =
-                busy_.compare_exchange_strong(idle, true);
-
-            if (!acquired)
+            if (!busy_.compare_exchange_strong(idle, true))
             {
-                RCLCPP_ERROR(
+                RCLCPP_WARN(
                     get_logger(),
                     "[CUT GOAL] REJECTED: SERVER BUSY "
-                    "execute=%d plan_id='%s' cut_id='%s' "
-                    "busy_observed=%d "
-                    "escape_busy=%d "
-                    "stored_plan_count=%zu",
+                    "execute=%d plan_id='%s' cut_id='%s'",
                     static_cast<int>(goal->execute),
                     goal->plan_id.c_str(),
-                    goal->cut_id.c_str(),
-                    static_cast<int>(idle),
-                    static_cast<int>(escape_busy_.load()),
-                    stored_plans_.size());
+                    goal->cut_id.c_str());
+                    
 
                 return rclcpp_action::GoalResponse::REJECT;
             }
 
+
             RCLCPP_INFO(
                 get_logger(),
-                "[CUT GOAL] ACCEPTED: "
-                "execute=%d plan_id='%s' cut_id='%s' "
-                "busy_acquired=1",
+                "[CUT GOAL] ACCEPTED "
+                "execute=%d plan_id='%s' cut_id='%s'",
                 static_cast<int>(goal->execute),
                 goal->plan_id.c_str(),
                 goal->cut_id.c_str());
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 
-            return
-                rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+
         }
 
         
@@ -598,20 +593,74 @@ namespace hb_robot_skills{
         return rclcpp_action::CancelResponse::ACCEPT;
     }
 
+   void CutProfileServer::releaseGoalAdmission()
+        {
+            busy_.store(false, std::memory_order_release);
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT HANDOFF] Admission released");
+        }
     void CutProfileServer::handleAccepted(const std::shared_ptr<GoalHandleCutProfile> goal_handle){
-        if(worker_.joinable()) worker_.join();
-        worker_=std::thread([this,goal_handle]{
-          try { execute(goal_handle); }
-          catch(const std::exception& e) {
+      
+    std::lock_guard<std::mutex> worker_lock(worker_mutex_);
+
+    // A previously completed action may still have a
+    // joinable worker thread. Join it before replacing worker_.
+    if (worker_.joinable())
+        worker_.join();
+
+    worker_ = std::thread([this, goal_handle]()
+    {
+        try
+        {
+            execute(goal_handle);
+        }
+        catch (const std::exception& e)
+        {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[CUT WORKER] Exception: %s",
+                e.what());
+
             requestCutStop();
-            auto result=std::make_shared<CutProfile::Result>();result->message=e.what();
-            result->interrupted=motion_active_;motion_active_=false;
-            if(goal_handle->is_canceling()) goal_handle->canceled(result);
-            else goal_handle->abort(result);
-          }
-          busy_=false;
-        });
-    }
+
+            auto result =
+                std::make_shared<CutProfile::Result>();
+
+            result->message = e.what();
+            result->plan_id =
+                goal_handle->get_goal()->plan_id;
+            result->cut_id =
+                goal_handle->get_goal()->cut_id;
+
+            result->success = false;
+            result->interrupted = motion_active_;
+
+            motion_active_ = false;
+
+            // Release admission BEFORE the client receives
+            // the terminal result.
+            releaseGoalAdmission();
+
+            if (goal_handle->is_canceling())
+                goal_handle->canceled(result);
+            else
+                goal_handle->abort(result);
+        }
+
+        // IMPORTANT:
+        // No busy_=false here.
+        // Every normal terminal path releases admission
+        // before publishing its result.
+    });
+}
+
+
+
+
+
+
     std::optional<WorkpieceReference>
             CutProfileServer::latestWorkpieceReference() const
             {
@@ -1183,6 +1232,7 @@ namespace hb_robot_skills{
         {
             result->success = false;
             result->message = message;
+            releaseGoalAdmission();
             goal_handle->abort(result);
         };
 
@@ -1193,6 +1243,7 @@ namespace hb_robot_skills{
 
             move_group_->stop();
             result->message = "Cutting Motion cancelled";
+            releaseGoalAdmission();
             goal_handle->canceled(result);
             return true;
         };
@@ -1680,10 +1731,8 @@ namespace hb_robot_skills{
         }
         const auto plan_opt = cut_planner_->plan(estimate,geometry,request,*current_state,scene_snapshot);
         if(!plan_opt){
-            result->success = false;
-            result->message= "planner failed";
-            goal_handle->abort(result);
-            return;
+           fail(0,"planner_failed");
+           return;
         }
         const motion::CutPlan plan = *plan_opt;
         RCLCPP_INFO(get_logger(),"generated %zu cut segments",plan.segments.size());
@@ -1937,6 +1986,7 @@ namespace hb_robot_skills{
             return;
         }
         result->success=true;
+       
         std::ostringstream summary;
         summary << "Candidate stored for geometry=" << planning_versions.geometry_version
                 << ", pose=" << planning_versions.pose_version << ", scene=" << planning_versions.scene_version;
@@ -1945,6 +1995,16 @@ namespace hb_robot_skills{
                      << current_versions.geometry_version << ", pose=" << current_versions.pose_version
                      << ", scene=" << current_versions.scene_version << ", " << current_versions.status_message << ")";
         result->message=summary.str();
+
+        RCLCPP_INFO(
+            get_logger(),
+            "[CUT HANDOFF] Planning finished "
+            "plan_id='%s'; publishing result",
+            result->plan_id.c_str());
+
+        // Release admission before the BT can observe SUCCESS.
+        releaseGoalAdmission();
+
         goal_handle->succeed(result);
     }
 
