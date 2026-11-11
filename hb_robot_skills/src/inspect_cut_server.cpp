@@ -28,7 +28,7 @@ class InspectCutServer : public rclcpp::Node {
   InspectCutServer() : Node("inspect_cut_server") {
     group_ = declare_parameter<std::string>("planning_group", "manipulator");
     // Must be an optical frame in the robot model (or fixed child of the camera).
-    camera_ = declare_parameter<std::string>("camera_link", "camera_rgb_optical_frame");
+    camera_ = declare_parameter<std::string>("camera_link", "camera_visor");
     frame_ = declare_parameter<std::string>("scene_base_frame", "world");
     infer_evidence_=declare_parameter<bool>("enable_geometric_kerf_evidence",false);
     ray_config_.depth_uncertainty=positive("kerf_depth_uncertainty",0.002);

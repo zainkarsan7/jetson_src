@@ -120,7 +120,9 @@ private:
         moveit::planning_interface::MoveGroupInterface::Plan>
     planToState(
         const moveit::core::RobotState& start,
-        const moveit::core::RobotState& target);
+        const moveit::core::RobotState& target,
+        const bool return_home = false
+    );
 
     motion::ProfileInspectionRequest
     makeProfileInspectionRequest(

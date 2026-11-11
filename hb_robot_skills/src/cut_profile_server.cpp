@@ -84,22 +84,72 @@ namespace hb_robot_skills{
                t.output_on!=std::optional<bool>(false) ||
                t.transfer_detected!=std::optional<bool>(false) ||
                !hb_robot::recovery::sameVersions(state,execution_state_)) {
-              cut_stop_requested_=true;torch_controller_->emergencyShutdown("Retreat supervision lost");
+              cut_stop_requested_=true;
+              torch_controller_->emergencyShutdown("Retreat supervision lost");
               if(move_group_) move_group_->stop();
             }
           }
-          if(!motion_active_) return;
-          TaskState current;
-          if(!taskPermitsExecution(&current) ||
-             !hb_robot::recovery::sameVersions(current,execution_state_)) {
+        
+        if (!motion_active_)
+            return;
 
-                if(!cut_stop_requested_.exchange(true)){
-                    RCLCPP_ERROR(get_logger(),"execution supervision lost, stopping motion");
-                    torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
-                    if(move_group_) move_group_->stop();
+        TaskState current;
+
+        const bool permitted =
+            taskPermitsExecution(&current);
+
+        const bool versions_match =
+            hb_robot::recovery::sameVersions(
+                current, execution_state_);
+
+        if (!permitted || !versions_match)
+        {
+            if (!cut_stop_requested_.exchange(true))
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "Execution supervision lost: "
+                    "permitted=%d versions_match=%d "
+                    "scene_valid=%d pose_valid=%d "
+                    "supervision_valid=%d imu_stable=%d "
+                    "motion_fault=%d process_fault=%d "
+                    "geometry=%llu/%llu pose=%llu/%llu "
+                    "scene=%llu/%llu",
+                    static_cast<int>(permitted),
+                    static_cast<int>(versions_match),
+                    static_cast<int>(current.scene_valid),
+                    static_cast<int>(current.workpiece_pose_valid),
+                    static_cast<int>(current.supervision_valid),
+                    static_cast<int>(current.imu_stable),
+                    static_cast<int>(current.motion_fault_active),
+                    static_cast<int>(current.process_fault_active),
+                    static_cast<unsigned long long>(
+                        current.geometry_version),
+                    static_cast<unsigned long long>(
+                        execution_state_.geometry_version),
+                    static_cast<unsigned long long>(
+                        current.pose_version),
+                    static_cast<unsigned long long>(
+                        execution_state_.pose_version),
+                    static_cast<unsigned long long>(
+                        current.scene_version),
+                    static_cast<unsigned long long>(
+                        execution_state_.scene_version));
+
+                if (torch_controller_)
+                {
+                    // Request OFF without inventing a process fault.
+                    torch_controller_->requestOutputOff();
                 }
-            
-          }
+
+                if (move_group_)
+                    move_group_->stop();
+            }
+        }
+
+
+
+
         });
         using Escape=hb_robot_interfaces::action::Escape;
         escape_server_=rclcpp_action::create_server<Escape>(this,"escape",
@@ -575,7 +625,14 @@ namespace hb_robot_skills{
 
         cut_stop_requested_.store(true);
         // Stop requests precede any feedback wait and never wait for a BT tick.
-        if(torch_controller_) torch_controller_->emergencyShutdown("Cut stop requested");
+         if (torch_controller_)
+    {
+        if (process_enabled_)
+            torch_controller_->emergencyShutdown(
+                "Cut stop requested");
+        else
+            torch_controller_->requestOutputOff();
+    }
         if(move_group_) move_group_->stop();
         approval_cv_.notify_all();
     }

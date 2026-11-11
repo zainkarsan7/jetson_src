@@ -1225,10 +1225,34 @@ private:
                 uncertainty_active_ = false;
             }
 
+            const bool was_supervised =
+                state_.supervision_valid;
+
             state_.supervision_valid =
                 trusted_stable_ && !uncertainty_active_ &&
                 !supervision_latched_ && !hard_motion &&
                 !hard_stale;
+
+            if (was_supervised && !state_.supervision_valid)
+                {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "IMU supervision lost: "
+                        "raw_good=%d confidence=%.3f "
+                        "confidence_lost=%d "
+                        "hard_motion=%d hard_stale=%d "
+                        "uncertainty=%d latched=%d "
+                        "trusted_stable=%d",
+                        static_cast<int>(raw_good),
+                        metrics.stable_confidence,
+                        static_cast<int>(confidence_lost),
+                        static_cast<int>(hard_motion),
+                        static_cast<int>(hard_stale),
+                        static_cast<int>(uncertainty_active_),
+                        static_cast<int>(supervision_latched_),
+                        static_cast<int>(trusted_stable_));
+                }
+
 
             state_.imu_stable =
                 state_.supervision_valid;

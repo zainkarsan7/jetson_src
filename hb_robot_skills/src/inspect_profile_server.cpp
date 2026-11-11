@@ -499,16 +499,18 @@ std::optional<
     moveit::planning_interface::MoveGroupInterface::Plan>
 InspectProfileServer::planToState(
     const moveit::core::RobotState& start,
-    const moveit::core::RobotState& target)
+    const moveit::core::RobotState& target,
+    const bool home_return)
 {
     using Plan =
         moveit::planning_interface::
             MoveGroupInterface::Plan;
 
     // Conservative inspection-transit limits.
-    constexpr double max_joint_travel_rad = 1.5;
-    constexpr double max_total_travel_rad = 4.0;
-    constexpr double max_step_rad = 0.25;
+    
+     double max_joint_travel_rad = 1.5;
+     const double max_total_travel_rad = 4.0;
+     double max_step_rad = 0.25;
 
     const motion::TransitValidator validator =
         [&](const Plan& plan) -> bool
@@ -575,11 +577,10 @@ InspectProfileServer::planToState(
         }
 
         const bool accepted =
-            maximum_joint_travel <=
-                max_joint_travel_rad &&
-            total_travel <=
-                max_total_travel_rad &&
-            maximum_step <= max_step_rad;
+    home_return ||
+    (maximum_joint_travel <= max_joint_travel_rad &&
+     total_travel <= max_total_travel_rad &&
+     maximum_step <= max_step_rad);
 
         if (!accepted)
         {
@@ -1552,7 +1553,7 @@ void InspectProfileServer::execute(
         auto plan =
             planToState(
                 *start,
-                next_view->robot_state);
+                next_view->robot_state, false);
 
         if (!plan)
         {
@@ -1632,7 +1633,7 @@ void InspectProfileServer::execute(
     }
 
     const auto home_plan =
-        planToState(*home_start, home);
+        planToState(*home_start, home, true);
 
     if (!home_plan)
     {

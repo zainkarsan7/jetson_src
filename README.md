@@ -286,3 +286,7 @@ ros2 action send_goal \
     scene_version: 6 
   }' \
   --feedback
+
+
+  tigervncserver :1 -localhost yes -geometry 1920x1080 -depth 24
+  ssh -N -L 5901:localhost:5901 zk-pac@192.168.200.150
