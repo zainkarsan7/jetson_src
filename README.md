@@ -216,3 +216,58 @@ ros2 launch isaac_ros_cumotion robot_segmentation.launch.py \
   robot_segmenter.depth_image_topics:="['/k4a/depth_to_rgb/image_raw']" \
   robot_segmenter.depth_camera_infos:="['/k4a/depth_to_rgb/camera_info']" \
   robot_segmenter.depth
+
+
+   robot_segmenter.depth_qos:=SENSOR_DATA \
+  robot_segmenter.depth_info_qos:=SENSOR_DATA \
+  robot_segmenter.log_debug:=True
+
+## WSL Stuff
+LIBGL_ALWAYS_SOFTWARE=1 rviz2
+
+## UR DASHBOARD
+
+nc -v 192.168.50.55 29999
+is in remote control
+robotmode
+programState
+play
+
+/dashboard_client/ 
+ros2 service call /dashboard_client/play std_srvs/srv/Trigger "{}"
+
+ros2 service call /dashboard_client/close_popup std_srvs/srv/Trigger "{}"
+
+ros2 service call /dashboard_client/brake_release std_srvs/srv/Trigger "{}"
+
+ros2 service call /dashboard_client/program_state ur_dashboard_msgs/srv/GetProgramState "{}"
+
+
+enum class TorchCommandResult{
+    CONFIRMED,
+    NOT_READY,
+    SERVICE_UNAVAILABLE,
+    REQUEST_FAILED,
+    FEEDBACK_TIMEOUT,
+    IO_LOST,
+    CANCELED,
+    FAULT
+
+};
+
+get groot working on WSL
+
+ssh -N \
+  -L 1666:127.0.0.1:1666 \
+  -L 1667:127.0.0.1:1667 \
+  zk-pac@192.168.200.150
+
+when fastdds fails 
+fastdds shm clean
+
+
+ros2 bag record -s mcap <topic_name>
+
+ros2 bag record -s mcap /hb_robot_lidar/imu k4a/imu mpu6050/imu /platform_supervision /task_state /joint_states
+
+CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build
