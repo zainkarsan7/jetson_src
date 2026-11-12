@@ -11,7 +11,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_python REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -36,6 +36,11 @@ else()
 endif()
 
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/RGBDFrame.msg"
+  DEPENDENCIES std_msgs sensor_msgs)
+ament_export_dependencies(rosidl_default_runtime)
+
 add_executable( azure_kinect_node_codex src/k4a_ros_node.cpp src/k4a_ros_device.cpp
                 src/k4a_ros_device_params.cpp src/k4a_calibration_transform_data.cpp)
 
@@ -47,16 +52,14 @@ target_include_directories(azure_kinect_node_codex PRIVATE ${TURBOJPEG_INCLUDE_D
 ament_target_dependencies(azure_kinect_node_codex rclcpp std_msgs sensor_msgs diagnostic_msgs image_transport
                           tf2_ros tf2_geometry_msgs angles)
 
-target_link_libraries(azure_kinect_node_codex ${OpenCV_LIBRARIES} k4a::k4a k4a::k4arecord ${TURBOJPEG_LIBRARY})
+rosidl_get_typesupport_target(rgbd_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(azure_kinect_node_codex ${rgbd_typesupport} ${OpenCV_LIBRARIES} k4a::k4a k4a::k4arecord ${TURBOJPEG_LIBRARY})
 
 target_compile_features(azure_kinect_node_codex PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 
 install(TARGETS azure_kinect_node_codex
   DESTINATION lib/${PROJECT_NAME})
 
-
-# Install Python modules
-ament_python_install_package(${PROJECT_NAME})
 
 # Install Python executables
 install(PROGRAMS
@@ -97,7 +100,9 @@ if(BUILD_TESTING)
     ament_add_test(test_pipeline COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pipeline.py"
       "$<TARGET_FILE:azure_kinect_node_codex>" "$<TARGET_FILE:fake_k4a>"
-      GENERATE_RESULT_FOR_RETURN_CODE_ZERO TIMEOUT 90)
+      APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_py"
+                 "LD_LIBRARY_PATH=${CMAKE_CURRENT_BINARY_DIR}"
+      GENERATE_RESULT_FOR_RETURN_CODE_ZERO TIMEOUT 240)
   endif()
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights

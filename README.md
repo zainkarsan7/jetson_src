@@ -232,6 +232,10 @@ is in remote control
 robotmode
 programState
 play
+brake release
+power on
+Unlock Protective Stop
+
 
 /dashboard_client/ 
 ros2 service call /dashboard_client/play std_srvs/srv/Trigger "{}"
@@ -268,7 +272,7 @@ fastdds shm clean
 
 ros2 bag record -s mcap <topic_name>
 
-ros2 bag record -s mcap /hb_robot_lidar/imu k4a/imu mpu6050/imu /platform_supervision /task_state /joint_states
+ros2 bag record -s mcap /hb_robot_lidar/imu k4a/imu mpu6050/imu /platform_supervision /task_state /joint_states /cut_profile/torch_status
 
 CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build
 

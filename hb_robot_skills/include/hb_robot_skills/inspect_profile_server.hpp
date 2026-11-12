@@ -36,8 +36,8 @@
 #include <hb_robot_interfaces/srv/commit_workpiece.hpp>
 #include <hb_robot_interfaces/msg/profile_estimate.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
-
 #include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/cropped_rgbd_acquisition.hpp"
 #include "hb_robot_perception/scene_model.hpp"
 #include "hb_robot_perception/workpiece_extractor.hpp"
 #include "hb_robot_perception/profile_matcher.hpp"
@@ -173,7 +173,7 @@ private:
     std::shared_ptr<hb_perception::SceneModel>
         scene_model_;
 
-    std::unique_ptr<hb_perception::RGBDAcquisition>
+    std::unique_ptr<hb_perception::CroppedRGBDAcquisition>
         rgbd_acquisition_;
 
     std::unique_ptr<PlatformSupervisionClient>
@@ -229,10 +229,12 @@ private:
         inlier_pub_,
         coverage_pub_;
 
+
     std::string planning_group_;
     std::string camera_link_;
     std::string rgb_topic_;
     std::string depth_topic_;
+     std::string rgbd_topic_;
     std::string camera_info_topic_;
     std::string scene_frame_;
 

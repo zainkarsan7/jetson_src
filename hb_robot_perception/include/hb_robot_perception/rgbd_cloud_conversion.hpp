@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <iostream>
 
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.hpp>
@@ -115,6 +116,18 @@ inline PointCloud::Ptr observationToCloud(
 
     cloud->reserve(
         static_cast<std::size_t>(pixel_count));
+
+    std::cout
+    << "RGBD calibration: "
+    << "width=" << info.width
+    << " height=" << info.height
+    << " fx=" << info.k[0]
+    << " fy=" << info.k[4]
+    << " cx=" << info.k[2]
+    << " cy=" << info.k[5]
+    << " P_fx=" << info.p[0]
+    << " P_fy=" << info.p[5]
+    << std::endl;
 
     for (int v = 0; v < depth_view->image.rows; ++v)
     {

@@ -5,7 +5,7 @@
 #include "hb_robot_interfaces/action/inspect_cut.hpp"
 #include "hb_robot_interfaces/msg/kerf_observation.hpp"
 #include "hb_robot_perception/profile_library.hpp"
-#include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/cropped_rgbd_acquisition.hpp"
 #include "hb_robot_perception/perception_types.hpp"
 #include "hb_robot_skills/platform_supervision_client.hpp"
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -251,11 +251,10 @@ class InspectCutServer : public rclcpp::Node {
 
         auto stamp=now(); // Strictly post-motion and post-stability observations only.
         const auto index=station_ids[edge.to];
-        hb_perception::RGBDAcquisition capture(this, tf_.get(), frame_,
-          hb_perception::RGBDAcquisition::Mode::CaptureWindow,
-          get_parameter("perception_rgb_topic").as_string(),
-          get_parameter("perception_depth_topic").as_string(),
-          get_parameter("perception_camera_info_topic").as_string());
+        hb_perception::CroppedRGBDAcquisition capture(this, tf_.get(), frame_,
+          hb_perception::CroppedRGBDAcquisition::Mode::CaptureWindow,
+          "/k4a/rgbd"
+          );
         for (uint32_t sample=0;sample<samples;++sample) {
           if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
           const auto ob=capture.acquireAfter(stamp, std::chrono::milliseconds(static_cast<int>(timeout_*1000)));

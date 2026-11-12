@@ -20,6 +20,7 @@ find_package(message_filters REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters segmentation search kdtree features registration)
 find_package(pcl_conversions REQUIRED)
+find_package(azure_kinect_ros2_driver_codex REQUIRED)
 find_package(CGAL REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -32,6 +33,7 @@ include_directories(include)
 add_library(hb_perception
   src/observation_buffer.cpp
   src/rgbd_acquisition.cpp
+  src/cropped_rgbd_acquisition.cpp
   src/scene_model.cpp
   src/workpiece_extractor.cpp
   src/profile_matcher.cpp
@@ -62,6 +64,7 @@ ament_target_dependencies(hb_perception
   visualization_msgs
   hb_robot_interfaces
   shape_msgs
+  azure_kinect_ros2_driver_codex
 )
 target_link_libraries(hb_perception
 Eigen3::Eigen
@@ -192,6 +195,7 @@ ament_export_dependencies(
   CGAL
   cv_bridge
   shape_msgs
+  azure_kinect_ros2_driver_codex
 )
 
 if(BUILD_TESTING)

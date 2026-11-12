@@ -58,8 +58,20 @@ for (const auto* link : robot_model->getLinkModels())
     ///initialize acquistision stuff:
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
-    rgbd_acquisition_ = std::make_unique<hb_perception::RGBDAcquisition>(this,
-        tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
+    rgbd_acquisition_ = 
+    std::make_unique<
+        hb_perception::CroppedRGBDAcquisition>(
+        this,
+        tf_buffer_.get(),
+        scene_frame_,
+        hb_perception::CroppedRGBDAcquisition::
+            Mode::CaptureWindow,
+        "/k4a/rgbd");
+    
+    
+    
+    // std::make_unique<hb_perception::RGBDAcquisition>(this,
+    //     tf_buffer_.get(),scene_frame_,rgb_topic_,depth_topic_,camera_info_topic_);
     RCLCPP_INFO(get_logger(),"Acquisition Initialized");
     
     display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>("/display_planned_path",

@@ -18,7 +18,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-#include "hb_robot_perception/rgbd_acquisition.hpp"
+#include "hb_robot_perception/cropped_rgbd_acquisition.hpp"
 #include "hb_robot_perception/scene_model.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
@@ -110,7 +110,7 @@ namespace hb_robot_skills{
         bool require_plan_approval_{false};
         
         std::shared_ptr<hb_perception::SceneModel> scene_model_;
-        std::unique_ptr<hb_perception::RGBDAcquisition> rgbd_acquisition_;
+        std::unique_ptr<hb_perception::CroppedRGBDAcquisition> rgbd_acquisition_;
         // configure acquisition stuff
         std::string rgb_topic_;
         std::string depth_topic_;

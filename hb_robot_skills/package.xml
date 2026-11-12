@@ -30,12 +30,14 @@
   <depend>eigen</depend>
   <depend>ur_msgs</depend>
   <depend>tf2_eigen</depend>
+  <depend>azure_kinect_ros2_driver_codex</depend>
   <depend>visualization_msgs</depend>
   <depend>moveit_ros_planning_interface</depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>urdf</test_depend>
+  
   <test_depend>srdfdom</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

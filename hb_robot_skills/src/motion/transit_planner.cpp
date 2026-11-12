@@ -148,8 +148,8 @@ std::optional<MoveGroup::Plan> planTransit(
         group.setPlannerId(planner);
         group.setPlanningTime(planning_time);
 
-        group.setMaxVelocityScalingFactor(0.1);
-        group.setMaxAccelerationScalingFactor(0.1);
+        group.setMaxVelocityScalingFactor(0.05);
+        group.setMaxAccelerationScalingFactor(0.01);
         group.setNumPlanningAttempts(planning_attempts);
         const auto t0 = std::chrono::steady_clock::now();
 

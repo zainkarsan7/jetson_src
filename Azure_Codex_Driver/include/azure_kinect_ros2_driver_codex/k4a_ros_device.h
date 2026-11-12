@@ -26,6 +26,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <azure_kinect_ros2_driver_codex/msg/rgbd_frame.hpp>
 #include <k4arecord/playback.hpp>
 
 
@@ -90,6 +91,7 @@ class K4AROS2Device : public rclcpp::Node
     void imuPublisherThread();
     void captureThread();
     bool recoverStreams();
+    
     void processCapture(k4a::capture capture, uint64_t generation);
     bool decodeColor(k4a::capture& capture, const std::shared_ptr<sensor_msgs::msg::Image>& direct_output = {});
     void ensureDepthToColor(const k4a::capture& capture);
@@ -114,6 +116,9 @@ class K4AROS2Device : public rclcpp::Node
 
     // TODO: QoS Params
     rclcpp::QoS qos_;
+    using RGBDFrame = azure_kinect_ros2_driver_codex::msg::RGBDFrame;
+    rclcpp::Publisher<RGBDFrame>::SharedPtr rgbd_publisher_;
+    azure_kinect_ros2_driver_codex::MessagePool<RGBDFrame> rgbd_pool_;
 
     image_transport::CameraPublisher rgb_raw_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr native_rgb_publisher_;
@@ -162,6 +167,13 @@ class K4AROS2Device : public rclcpp::Node
     std::atomic_uint64_t timestamp_device_resets_{0};
     std::atomic_uint64_t timestamp_ros_clock_jumps_{0};
     std::atomic_uint64_t timestamp_rejected_samples_{0};
+
+    std::atomic<uint64_t> rgbd_publish_attempts_{0};
+    std::atomic<uint64_t> rgbd_publish_returns_{0};
+    std::atomic<uint64_t> rgbd_publish_errors_{0};
+
+    std::atomic<int64_t> last_rgbd_publish_us_{0};
+    std::atomic<int64_t> max_rgbd_publish_us_{0};
     std::mutex debug_mutex_;
     enum ImageSlot { DEPTH_RAW, IR_RAW, DEPTH_RECT, RGB_RAW, RGB_RECT, IMAGE_SLOT_COUNT };
     std::array<azure_kinect_ros2_driver_codex::MessagePool<sensor_msgs::msg::Image>, IMAGE_SLOT_COUNT> image_pools_;
@@ -199,15 +211,6 @@ class K4AROS2Device : public rclcpp::Node
     int recovery_max_attempts_ = 3;
     int recovery_backoff_ms_ = 500;
     int max_capture_age_ms_ = 250;
-    // Cumulative IMU pipeline counters; diagnose acquisition versus DDS stalls.
-    std::atomic_uint64_t imu_samples_read_{0};
-    std::atomic_uint64_t imu_messages_published_{0};
-    std::atomic_uint64_t imu_samples_without_subscriber_{0};
-    std::atomic_uint64_t imu_samples_without_timestamp_{0};
-    std::atomic_int64_t imu_last_publish_us_{0};
-    std::atomic_int64_t imu_max_publish_us_{0};
-    std::atomic_int64_t imu_last_read_steady_ns_{0};
-    std::atomic_int64_t imu_last_publish_steady_ns_{0};
     std::atomic_uint64_t captures_received_{0};
     std::atomic_uint64_t captures_replaced_{0};
     std::atomic_uint64_t stale_captures_{0};

@@ -10,6 +10,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <pcl/common/common.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <sensor_msgs/image_encodings.hpp>
@@ -40,7 +41,14 @@ namespace hb_perception{
             return false;
         }
 
+        Eigen::Vector4f min_pt, max_pt;
+        pcl::getMinMax3D(*cam_cloud, min_pt, max_pt);
 
+        std::cout
+            << "Camera cloud bounds: "
+            << "min=" << min_pt.head<3>().transpose()
+            << " max=" << max_pt.head<3>().transpose()
+            << std::endl;
 
         pcl::transformPointCloud(*cam_cloud,transformed_cloud_,T_scene_cam.matrix().cast<float>());
         

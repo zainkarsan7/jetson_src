@@ -11,6 +11,26 @@ This is a port of the ROS1 drivers:
 
 ## Features
 
+### Paired RGB and depth
+
+Subscribe to `/k4a/rgbd` with sensor-data QoS (best effort, volatile).
+The driver publishes `azure_kinect_ros2_driver_codex/msg/RGBDFrame` when a subscriber
+requests it and one capture contains both images. Each message carries BGRA8 color
+in `rgb`, registered 32FC1 depth in metres in `depth`, and color calibration in
+`camera_info`. Both images use the color optical frame and pixel grid. Zero depth
+means no measurement. Use `header.stamp` (the RGB exposure time) for the observation
+and TF lookup. The individual image headers retain their sensor timestamps.
+
+An inspection consumer can replace its image synchronizer and separate calibration
+subscription with a single callback taking this message. Keep the timestamped TF
+lookup if the inspection needs a world-frame pose. In a C++ consumer, add
+`azure_kinect_ros2_driver_codex` to the package and target dependencies and include
+`azure_kinect_ros2_driver_codex/msg/rgbd_frame.hpp`.
+
+```bash
+ros2 topic echo /k4a/rgbd --once --field header --qos-reliability best_effort
+```
+
 This ROS node outputs a variety of sensor data, including:
 
 - A PointCloud2, optionally colored using the color camera

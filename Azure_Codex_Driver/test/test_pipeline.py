@@ -9,6 +9,7 @@ import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
+from azure_kinect_ros2_driver_codex.msg import RGBDFrame
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
@@ -22,10 +23,14 @@ def run_case(executable, fake_sdk, mode):
         node.create_subscription(Image, '/k4a/depth/image_raw', depths.append, qos_profile_sensor_data),
         node.create_subscription(DiagnosticArray, '/k4a_ros2_node_codex/diagnostics', diagnostics.append, 10),
     ]
+    pairs = []
+    if mode in ('rgbd', 'corrupt', 'stale'):
+        subscriptions.append(node.create_subscription(
+            RGBDFrame, '/k4a/rgbd', pairs.append, qos_profile_sensor_data))
     if mode == 'jpeg':
         subscriptions.append(node.create_subscription(
             CompressedImage, '/rgb/image_raw/compressed', colors.append, qos_profile_sensor_data))
-    elif mode not in ('no_color_demand', 'native_only', 'info_only'):
+    elif mode not in ('no_color_demand', 'native_only', 'info_only', 'rgbd'):
         subscriptions.append(node.create_subscription(
             Image, '/k4a/rgb/image_raw', colors.append, qos_profile_sensor_data))
     if mode in ('native_only', 'native_both'):
@@ -45,14 +50,18 @@ def run_case(executable, fake_sdk, mode):
             command += ['-p', 'native_mjpeg_transport:=false']
         process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
         try:
-            deadline = time.monotonic() + (2 if mode == 'startup_failure' else 4)
+            # Allow dynamic loading and DDS discovery before counting observation time.
+            startup_deadline = time.monotonic() + 15
+            while not diagnostics and time.monotonic() < startup_deadline and process.poll() is None:
+                rclpy.spin_once(node, timeout_sec=0.05)
+            deadline = time.monotonic() + 2
             while time.monotonic() < deadline and process.poll() is None:
                 rclpy.spin_once(node, timeout_sec=0.05)
             if mode == 'startup_failure':
                 assert process.poll() == 1, 'Startup failure did not exit cleanly'
             else:
                 assert process.poll() is None, 'Node died during fault injection'
-                assert diagnostics, 'No health diagnostics'
+                assert diagnostics, f'No health diagnostics; discovered nodes: {node.get_node_names()}'
                 status = diagnostics[-1].status[0]
                 counts = {entry.key: int(entry.value) for entry in status.values}
                 if mode in ('always_fail', 'timeout'):
@@ -61,12 +70,26 @@ def run_case(executable, fake_sdk, mode):
                     assert counts['stream_restarts'] == 2, counts
                     assert not depths and not colors
                 elif mode == 'stale':
-                    assert not depths and not colors, 'Stale sensor data escaped age gate'
+                    assert not depths and not colors and not pairs, 'Stale sensor data escaped age gate'
                     assert counts['stale_output_drops'] > 0
                 elif mode == 'corrupt':
-                    assert depths and not colors, 'Corrupt color should not stop depth or publish old RGB'
+                    assert depths and not colors and not pairs, 'Corrupt color should not stop depth or publish old RGB'
                     assert counts['color_decode_errors'] > 0
                     assert counts['stream_restarts'] == 0
+                elif mode == 'rgbd':
+                    assert len(pairs) > 1, 'No consecutive RGBD observations'
+                    for pair in pairs:
+                        assert pair.header == pair.rgb.header == pair.camera_info.header
+                        assert pair.depth.header.frame_id == pair.header.frame_id
+                        assert pair.rgb.encoding == 'bgra8' and pair.depth.encoding == '32FC1'
+                        for image in (pair.rgb, pair.depth):
+                            assert image.width == pair.camera_info.width == 16
+                            assert image.height == pair.camera_info.height == 8
+                            assert len(image.data) == image.step * image.height
+                        assert struct.unpack('<f', bytes(pair.depth.data[:4]))[0] == 1.0
+                        def ns(stamp):
+                            return stamp.sec * 10**9 + stamp.nanosec
+                        assert ns(pair.rgb.header.stamp) - ns(pair.depth.header.stamp) == 500000
                 elif mode == 'recover':
                     assert depths and colors, 'No image output after recovery'
                     assert counts['stream_restarts'] == 1
@@ -122,7 +145,7 @@ if __name__ == '__main__':
     try:
         for fault in ('recover', 'corrupt', 'always_fail', 'timeout', 'stale',
                       'no_color_demand', 'jpeg', 'startup_failure',
-                      'native_only', 'native_both', 'info_only', 'plugin_transport'):
+                      'native_only', 'native_both', 'info_only', 'plugin_transport', 'rgbd'):
             run_case(sys.argv[1], sys.argv[2], fault)
     finally:
         rclpy.shutdown()

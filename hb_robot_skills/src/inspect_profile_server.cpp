@@ -97,6 +97,11 @@ InspectProfileServer::InspectProfileServer(
             "perception_depth_topic",
             "/k4a/depth_to_rgb/image_raw");
 
+    rgbd_topic_ =
+    declare_parameter<std::string>(
+        "perception_rgbd_topic",
+        "/k4a/rgbd");
+
     camera_info_topic_ =
         declare_parameter<std::string>(
             "perception_camera_info_topic",
@@ -204,16 +209,27 @@ void InspectProfileServer::initialize()
             *tf_buffer_);
 
     rgbd_acquisition_ =
-        std::make_unique<
-            hb_perception::RGBDAcquisition>(
-            this,
-            tf_buffer_.get(),
-            scene_frame_,
-            hb_perception::RGBDAcquisition::
-                Mode::CaptureWindow,
-            rgb_topic_,
-            depth_topic_,
-            camera_info_topic_);
+    std::make_unique<
+        hb_perception::CroppedRGBDAcquisition>(
+        this,
+        tf_buffer_.get(),
+        scene_frame_,
+        hb_perception::CroppedRGBDAcquisition::
+            Mode::CaptureWindow,
+        "/k4a/rgbd");
+
+
+
+        // std::make_unique<
+        //     hb_perception::RGBDAcquisition>(
+        //     this,
+        //     tf_buffer_.get(),
+        //     scene_frame_,
+        //     hb_perception::RGBDAcquisition::
+        //         Mode::CaptureWindow,
+        //     rgb_topic_,
+        //     depth_topic_,
+        //     camera_info_topic_);
 
     platform_supervision_ =
         std::make_unique<PlatformSupervisionClient>(
@@ -298,6 +314,8 @@ void InspectProfileServer::initialize()
                 this,
                 std::placeholders::_1,
                 std::placeholders::_2));
+
+    
 
     RCLCPP_INFO(
         get_logger(),
@@ -699,6 +717,32 @@ bool InspectProfileServer::acquireSamples(
 
         const auto stamp =
             observation->stamp;
+        
+        const auto& info = *observation->rgb_camera_info;
+        const auto& rgb = *observation->rgb;
+        const auto& depth = *observation->depth_to_rgb;
+
+        // RCLCPP_INFO(
+        //     get_logger(),
+        //     "RGBD geometry: "
+        //     "rgb=%ux%u depth=%ux%u info=%ux%u "
+        //     "fx=%.3f fy=%.3f cx=%.3f cy=%.3f "
+        //     "depth_encoding=%s",
+        //     rgb.width, rgb.height,
+        //     depth.width, depth.height,
+        //     info.width, info.height,
+        //     info.k[0], info.k[4],
+        //     info.k[2], info.k[5],
+        //     depth.encoding.c_str());
+        
+        const auto& t =
+            observation->camera_pose.transform.translation;
+
+        // RCLCPP_INFO(
+        //     get_logger(),
+        //     "Camera TF translation: x=%.3f y=%.3f z=%.3f",
+        //     t.x, t.y, t.z);
+                
 
         if (scene_model_->addObservation(
                 std::move(*observation),

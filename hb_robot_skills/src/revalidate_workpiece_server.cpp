@@ -7,7 +7,7 @@
 #include "hb_robot_skills/workpiece_commit_validation.hpp"
 #include "hb_robot_skills/platform_supervision_client.hpp"
 
-#include <hb_robot_perception/rgbd_acquisition.hpp>
+#include <hb_robot_perception/cropped_rgbd_acquisition.hpp>
 #include <hb_robot_perception/observation_registrar.hpp>
 #include <hb_robot_perception/perception_types.hpp>
 
@@ -552,16 +552,24 @@ public:
                 tf2_ros::TransformListener>(*tf_);
 
         rgbd_ =
-            std::make_unique<
-                hb_perception::RGBDAcquisition>(
-                this,
-                tf_.get(),
-                frame_,
-                hb_perception::RGBDAcquisition::
-                    Mode::CaptureWindow,
-                "/k4a/rgb/image_raw",
-                "/k4a/depth_to_rgb/image_raw",
-                "/k4a/depth_to_rgb/camera_info");
+        std::make_unique<
+        hb_perception::CroppedRGBDAcquisition>(
+        this,
+        tf_.get(),
+        frame_,
+        hb_perception::CroppedRGBDAcquisition::
+            Mode::CaptureWindow,
+        "/k4a/rgbd");
+            // std::make_unique<
+            //     hb_perception::RGBDAcquisition>(
+            //     this,
+            //     tf_.get(),
+            //     frame_,
+            //     hb_perception::RGBDAcquisition::
+            //         Mode::CaptureWindow,
+            //     "/k4a/rgb/image_raw",
+            //     "/k4a/depth_to_rgb/image_raw",
+            //     "/k4a/depth_to_rgb/camera_info");
 
         supervision_ =
             std::make_unique<
@@ -1822,7 +1830,7 @@ private:
     std::unique_ptr<tf2_ros::TransformListener>
         listener_;
 
-    std::unique_ptr<hb_perception::RGBDAcquisition>
+    std::unique_ptr<hb_perception::CroppedRGBDAcquisition>
         rgbd_;
 
     std::unique_ptr<

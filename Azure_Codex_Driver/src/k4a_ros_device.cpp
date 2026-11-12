@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <turbojpeg.h>
 
+#include <vector>
+
 // Library headers
 //
 #include <angles/angles.h>
@@ -287,6 +289,7 @@ K4AROS2Device::K4AROS2Device()
   qos_.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
 
   std::string topic_prefix = "k4a/";
+  rgbd_publisher_ = create_publisher<RGBDFrame>(topic_prefix + "rgbd", qos_);
 
 
   // Register our topics
@@ -1061,6 +1064,104 @@ void K4AROS2Device::framePublisherThread()
   }
 }
 
+using RGBDFrame =
+    azure_kinect_ros2_driver_codex::msg::RGBDFrame;
+
+static void cropImage(
+    sensor_msgs::msg::Image& image,
+    uint32_t x,
+    uint32_t y,
+    uint32_t width,
+    uint32_t height)
+{
+    if (x + width > image.width ||
+        y + height > image.height)
+        throw std::runtime_error("Crop exceeds image bounds");
+
+    if (image.width == 0 ||
+        image.step == 0 ||
+        image.step % image.width != 0)
+        throw std::runtime_error("Unsupported image stride");
+
+    const size_t bytes_per_pixel =
+        image.step / image.width;
+
+    const size_t cropped_step =
+        static_cast<size_t>(width) * bytes_per_pixel;
+
+    std::vector<uint8_t> cropped(
+        cropped_step * height);
+
+    for (uint32_t row = 0; row < height; ++row)
+    {
+        const size_t src_offset =
+            static_cast<size_t>(y + row) * image.step +
+            static_cast<size_t>(x) * bytes_per_pixel;
+
+        std::memcpy(
+            cropped.data() + row * cropped_step,
+            image.data.data() + src_offset,
+            cropped_step);
+    }
+
+    image.data = std::move(cropped);
+    image.width = width;
+    image.height = height;
+    image.step = static_cast<uint32_t>(cropped_step);
+}
+
+static void cropRGBDFrame(
+    RGBDFrame& frame,
+    uint32_t crop_width,
+    uint32_t crop_height)
+{
+    auto& rgb = frame.rgb;
+    auto& depth = frame.depth;
+
+    if (rgb.width != depth.width ||
+        rgb.height != depth.height)
+        throw std::runtime_error(
+            "RGB and depth dimensions differ");
+
+    if (crop_width == 0 || crop_height == 0 ||
+        crop_width > rgb.width ||
+        crop_height > rgb.height)
+        throw std::runtime_error(
+            "Invalid RGBD crop dimensions");
+
+    const uint32_t x =
+        (rgb.width - crop_width) / 2;
+
+    const uint32_t y =
+        (rgb.height - crop_height) / 2;
+
+    cropImage(rgb, x, y, crop_width, crop_height);
+    cropImage(depth, x, y, crop_width, crop_height);
+
+    auto& info = frame.camera_info;
+
+    // Standalone cropped-image calibration:
+    // Preserve focal lengths, shift principal points.
+    info.k[2] -= x;
+    info.k[5] -= y;
+
+    info.p[2] -= x;
+    info.p[6] -= y;
+
+    info.width = crop_width;
+    info.height = crop_height;
+
+    info.roi.x_offset = 0;
+    info.roi.y_offset = 0;
+    info.roi.width = 0;
+    info.roi.height = 0;
+    info.roi.do_rectify = false;
+
+    info.binning_x = 0;
+    info.binning_y = 0;
+}
+
+
 
 void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
 {
@@ -1079,12 +1180,21 @@ void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
     last_frame_age_us_ = age;
     return max_capture_age_ms_ == 0 || age <= static_cast<int64_t>(max_capture_age_ms_) * 1000;
   };
-  if (!fresh()) { ++stale_captures_; return; }
+  if (!fresh()) { 
+    ++stale_captures_; 
+    return; 
+  }
 
   // Snapshot graph demand once per processed capture, including all image transports.
   const bool want_depth = depth_enabled_ && depth && depth_raw_publisher_.getNumSubscribers() > 0;
   const bool want_ir = depth_enabled_ && ir && ir_raw_publisher_.getNumSubscribers() > 0;
   const bool want_depth_rect = depth && color_enabled_ && depth_rect_publisher_.getNumSubscribers() > 0;
+  std::shared_ptr<RGBDFrame> pair;
+  if (depth && color && depth_enabled_ && color_enabled_ && rgbd_publisher_->get_subscription_count() > 0)
+  {
+    pair = rgbd_pool_.acquire();
+    if (!pair) ++message_pool_drops_;
+  }
   const bool want_rgb = color_enabled_ && color_format_ == "bgra" &&
       (native_color_transport_ ? native_rgb_publisher_->get_subscription_count() > 0 : rgb_raw_publisher_.getNumSubscribers() > 0);
   const bool want_rgb_rect = depth && color_enabled_ && color_format_ == "bgra" && rgb_rect_publisher_.getNumSubscribers() > 0;
@@ -1123,7 +1233,19 @@ void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
   if (want_cloud && !rgb_cloud_) emit_cloud();
   if (want_ir)
     emit_image(IR_RAW, ir_raw_publisher_, ir, false, [&](auto& image) { return getIrFrame(capture, image); });
-  if (want_depth_rect)
+  if (pair)
+  {
+    // Aliasing shared pointers let legacy publishers share the prepared pixels
+    // and keep the entire pooled frame alive while they hold either image.
+    auto registered = std::shared_ptr<sensor_msgs::msg::Image>(pair, &pair->depth);
+    check(getDepthFrame(capture, registered, true));
+    registered->header.frame_id = rgb_raw_camerainfo_msg_->header.frame_id;
+    registered->header.stamp = captureTimestampToROS(depth.get_device_timestamp());
+    if (want_depth_rect)
+      emit_image(DEPTH_RECT, depth_rect_publisher_, depth, true,
+                 [](auto&) { return K4A_RESULT_SUCCEEDED; }, registered);
+  }
+  else if (want_depth_rect)
     emit_image(DEPTH_RECT, depth_rect_publisher_, depth, true, [&](auto& image) { return getDepthFrame(capture, image, true); });
 
   if (color_enabled_ && color && fresh())
@@ -1158,17 +1280,84 @@ void K4AROS2Device::processCapture(k4a::capture capture, uint64_t generation)
       }
     }
     const bool other_color_pixels = want_rgb_rect || (want_cloud && rgb_cloud_);
-    if (color_format_ == "bgra" && (want_rgb || other_color_pixels) && fresh())
+    if ((pair || (color_format_ == "bgra" && (want_rgb || other_color_pixels))) && fresh())
     {
-      auto raw = want_rgb ? image_pools_[RGB_RAW].acquire() : std::shared_ptr<sensor_msgs::msg::Image>{};
+      std::shared_ptr<sensor_msgs::msg::Image> raw;
+      if (pair) raw = std::shared_ptr<sensor_msgs::msg::Image>(pair, &pair->rgb);
+      else if (want_rgb) raw = image_pools_[RGB_RAW].acquire();
       if (want_rgb && !raw) ++message_pool_drops_;
       const bool direct = raw && color.get_format() == K4A_IMAGE_FORMAT_COLOR_MJPG;
+      if (pair && direct && !jpeg_decoder_)
+        jpeg_decoder_ = std::make_unique<azure_kinect_ros2_driver_codex::MjpegDecoder>();
       if ((raw || other_color_pixels) && decodeColor(capture, raw))
       {
         color = capture.get_color_image();
-        if (raw)
+        if (raw && !direct) check(getRbgFrame(capture, raw));
+        if (pair)
+        {
+
+          pair->header.frame_id = rgb_raw_camerainfo_msg_->header.frame_id;
+          pair->header.stamp = captureTimestampToROS(color.get_device_timestamp());
+          pair->rgb.header = pair->header;
+          if (pair->camera_info.width == 0) pair->camera_info = *rgb_raw_camerainfo_msg_;
+          
+          pair->camera_info.header = pair->header;
+          const auto & og_info =  *rgb_raw_camerainfo_msg_;
+          pair->camera_info = og_info;
+          cropRGBDFrame(*pair, 640,360);
+          
+
+          if (fresh())
+          {
+              ++rgbd_publish_attempts_;
+
+              const auto publish_start =
+                  std::chrono::steady_clock::now();
+
+              try
+              {
+                  rgbd_publisher_->publish(*pair);
+
+                  const auto elapsed_us =
+                      std::chrono::duration_cast<
+                          std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() -
+                          publish_start).count();
+
+                  ++rgbd_publish_returns_;
+                  last_rgbd_publish_us_.store(elapsed_us);
+
+                  // Track the maximum publish duration.
+                  int64_t previous =
+                      max_rgbd_publish_us_.load();
+
+                  while (elapsed_us > previous &&
+                        !max_rgbd_publish_us_.compare_exchange_weak(
+                            previous, elapsed_us))
+                  {
+                  }
+              }
+              catch (const std::exception& e)
+              {
+                  ++rgbd_publish_errors_;
+
+                  RCLCPP_ERROR(
+                      get_logger(),
+                      "RGBD publish failed: %s",
+                      e.what());
+
+                  throw;
+              }
+          }
+          else
+          {
+              ++stale_captures_;
+          }
+        }
+
+        if (want_rgb && raw)
           emit_image(RGB_RAW, rgb_raw_publisher_, color, true,
-              [&](auto& image) { return direct ? K4A_RESULT_SUCCEEDED : getRbgFrame(capture, image); }, raw);
+              [](auto&) { return K4A_RESULT_SUCCEEDED; }, raw);
         if (want_rgb_rect)
           emit_image(RGB_RECT, rgb_rect_publisher_, color, false,
               [&](auto& image) { return getRbgFrame(capture, image, true); });
@@ -1250,19 +1439,9 @@ void K4AROS2Device::imuPublisherThread()
         else last_imu_time_usec_ = sample.acc_timestamp_usec;
       }
       if (!read) break;
-      ++imu_samples_read_;
-      imu_last_read_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch()).count();
-      // Keep the existing demand policy, but make each suppression reason visible.
-      if (!timestamp_ready_)
+      // Always drain the SDK queue, but avoid constructing unused ROS messages.
+      if (!timestamp_ready_ || imu_orientation_publisher_->get_subscription_count() == 0)
       {
-        ++imu_samples_without_timestamp_;
-        samples.clear();
-        continue;
-      }
-      if (imu_orientation_publisher_->get_subscription_count() == 0)
-      {
-        ++imu_samples_without_subscriber_;
         samples.clear();
         continue;
       }
@@ -1273,18 +1452,7 @@ void K4AROS2Device::imuPublisherThread()
       samples.clear();
       if (result != K4A_RESULT_SUCCEEDED) throw std::runtime_error("IMU conversion failed");
       if (!k4a_device_ || (!recovering_ && generation == stream_generation_.load()))
-      {
-        const auto publish_start = std::chrono::steady_clock::now();
         imu_orientation_publisher_->publish(*msg);
-        const auto published_at = std::chrono::steady_clock::now();
-        const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
-            published_at - publish_start).count();
-        imu_last_publish_us_ = elapsed_us;
-        if (elapsed_us > imu_max_publish_us_.load()) imu_max_publish_us_ = elapsed_us;
-        imu_last_publish_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            published_at.time_since_epoch()).count();
-        ++imu_messages_published_;
-      }
     }
     loop_rate.sleep();
   }
@@ -1339,16 +1507,6 @@ void K4AROS2Device::publishDiagnostics()
     entry.value = std::to_string(value);
     status.values.push_back(std::move(entry));
   };
-  add("imu_samples_read", imu_samples_read_.load());
-  add("imu_messages_published", imu_messages_published_.load());
-  add("imu_samples_without_subscriber", imu_samples_without_subscriber_.load());
-  add("imu_samples_without_timestamp", imu_samples_without_timestamp_.load());
-  add("imu_last_publish_us", imu_last_publish_us_.load());
-  add("imu_max_publish_us", imu_max_publish_us_.load());
-  const auto imu_read_ns = imu_last_read_steady_ns_.load();
-  const auto imu_publish_ns = imu_last_publish_steady_ns_.load();
-  add("ms_since_last_imu_read", imu_read_ns ? (now_ns - imu_read_ns) / 1000000 : -1);
-  add("ms_since_last_imu_publish", imu_publish_ns ? (now_ns - imu_publish_ns) / 1000000 : -1);
   add("timestamp_offset_ns", timestamp_offset_ns_.load());
   add("timestamp_device_resets", timestamp_device_resets_.load());
   add("timestamp_ros_clock_jumps", timestamp_ros_clock_jumps_.load());
@@ -1359,6 +1517,20 @@ void K4AROS2Device::publishDiagnostics()
   add("native_jpeg_frames", native_jpeg_frames_.load());
   add("captures_received", captures_received_.load());
   add("pending_captures_replaced", captures_replaced_.load());
+  add("rgbd_publish_attempts",
+      rgbd_publish_attempts_.load());
+
+  add("rgbd_publish_returns",
+      rgbd_publish_returns_.load());
+
+  add("rgbd_publish_errors",
+      rgbd_publish_errors_.load());
+
+  add("last_rgbd_publish_us",
+      last_rgbd_publish_us_.load());
+
+  add("max_rgbd_publish_us",
+      max_rgbd_publish_us_.load());
   add("stale_output_drops", stale);
   add("capture_errors", capture_errors_.load());
   add("color_decode_errors", decodes);

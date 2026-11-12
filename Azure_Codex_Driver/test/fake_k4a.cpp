@@ -76,6 +76,16 @@ k4a_transformation_t k4a_transformation_create(const k4a_calibration_t*)
   return reinterpret_cast<k4a_transformation_t>(1);
 }
 void k4a_transformation_destroy(k4a_transformation_t) {}
+k4a_result_t k4a_transformation_depth_image_to_color_camera(k4a_transformation_t,
+    const k4a_image_t depth, k4a_image_t registered)
+{
+  // Synthetic scene with uniform depth across the color grid.
+  auto depth_mm = *reinterpret_cast<uint16_t*>(k4a_image_get_buffer(depth));
+  auto output = reinterpret_cast<uint16_t*>(k4a_image_get_buffer(registered));
+  for (size_t i = 0; i < k4a_image_get_size(registered) / sizeof(uint16_t); ++i)
+    output[i] = depth_mm;
+  return K4A_RESULT_SUCCEEDED;
+}
 k4a_result_t k4a_device_start_cameras(k4a_device_t, const k4a_device_configuration_t* config)
 {
   ++starts;
@@ -117,7 +127,7 @@ k4a_wait_result_t k4a_device_get_capture(k4a_device_t, k4a_capture_t* capture, i
   if (mode("corrupt")) std::memset(bytes, 0, jpeg.size());
   else std::memcpy(bytes, jpeg.data(), jpeg.size());
   k4a_image_create_from_buffer(K4A_IMAGE_FORMAT_COLOR_MJPG, 16, 8, 0, bytes, jpeg.size(), release_pixels, nullptr, &color);
-  k4a_image_set_device_timestamp_usec(color, frame * 33000);
+  k4a_image_set_device_timestamp_usec(color, frame * 33000 + 500);
   k4a_image_set_system_timestamp_nsec(color, system_ns);
   k4a_capture_set_color_image(*capture, color);
   k4a_image_release(color);

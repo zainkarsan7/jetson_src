@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # find dependencies
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -24,6 +25,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2_eigen REQUIRED)
+find_package(azure_kinect_ros2_driver_codex REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -122,6 +124,12 @@ hb_motion
 hb_robot_perception::hb_perception
 )
 
+add_executable(rgbd_subscriber_debug_node src/rgbd_subscriber_debug_node.cpp)
+ament_target_dependencies(rgbd_subscriber_debug_node
+  rclcpp
+  azure_kinect_ros2_driver_codex
+)
+
 add_executable(inspect_profile_server
 src/inspect_profile_server.cpp)
 
@@ -201,6 +209,7 @@ install(
     hb_motion
     cut_debug_node
     cut_debug_node_torch
+    rgbd_subscriber_debug_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

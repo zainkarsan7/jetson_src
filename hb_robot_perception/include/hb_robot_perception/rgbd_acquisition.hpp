@@ -9,7 +9,6 @@
 #include <optional>
 #include <string>
 #include <thread>
-
 #include <rclcpp/rclcpp.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -98,6 +97,8 @@ private:
         window_executor_;
 
     std::thread window_thread_;
+
+
 
     message_filters::Subscriber<Image> rgb_sub_;
     message_filters::Subscriber<Image> depth_sub_;
