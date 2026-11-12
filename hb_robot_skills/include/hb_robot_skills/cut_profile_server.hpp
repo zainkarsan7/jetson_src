@@ -215,7 +215,9 @@ namespace hb_robot_skills{
 
         std::mutex worker_mutex_;
 
-
+        
+        double transit_velocity_scaling_ = 0.05;
+        double transit_acceleration_scaling_ = 0.01;
 
         std::atomic<bool> cut_stop_requested_{false};
         bool setFlapClosed(bool closed);
@@ -247,6 +249,7 @@ namespace hb_robot_skills{
         rclcpp::Publisher<moveit_msgs::msg::DisplayRobotState>::SharedPtr debug_robot_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
             collision_debug_pub_;
+
 
         planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
         motion::CutProcessParams cut_process_params_;

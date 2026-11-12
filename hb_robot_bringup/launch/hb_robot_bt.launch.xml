@@ -7,6 +7,6 @@
     >
     <!-- <param name="color_format" value="jpeg"/> -->
     <param name="tree_file" value="$(find-pkg-share hb_robot_task_planner)/behavior_trees/baseline.xml"/>
-    
+    <param name="standoff" value = "0.03"/>
     </node>
 </launch>

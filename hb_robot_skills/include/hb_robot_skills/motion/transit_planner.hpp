@@ -13,17 +13,9 @@ using MoveGroup = moveit::planning_interface::MoveGroupInterface;
 using TransitValidator = std::function<bool(const MoveGroup::Plan&)>;
 
 struct TransitPlannerOptions {
-    bool try_pilz_ptp = true;
-    bool try_ompl_rrtconnect = true;
-
-    double pilz_planning_time_s = 1.5;
-    double ompl_planning_time_s = 3.0;
-
-    unsigned int pilz_attempts = 1;
-    unsigned int ompl_attempts = 1;
-
     double velocity_scaling = 0.10;
     double acceleration_scaling = 0.10;
+    bool compare_all_fallbacks = false;
 };
 
 

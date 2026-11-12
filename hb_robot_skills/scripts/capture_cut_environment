@@ -1095,15 +1095,20 @@ class CaptureNode(Node):
                         f"final_state_valid={state_valid}, "
                         f"scans={len(scans)}"
                     )
+            span_ms = (
+                    (scans[-1][0] - scans[0][0]) / 1e6
+                    if len(scans) >= 2
+                    else 0.0
+                )
 
-            if (
-                len(scans) < 5
-                or scans[-1][0] - scans[0][0]
-                < 330_000_000
-            ):
+            if len(scans) < 5 or span_ms < 330.0:
                 raise ValueError(
                     "Insufficient timestamp coverage: "
-                    f"{len(scans)} distinct clouds"
+                    f"scans={len(scans)}, "
+                    f"span_ms={span_ms:.1f}, "
+                    f"required_scans=5, "
+                    f"required_span_ms=330.0, "
+                    f"capture_duration_s={self.capture_duration_s}"
                 )
 
             # ------------------------------------------------

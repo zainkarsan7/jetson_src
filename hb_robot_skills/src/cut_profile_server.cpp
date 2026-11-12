@@ -57,6 +57,20 @@ namespace hb_robot_skills{
         }
         get_parameter("skip_cutting_motion",skip_motion_);
 
+         if(!has_parameter("transit.velocity_scaling")){
+        transit_velocity_scaling_ =
+            declare_parameter<double>(
+                "transit.velocity_scaling", 0.05);
+            }
+        get_parameter("transit.velocity_scaling",transit_velocity_scaling_);
+        
+         if(!has_parameter("transit.acceleration_scaling")){
+        transit_acceleration_scaling_ =
+            declare_parameter<double>(
+                "transit.acceleration_scaling", 0.02);
+            }
+        get_parameter("transit.acceleration_scaling",transit_acceleration_scaling_);
+
         // A restarted cutting server must not reuse an earlier evidence epoch.
         execution_version_=static_cast<uint64_t>(now().nanoseconds());
         if(!has_parameter("enable_cutting_process")){
@@ -906,7 +920,17 @@ namespace hb_robot_skills{
         const moveit::core::RobotState& start_state,
         const moveit::core::RobotState& target_state)
     {
-        return motion::planTransit(*move_group_, get_logger(), start_state, target_state);
+        motion::TransitPlannerOptions options;
+        options.velocity_scaling = transit_velocity_scaling_;
+        options.acceleration_scaling = transit_acceleration_scaling_;
+
+        return motion::planTransit(
+            *move_group_,
+            get_logger(),
+            start_state,
+            target_state,
+            options);
+        // return motion::planTransit(*move_group_, get_logger(), start_state, target_state);
     }
 
 

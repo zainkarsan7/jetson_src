@@ -71,6 +71,8 @@ def generate_launch_description():
         "skip_cutting_motion": False,
         "enable_cutting_process": False,
         "require_plan_approval": True,
+        "transit.velocity_scaling": 0.05,
+        "transit.acceleration_scaling": 0.01,
         "cut_transit.return_home_between_cuts": ParameterValue(LaunchConfiguration("return_home_between_cuts"), value_type=bool),
         "cut_transit.return_home_after_last_cut": ParameterValue(LaunchConfiguration("return_home_after_last_cut"), value_type=bool),
         "cut_geometry.max_pose_samples": 64,
