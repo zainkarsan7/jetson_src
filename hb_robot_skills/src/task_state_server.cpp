@@ -1228,8 +1228,13 @@ private:
             const bool was_supervised =
                 state_.supervision_valid;
 
-            state_.supervision_valid =
-                trusted_stable_ && !uncertainty_active_ &&
+            // state_.supervision_valid =
+            //     trusted_stable_ && !uncertainty_active_ &&
+            //     !supervision_latched_ && !hard_motion &&
+            //     !hard_stale;
+
+             state_.supervision_valid =
+                trusted_stable_ && 
                 !supervision_latched_ && !hard_motion &&
                 !hard_stale;
 

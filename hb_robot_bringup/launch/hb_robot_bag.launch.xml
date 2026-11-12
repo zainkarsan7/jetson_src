@@ -6,7 +6,6 @@
     --include-unpublished-topics 
     --storage mcap
     --qos-profile-overrides-path $(find-pkg-share hb_robot_bringup)/config/bag_params.yaml
-    -o hb_rob_bag_test_
     /tf
     /tf_static
     /joint_states
@@ -23,6 +22,7 @@
     /cut_profile/cut_plan
     /cut_profile/debug_collision
     /cut_profile/debug_robot
+    /cut_profile/torch_status
     /inspection_viewpoints
     /profile_inspection/camera_poses
     /profile_inspection/scene_cloud
@@ -33,7 +33,10 @@
     /platform/imu/filtered
     /k4a/imu
     /hb_robot_lidar/imu
-    /hb_robot_lidar/cloud   
+    /hb_robot_lidar/cloud 
+    /mpu6050/imu
+    /task_state
+    /platform_supervision
     "
     output="screen" 
     shell = "true"/>
