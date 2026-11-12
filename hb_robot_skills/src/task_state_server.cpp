@@ -518,6 +518,7 @@ private:
         const hb_perception::ImuStabilityMetrics& metrics)
         const
     {
+
         return metrics.valid &&
                metrics.stable &&
                metrics.stable_confidence >=
@@ -774,6 +775,25 @@ private:
 
             if (!supervisionTrustedLocked(metrics))
             {
+                
+                
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Commit supervision rejected: "
+                        "supervision=%d imu=%d "
+                        "pose=%d motion_fault=%d process_fault=%d "
+                        "trusted_stable=%d uncertainty=%d latched=%d "
+                        "last_untrusted_ns=%lld",
+                        static_cast<int>(state_.supervision_valid),
+                        static_cast<int>(state_.imu_stable),
+                        static_cast<int>(state_.workpiece_pose_valid),
+                        static_cast<int>(state_.motion_fault_active),
+                        static_cast<int>(state_.process_fault_active),
+                        static_cast<int>(trusted_stable_),
+                        static_cast<int>(uncertainty_active_),
+                        static_cast<int>(supervision_latched_),
+                        static_cast<long long>(last_untrusted_));
+                
                 reject(
                     "Platform supervision not trusted "
                     "at workpiece commit");
