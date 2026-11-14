@@ -142,7 +142,7 @@ def generate_launch_description():
                         "workpiece_margin_m": 0.1,
                           "voxel_size_m": 0.05, 
                           "min_voxel_scans": 3,
-                          "capture_duration_s": 1.0,
+                          "capture_duration_s": 4.0,
                           "debug_allow_invalid_scene": True,
                           "max_state_age_s": 1.0,
                           "lidar_max_range_m": 3.0,

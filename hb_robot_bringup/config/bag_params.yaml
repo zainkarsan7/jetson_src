@@ -17,10 +17,10 @@
   depth: 1
 
 /monitored_planning_scene:
-  durability: transient_local
+  durability: volatile
   reliability: reliable
   history: keep_last
-  depth: 1
+  depth: 10
 
 /k4a/imu:
   durability: volatile

@@ -67,7 +67,7 @@ namespace hb_robot_skills{
          if(!has_parameter("transit.acceleration_scaling")){
         transit_acceleration_scaling_ =
             declare_parameter<double>(
-                "transit.acceleration_scaling", 0.02);
+                "transit.acceleration_scaling", 0.01);
             }
         get_parameter("transit.acceleration_scaling",transit_acceleration_scaling_);
 

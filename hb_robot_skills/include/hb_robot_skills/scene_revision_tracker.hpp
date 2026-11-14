@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <iostream>
 
 namespace hb_robot_skills {
 
@@ -195,50 +196,102 @@ class SceneRevisionTracker {
                 "attached_collision_objects_explicit");
         }
 
+        
         // --------------------------------------------------
         // 7. Fixed-frame transforms
         // --------------------------------------------------
 
-        const auto external = [](const std::string& frame) {
-            return !frame.empty() && frame != "world";
-        };
+        // Robot, sensor and tool-frame updates do not
+        // independently change the committed collision
+        // world or accepted workpiece pose.
+        //
+        // Workpiece pose changes are handled by
+        // RevalidateWorkpiece -> CommitWorkpiece.
+        //
+        // Preconditions:
+        // - Collision geometry is committed in "world".
+        // - No collision objects depend on these TFs.
+        //
+        // No scene revision is generated here.
+        ////////////////////////////////////////////////////////
 
-        const bool uses_tf =
-            !have_world_ ||
-            (!octomap_.octomap.data.empty() &&
-            external(octomap_.header.frame_id)) ||
-            std::any_of(
-                objects_.begin(),
-                objects_.end(),
-                [&](const Object& obj) {
-                    return external(obj.header.frame_id);
-                });
+        // const auto external = [](const std::string& frame) {
+        //     return !frame.empty() && frame != "world";
+        // };
 
-        if (full || !msg.fixed_frame_transforms.empty())
-        {
-            auto next =
-                full
-                    ? decltype(transforms_){}
-                    : transforms_;
+        // const bool uses_tf =
+        //     !have_world_ ||
+        //     (!octomap_.octomap.data.empty() &&
+        //     external(octomap_.header.frame_id)) ||
+        //     std::any_of(
+        //         objects_.begin(),
+        //         objects_.end(),
+        //         [&](const Object& obj) {
+        //             return external(obj.header.frame_id);
+        //         });
 
-            for (const auto& tf : msg.fixed_frame_transforms)
-            {
-                next[{
-                    tf.header.frame_id,
-                    tf.child_frame_id
-                }] = tf.transform;
-            }
+        // if (full || !msg.fixed_frame_transforms.empty())
+        // {
+        //     auto next =
+        //         full
+        //             ? decltype(transforms_){}
+        //             : transforms_;
 
-            const bool transforms_changed =
-                replace(transforms_, next);
+        //     for (const auto& tf : msg.fixed_frame_transforms)
+        //     {
+        //         next[{
+        //             tf.header.frame_id,
+        //             tf.child_frame_id
+        //         }] = tf.transform;
+        //     }
 
-            // Preserve the existing behavior:
-            // update the baseline even when these transforms
-            // do not affect collision geometry.
-            record(
-                transforms_changed && uses_tf,
-                "fixed_frame_transforms");
-        }
+        //     ///////////////////////////////
+        //     if (next != transforms_) {
+        //         for (const auto& [key, value] : next) {
+        //             const auto previous = transforms_.find(key);
+
+        //             if (previous == transforms_.end() ||
+        //                 previous->second != value) {
+        //                 std::cerr
+        //                     << "[SCENE TF CHANGE] parent="
+        //                     << key.first
+        //                     << " child=" << key.second
+        //                     << '\n';
+        //             }
+        //         }
+
+        //         for (const auto& [key, value] : transforms_) {
+        //             if (next.find(key) == next.end()) {
+        //                 std::cerr
+        //                     << "[SCENE TF REMOVED] parent="
+        //                     << key.first
+        //                     << " child=" << key.second
+        //                     << '\n';
+        //             }
+        //         }
+
+        //         for (const auto& object : objects_) {
+        //             std::cerr
+        //                 << "[SCENE OBJECT FRAME] id="
+        //                 << object.id
+        //                 << " frame="
+        //                 << object.header.frame_id
+        //                 << '\n';
+        //         }
+        //     }
+
+        //     const bool transforms_changed =
+        //         replace(transforms_, next);
+
+
+
+        //     // Preserve the existing behavior:
+        //     // update the baseline even when these transforms
+        //     // do not affect collision geometry.
+        //     record(
+        //         transforms_changed && uses_tf,
+        //         "fixed_frame_transforms");
+        // }
 
         // --------------------------------------------------
         // 8. Diagnostic output

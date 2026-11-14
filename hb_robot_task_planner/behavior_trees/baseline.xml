@@ -13,29 +13,43 @@
       <!-- Obtain a fresh, supervised pose
            before generating the cutting plan. -->
       <Fallback name="ConfirmPose">
-
         <Condition ID="WorkpiecePoseValid"/>
-
-        <Sequence>
-          <Action ID="RevalidateWorkpiece"/>
-          <Action ID="AwaitGeometry"/>
-        </Sequence>
+        <RetryUntilSuccessful num_attempts="3">
+          <Sequence>
+            <Action ID="WaitForStablePlatform"/>
+            <Action ID="RevalidateWorkpiece"/>
+            <Action ID="AwaitGeometry"/>
+          </Sequence>
+        </RetryUntilSuccessful>
 
       </Fallback>
 
-      <!-- Capture LiDAR environmental collision
-           geometry after pose confirmation. -->
-      <Action ID="CaptureCutEnvironment"/>
+      <RetryUntilSuccessful num_attempts="3">
+        <Sequence name="PrepareCutCandidate">
+          <Fallback name="ConfirmPoseBeforePlanning">
+            <WorkpiecePoseValid/>
+            <Sequence>
+              <WaitForStablePlatform/>
+              <RevalidateWorkpiece/>
+              <AwaitGeometry/>
+            </Sequence>
+          </Fallback>
+          <!-- Capture LiDAR environmental collision
+              geometry after pose confirmation. -->     
+          <Action ID="CaptureCutEnvironment"/>
 
-      <!-- Generate and store the full trajectory. -->
-      <Action ID="PlanCut"/>
+          <!-- Generate and store the full trajectory. -->
+          <Action ID="PlanCut"/>
 
-      <!-- Reject stale plans. -->
-      <Condition ID="CandidateVersionsMatch"/>
+          <!-- Reject stale plans. -->
+          <Condition ID="CandidateVersionsMatch"/>
 
-      <!-- Require valid platform supervision,
-           pose, scene, and fault state. -->
-      <Condition ID="ValidateTaskState"/>
+          <!-- Require valid platform supervision,
+              pose, scene, and fault state. -->
+          <Condition ID="ValidateTaskState"/>
+        </Sequence>
+
+      </RetryUntilSuccessful>
 
       <!-- Execute the full trajectory.
            Torch behavior is controlled by
@@ -52,6 +66,7 @@
     <Action ID="RevalidateWorkpiece"/>
     <Action ID="AwaitGeometry"/>
     <Action ID="CaptureCutEnvironment"/>
+    <Action ID="WaitForStablePlatform"/>
     <Action ID="PlanCut"/>
     <Action ID="PlanRecut"/>
     <Action ID="ExecuteCut"/>

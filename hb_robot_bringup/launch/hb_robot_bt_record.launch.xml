@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Start rosbag -->
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/hb_robot_bag.launch.xml"/>
+
+    <!-- Start BT executor -->
+    <include file="$(find-pkg-share hb_robot_bringup)/launch/hb_robot_bt.launch.xml"/>
+</launch>

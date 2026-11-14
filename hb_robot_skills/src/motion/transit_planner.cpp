@@ -203,11 +203,13 @@ std::optional<MoveGroup::Plan> planTransit(
     };
 
     // 1. Fast, deterministic joint-space motion.
-    tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0);
-
+    tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0,1);
     // Successful, good-quality PTP: stop immediately.
     if (!goodEnough()) {
-
+        //2. try chomp and if its goode enough return it 
+        tryPlanner("chomp","CHOMP",2.0);
+    }
+    if (!goodEnough()) {
         for (const auto& choice : fallback) {
             tryPlanner(
                 choice.pipeline,
@@ -220,6 +222,9 @@ std::optional<MoveGroup::Plan> planTransit(
                 break;
         }
     }
+    
+
+    
 
     // One summary per transit planning call.
     if (best) {
@@ -446,7 +451,10 @@ std::optional<MoveGroup::Plan> planTransit(
 
     // 1. Fast, deterministic joint-space motion.
     tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0);
-
+    if (!goodEnough()) {
+        //2. try chomp and if its goode enough return it 
+        tryPlanner("chomp","CHOMP",2.0);
+    }
     // Successful, good-quality PTP: stop immediately.
     if (!goodEnough()) {
 

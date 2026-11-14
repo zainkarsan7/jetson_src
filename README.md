@@ -286,8 +286,8 @@ ros2 action send_goal \
     standoff: 0.01,
     pos_tol: 0.01,
     ang_tol: 0.3,
-    cut_id: cut_1794405705403804211 
-    scene_version: 6 
+    cut_id: cut_1794645978307149677, 
+    scene_version: 8 
   }' \
   --feedback
 

@@ -1,7 +1,7 @@
 
 #include "hb_robot_skills/scene_revision_tracker.hpp"
 #include "hb_robot_skills/workpiece_commit_validation.hpp"
-
+#include <rmw/types.h>
 #include <hb_robot_interfaces/recovery.hpp>
 #include <hb_robot_interfaces/msg/task_state.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
@@ -366,10 +366,14 @@ public:
                 "/monitored_planning_scene",
                 rclcpp::QoS(10),
                 [this](
-                    PlanningScene::ConstSharedPtr msg)
-                {
-                    onPlanningScene(*msg);
-                });
+                    PlanningScene::ConstSharedPtr msg,
+                    const rclcpp::MessageInfo& info)
+        {
+           if (!isAuthoritativeScenePublisher(info))
+        return;
+           
+            onPlanningScene(*msg);
+        });
 
         torch_ =
             create_subscription<
@@ -538,8 +542,41 @@ private:
         pub_->publish(state_);
     }
 
+    bool isAuthoritativeScenePublisher(
+        const rclcpp::MessageInfo& info)
+        {
+            const auto& source =
+                info.get_rmw_message_info().publisher_gid;
+
+            const auto publishers =
+                get_publishers_info_by_topic(
+                    "/monitored_planning_scene");
+
+            for (const auto& publisher : publishers)
+            {
+                const auto& name = publisher.node_name();
+
+                if (name != "move_group" &&
+                    name.rfind("move_group_private_", 0) != 0)
+                    continue;
+
+                const auto& gid = publisher.endpoint_gid();
+
+                if (gid.size() == RMW_GID_STORAGE_SIZE &&
+                    std::equal(
+                        gid.begin(),
+                        gid.end(),
+                        source.data))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     void onPlanningScene(
-        const PlanningScene& scene)
+        const PlanningScene& scene
+    )
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -575,18 +612,18 @@ private:
         {
             ++state_.scene_version;
             state_.path_valid = false;
-
-
             RCLCPP_WARN(
-                    get_logger(),
-                    "[SCENE REVISION] revision=%llu "
-                    "is_diff=%d reason='%s' "
-                    "environment='%s'",
-                    static_cast<unsigned long long>(
-                        state_.scene_version),
-                    static_cast<int>(scene.is_diff),
-                    revision_reason.c_str(),
-                    state_.cut_environment_id.c_str());
+                get_logger(),
+                "[SCENE REVISION] revision=%llu "
+                "is_diff=%d reason='%s' "
+                "environment='%s'",
+                static_cast<unsigned long long>(
+                    state_.scene_version),
+                static_cast<int>(scene.is_diff),
+                revision_reason.c_str(),
+                state_.cut_environment_id.c_str());
+
+           
          }
 
 
@@ -775,23 +812,29 @@ private:
 
             if (!supervisionTrustedLocked(metrics))
             {
-                
-                
-                    RCLCPP_ERROR(
+                RCLCPP_ERROR(
                         get_logger(),
-                        "Commit supervision rejected: "
-                        "supervision=%d imu=%d "
-                        "pose=%d motion_fault=%d process_fault=%d "
-                        "trusted_stable=%d uncertainty=%d latched=%d "
-                        "last_untrusted_ns=%lld",
-                        static_cast<int>(state_.supervision_valid),
-                        static_cast<int>(state_.imu_stable),
-                        static_cast<int>(state_.workpiece_pose_valid),
-                        static_cast<int>(state_.motion_fault_active),
-                        static_cast<int>(state_.process_fault_active),
+                        "Commit raw IMU rejection: "
+                        "valid=%d stable=%d confidence=%.3f "
+                        "acquire=%.3f coverage=%.3f "
+                        "trusted=%d uncertainty=%d latched=%d "
+                        "supervision=%d imu=%d, workpiece valid=%d," 
+                        "motion fault=%d," 
+                        "process fault=%d,"
+                        "last_trusted=%lld",
+                        static_cast<int>(metrics.valid),
+                        static_cast<int>(metrics.stable),
+                        metrics.stable_confidence,
+                        acquire_confidence_,
+                        metrics.confidence_coverage_s,
                         static_cast<int>(trusted_stable_),
                         static_cast<int>(uncertainty_active_),
                         static_cast<int>(supervision_latched_),
+                        static_cast<int>(state_.supervision_valid),
+                        static_cast<int>(state_.imu_stable),                        
+                        static_cast<int>(state_.workpiece_pose_valid),
+                        static_cast<int>(state_.motion_fault_active),
+                        static_cast<int>(state_.process_fault_active),
                         static_cast<long long>(last_untrusted_));
                 
                 reject(

@@ -132,456 +132,526 @@ struct Context {
 // Result handlers run on the BT tick thread.
 template<class Action>
 class ActionNode : public BT::StatefulActionNode {
-public:
-  using Handle = rclcpp_action::ClientGoalHandle<Action>;
-  using GoalBuilder =
-      std::function<bool(typename Action::Goal&)>;
-  using ResultHandler =
-      std::function<bool(const typename Action::Result&)>;
+  public:
+    using Handle = rclcpp_action::ClientGoalHandle<Action>;
+    using GoalBuilder =
+        std::function<bool(typename Action::Goal&)>;
+    using ResultHandler =
+        std::function<bool(const typename Action::Result&)>;
 
-  ActionNode(
-      const std::string& name,
-      const BT::NodeConfiguration& config,
-      rclcpp::Node::SharedPtr node,
-      const std::string& endpoint,
-      GoalBuilder builder,
-      ResultHandler handler)
-      : BT::StatefulActionNode(name, config),
-        build_(std::move(builder)),
-        finish_(std::move(handler)) {
-    client_ = rclcpp_action::create_client<Action>(
-        node, endpoint);
-  }
-
-  static BT::PortsList providedPorts() {
-    return {};
-  }
-
-  BT::NodeStatus onStart() override {
-    cancel_ = std::make_shared<std::atomic<bool>>(false);
-    handle_.reset();
-    sent_ = false;
-    started_ = Clock::now();
-    return BT::NodeStatus::RUNNING;
-  }
-
-  BT::NodeStatus onRunning() override {
-    const auto elapsed = Clock::now() - started_;
-
-    if (elapsed > 10min ||
-        (!sent_ && elapsed > 10s)) {
-      onHalted();
-      return BT::NodeStatus::FAILURE;
+    ActionNode(
+        const std::string& name,
+        const BT::NodeConfiguration& config,
+        rclcpp::Node::SharedPtr node,
+        const std::string& endpoint,
+        GoalBuilder builder,
+        ResultHandler handler)
+        : BT::StatefulActionNode(name, config),
+          build_(std::move(builder)),
+          finish_(std::move(handler)) {
+      client_ = rclcpp_action::create_client<Action>(
+          node, endpoint);
     }
 
-    if (!sent_) {
-      if (!client_->action_server_is_ready())
-        return BT::NodeStatus::RUNNING;
+    static BT::PortsList providedPorts() {
+      return {};
+    }
 
-      typename Action::Goal goal;
+    BT::NodeStatus onStart() override {
+      cancel_ = std::make_shared<std::atomic<bool>>(false);
+      handle_.reset();
+      sent_ = false;
+      started_ = Clock::now();
+      return BT::NodeStatus::RUNNING;
+    }
 
-      if (!build_(goal)){
+    BT::NodeStatus onRunning() override {
+      const auto elapsed = Clock::now() - started_;
 
-         RCLCPP_ERROR(
-        rclcpp::get_logger("bt_executor"),
-        "Action '%s': goal construction rejected",
-        registrationName().c_str());
+      if (elapsed > 10min ||
+          (!sent_ && elapsed > 10s)) {
+        onHalted();
         return BT::NodeStatus::FAILURE;
-         }
+      }
 
-      typename rclcpp_action::Client<Action>::
-          SendGoalOptions options;
+      if (!sent_) {
+        if (!client_->action_server_is_ready())
+          return BT::NodeStatus::RUNNING;
 
-      auto cancellation = cancel_;
-      auto client = client_;
+        typename Action::Goal goal;
 
-      options.goal_response_callback =
-          [client, cancellation](
-              typename Handle::SharedPtr handle) {
-        if (handle && cancellation->load())
-          client->async_cancel_goal(handle);
-      };
+        if (!build_(goal)){
 
-      goal_ = client_->async_send_goal(goal, options);
-      sent_ = true;
-    }
+          RCLCPP_ERROR(
+          rclcpp::get_logger("bt_executor"),
+          "Action '%s': goal construction rejected",
+          registrationName().c_str());
+          return BT::NodeStatus::FAILURE;
+          }
 
-    if (!handle_) {
-      if (goal_.wait_for(0s) !=
+        typename rclcpp_action::Client<Action>::
+            SendGoalOptions options;
+
+        auto cancellation = cancel_;
+        auto client = client_;
+
+        options.goal_response_callback =
+            [client, cancellation](
+                typename Handle::SharedPtr handle) {
+          if (handle && cancellation->load())
+            client->async_cancel_goal(handle);
+        };
+
+        goal_ = client_->async_send_goal(goal, options);
+        sent_ = true;
+      }
+
+      if (!handle_) {
+        if (goal_.wait_for(0s) !=
+            std::future_status::ready)
+          return BT::NodeStatus::RUNNING;
+
+        handle_ = goal_.get();
+
+        if (!handle_){
+
+        RCLCPP_ERROR(
+          rclcpp::get_logger("bt_executor"),
+          "Action '%s': goal REJECTED by ROS action server",
+          registrationName().c_str());
+
+
+          return BT::NodeStatus::FAILURE;
+        }
+        result_ = client_->async_get_result(handle_);
+      }
+      
+
+      if (result_.wait_for(0s) !=
           std::future_status::ready)
         return BT::NodeStatus::RUNNING;
 
-      handle_ = goal_.get();
+      const auto wrapped = result_.get();
 
-      if (!handle_){
-
-      RCLCPP_ERROR(
-        rclcpp::get_logger("bt_executor"),
-        "Action '%s': goal REJECTED by ROS action server",
-        registrationName().c_str());
-
-
-        return BT::NodeStatus::FAILURE;
+      if (!wrapped.result) {
+          RCLCPP_ERROR(
+              rclcpp::get_logger("bt_executor"),
+              "Action '%s' returned no result; code=%d",
+              registrationName().c_str(),
+              static_cast<int>(wrapped.code));
+          return BT::NodeStatus::FAILURE;
       }
-      result_ = client_->async_get_result(handle_);
-    }
-    
 
-    if (result_.wait_for(0s) !=
-        std::future_status::ready)
-      return BT::NodeStatus::RUNNING;
+      // Let the action-specific handler inspect the payload,
+      // including diagnostic fields on an aborted result.
+      const bool accepted = finish_(*wrapped.result);
 
-    const auto wrapped = result_.get();
+      if (wrapped.code !=
+              rclcpp_action::ResultCode::SUCCEEDED ||
+          !accepted) {
+          RCLCPP_ERROR(
+              rclcpp::get_logger("bt_executor"),
+              "Action '%s' failed: code=%d message='%s'",
+              registrationName().c_str(),
+              static_cast<int>(wrapped.code),
+              wrapped.result->message.c_str());
 
-    if (!wrapped.result) {
-        RCLCPP_ERROR(
-            rclcpp::get_logger("bt_executor"),
-            "Action '%s' returned no result; code=%d",
-            registrationName().c_str(),
-            static_cast<int>(wrapped.code));
-        return BT::NodeStatus::FAILURE;
-    }
+          return BT::NodeStatus::FAILURE;
+      }
 
-    // Let the action-specific handler inspect the payload,
-    // including diagnostic fields on an aborted result.
-    const bool accepted = finish_(*wrapped.result);
-
-    if (wrapped.code !=
-            rclcpp_action::ResultCode::SUCCEEDED ||
-        !accepted) {
-        RCLCPP_ERROR(
-            rclcpp::get_logger("bt_executor"),
-            "Action '%s' failed: code=%d message='%s'",
-            registrationName().c_str(),
-            static_cast<int>(wrapped.code),
-            wrapped.result->message.c_str());
-
-        return BT::NodeStatus::FAILURE;
+      return BT::NodeStatus::SUCCESS;
     }
 
-    return BT::NodeStatus::SUCCESS;
-  }
+    void onHalted() override {
+      if (cancel_)
+        cancel_->store(true);
 
-  void onHalted() override {
-    if (cancel_)
-      cancel_->store(true);
-
-    if (handle_) {
-      client_->async_cancel_goal(handle_);
-    } else if (sent_ && goal_.valid() &&
-               goal_.wait_for(0s) ==
-                   std::future_status::ready) {
-      auto handle = goal_.get();
-      if (handle)
-        client_->async_cancel_goal(handle);
+      if (handle_) {
+        client_->async_cancel_goal(handle_);
+      } else if (sent_ && goal_.valid() &&
+                goal_.wait_for(0s) ==
+                    std::future_status::ready) {
+        auto handle = goal_.get();
+        if (handle)
+          client_->async_cancel_goal(handle);
+      }
     }
-  }
 
-private:
-  GoalBuilder build_;
-  ResultHandler finish_;
+  private:
+    GoalBuilder build_;
+    ResultHandler finish_;
 
-  typename rclcpp_action::Client<Action>::SharedPtr client_;
-  typename Handle::SharedPtr handle_;
+    typename rclcpp_action::Client<Action>::SharedPtr client_;
+    typename Handle::SharedPtr handle_;
 
-  std::shared_future<typename Handle::SharedPtr> goal_;
-  std::shared_future<typename Handle::WrappedResult> result_;
+    std::shared_future<typename Handle::SharedPtr> goal_;
+    std::shared_future<typename Handle::WrappedResult> result_;
 
-  std::shared_ptr<std::atomic<bool>> cancel_;
+    std::shared_ptr<std::atomic<bool>> cancel_;
 
-  bool sent_ = false;
-  Clock::time_point started_{};
-};
+    bool sent_ = false;
+    Clock::time_point started_{};
+  };
+
+class WaitForStablePlatform : public BT::StatefulActionNode {
+    public:
+      WaitForStablePlatform(
+          const std::string& name,
+          const BT::NodeConfiguration& config,
+          std::shared_ptr<Context> context)
+          : BT::StatefulActionNode(name, config),
+            context_(std::move(context)) {}
+
+      static BT::PortsList providedPorts() {
+        return {};
+      }
+
+      BT::NodeStatus onStart() override {
+        started_ = Clock::now();
+        stable_since_.reset();
+        return onRunning();
+      }
+
+      BT::NodeStatus onRunning() override {
+        const auto state = context_->snapshot();
+
+        if (state.motion_fault_active ||
+            state.process_fault_active) {
+          RCLCPP_ERROR(
+              rclcpp::get_logger("bt_executor"),
+              "Platform wait stopped: motion/process fault");
+          return BT::NodeStatus::FAILURE;
+        }
+
+        if (state.scene_valid &&
+            state.supervision_valid &&
+            state.imu_stable &&
+            context_->platformStable()) {
+          if (!stable_since_)
+            stable_since_ = Clock::now();
+
+          if (Clock::now() - *stable_since_ >= 1s)
+            return BT::NodeStatus::SUCCESS;
+        } else {
+          stable_since_.reset();
+        }
+
+        if (Clock::now() - started_ >= 30s) {
+          RCLCPP_WARN(
+              rclcpp::get_logger("bt_executor"),
+              "Platform stability wait timed out: %s",
+              context_->platformReason().c_str());
+          return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::RUNNING;
+      }
+
+      void onHalted() override {
+        stable_since_.reset();
+      }
+
+    private:
+      std::shared_ptr<Context> context_;
+      Clock::time_point started_{};
+      std::optional<Clock::time_point> stable_since_;
+    };
+
+
+
+
+
+
 
 class AwaitGeometry : public BT::StatefulActionNode {
-public:
-  AwaitGeometry(
-      const std::string& name,
-      const BT::NodeConfiguration& config,
-      std::shared_ptr<Context> context,
-      bool planning = false)
-      : BT::StatefulActionNode(name, config),
-        context_(context),
-        planning_(planning) {}
+  public:
+    AwaitGeometry(
+        const std::string& name,
+        const BT::NodeConfiguration& config,
+        std::shared_ptr<Context> context,
+        bool planning = false)
+        : BT::StatefulActionNode(name, config),
+          context_(context),
+          planning_(planning) {}
 
-  static BT::PortsList providedPorts() {
-    return {};
-  }
-
-  BT::NodeStatus onStart() override {
-    start_ = Clock::now();
-    return onRunning();
-  }
-
-  BT::NodeStatus onRunning() override {
-    const auto state = context_->snapshot();
-
-    const bool reference_matches =
-        state.scene_valid &&
-        state.scene_id ==
-            context_->inspection_reference_id;
-
-    if (planning_) {
-      if (reference_matches)
-        return BT::NodeStatus::SUCCESS;
-    } else {
-      if (reference_matches &&
-          context_->authorized(state))
-        return BT::NodeStatus::SUCCESS;
+    static BT::PortsList providedPorts() {
+      return {};
     }
 
-    if (Clock::now() - start_ <= 10s)
-      return BT::NodeStatus::RUNNING;
+    BT::NodeStatus onStart() override {
+      start_ = Clock::now();
+      return onRunning();
+    }
 
-    RCLCPP_ERROR(
-        rclcpp::get_logger("bt_executor"),
-        "AwaitGeometry timeout: planning=%d "
-        "reference_matches=%d pose=%d "
-        "supervision=%d imu=%d platform=%d "
-        "expected_reference=%s actual_reference=%s "
-        "reason=%s",
-        planning_,
-        reference_matches,
-        state.workpiece_pose_valid,
-        state.supervision_valid,
-        state.imu_stable,
-        context_->platformStable(),
-        context_->inspection_reference_id.c_str(),
-        state.scene_id.c_str(),
-        state.status_message.c_str());
+    BT::NodeStatus onRunning() override {
+      const auto state = context_->snapshot();
 
-    return BT::NodeStatus::FAILURE;
-  }
+      const bool reference_matches =
+          state.scene_valid &&
+          state.scene_id ==
+              context_->inspection_reference_id;
 
-  void onHalted() override {}
+      if (planning_) {
+        if (reference_matches)
+          return BT::NodeStatus::SUCCESS;
+      } else {
+        if (reference_matches &&
+            context_->authorized(state))
+          return BT::NodeStatus::SUCCESS;
+      }
 
-private:
-  std::shared_ptr<Context> context_;
-  bool planning_;
-  Clock::time_point start_{};
-};
+      if (Clock::now() - start_ <= 15s)
+        return BT::NodeStatus::RUNNING;
+
+      RCLCPP_ERROR(
+          rclcpp::get_logger("bt_executor"),
+          "AwaitGeometry timeout: planning=%d "
+          "reference_matches=%d pose=%d "
+          "supervision=%d imu=%d platform=%d "
+          "expected_reference=%s actual_reference=%s "
+          "reason=%s",
+          planning_,
+          reference_matches,
+          state.workpiece_pose_valid,
+          state.supervision_valid,
+          state.imu_stable,
+          context_->platformStable(),
+          context_->inspection_reference_id.c_str(),
+          state.scene_id.c_str(),
+          state.status_message.c_str());
+
+      return BT::NodeStatus::FAILURE;
+    }
+
+    void onHalted() override {}
+
+  private:
+    std::shared_ptr<Context> context_;
+    bool planning_;
+    Clock::time_point start_{};
+  };
 
 class CaptureEnvironment : public BT::StatefulActionNode {
   using Service =
       hb_robot_interfaces::srv::CaptureCutEnvironment;
 
-public:
-  CaptureEnvironment(
-      const std::string& name,
-      const BT::NodeConfiguration& config,
-      rclcpp::Node::SharedPtr node,
-      std::shared_ptr<Context> context)
-      : BT::StatefulActionNode(name, config),
-        context_(context),
-        client_(node->create_client<Service>(
-            "capture_cut_environment")) {}
+    public:
+      CaptureEnvironment(
+          const std::string& name,
+          const BT::NodeConfiguration& config,
+          rclcpp::Node::SharedPtr node,
+          std::shared_ptr<Context> context)
+          : BT::StatefulActionNode(name, config),
+            context_(context),
+            client_(node->create_client<Service>(
+                "capture_cut_environment")) {}
 
-  static BT::PortsList providedPorts() {
-    return {};
-  }
+      static BT::PortsList providedPorts() {
+        return {};
+      }
 
-  BT::NodeStatus onStart() override {
-    scene_retries_ = 0;
-    context_->captured_scene.reset();
+      BT::NodeStatus onStart() override {
+        scene_retries_ = 0;
+        context_->captured_scene.reset();
 
-    expected_ = context_->snapshot();
-    deadline_ = Clock::now() + 30s;
+        expected_ = context_->snapshot();
+        deadline_ = Clock::now() + 30s;
 
-    last_scene_version_ = expected_.scene_version;
-    last_environment_id_.clear();
-    settled_since_.reset();
+        last_scene_version_ = expected_.scene_version;
+        last_environment_id_.clear();
+        settled_since_.reset();
 
-    return onRunning();
-  }
+        return onRunning();
+      }
 
-  BT::NodeStatus onRunning() override {
-    const auto state = context_->snapshot();
+      BT::NodeStatus onRunning() override {
+        const auto state = context_->snapshot();
 
-    if (!state.scene_valid ||
-        state.motion_fault_active ||
-        state.process_fault_active ||
-        state.geometry_version !=
-            expected_.geometry_version ||
-        state.pose_version !=
-            expected_.pose_version ||
-        Clock::now() > deadline_) {
-            RCLCPP_ERROR(
-                rclcpp::get_logger("bt_executor"),
-                "Environment capture expired or reference changed");
-            onHalted();
-            return BT::NodeStatus::FAILURE;
-          }
+        if (!state.scene_valid ||
+            state.motion_fault_active ||
+            state.process_fault_active ||
+            state.geometry_version !=
+                expected_.geometry_version ||
+            state.pose_version !=
+                expected_.pose_version ||
+            Clock::now() > deadline_) {
+                RCLCPP_ERROR(
+                    rclcpp::get_logger("bt_executor"),
+                    "Environment capture expired or reference changed");
+                onHalted();
+                return BT::NodeStatus::FAILURE;
+              }
 
-    if (!response_ && !future_.valid()) {
-      if (!client_->service_is_ready())
-        return BT::NodeStatus::RUNNING;
-      // Refresh the complete TaskState snapshot before
-      // creating the capture request. The scene monitor
-      // may have processed the commit's final update
-      // after the inspection action returned.
-      expected_ = state;
+        if (!response_ && !future_.valid()) {
+          if (!client_->service_is_ready())
+            return BT::NodeStatus::RUNNING;
+          // Refresh the complete TaskState snapshot before
+          // creating the capture request. The scene monitor
+          // may have processed the commit's final update
+          // after the inspection action returned.
+          expected_ = state;
 
-      auto request =
-          std::make_shared<Service::Request>();
+          auto request =
+              std::make_shared<Service::Request>();
 
-      request->geometry_version =
-          expected_.geometry_version;
-      request->pose_version =
-          expected_.pose_version;
-      request->scene_version =
-          expected_.scene_version;
+          request->geometry_version =
+              expected_.geometry_version;
+          request->pose_version =
+              expected_.pose_version;
+          request->scene_version =
+              expected_.scene_version;
 
-      auto pending = client_->async_send_request(request);
-      request_id_ = pending.request_id;
-      future_ = pending.share();
-      return BT::NodeStatus::RUNNING;
-    }
+          auto pending = client_->async_send_request(request);
+          request_id_ = pending.request_id;
+          future_ = pending.share();
+          return BT::NodeStatus::RUNNING;
+        }
 
-    if (!response_) {
-      if (future_.wait_for(0s) !=
-          std::future_status::ready)
-        return BT::NodeStatus::RUNNING;
+        if (!response_) {
+          if (future_.wait_for(0s) !=
+              std::future_status::ready)
+            return BT::NodeStatus::RUNNING;
 
-      response_ = future_.get();
-      future_ = {};
+          response_ = future_.get();
+          future_ = {};
 
-      if (!response_->success) {
+          if (!response_->success) {
 
-        // Re-read TaskState at the point of failure.
-        // The scene may have advanced while the
-        // capture service was validating the request.
-        const auto current = context_->snapshot();
+            // Re-read TaskState at the point of failure.
+            // The scene may have advanced while the
+            // capture service was validating the request.
+            const auto current = context_->snapshot();
 
-        constexpr unsigned max_scene_retries = 2;
-        const bool same_reference =
-                        current.scene_valid &&
-                        current.geometry_version ==
-                            expected_.geometry_version &&
-                        current.pose_version ==
-                            expected_.pose_version;
+            constexpr unsigned max_scene_retries = 2;
+            const bool same_reference =
+                            current.scene_valid &&
+                            current.geometry_version ==
+                                expected_.geometry_version &&
+                            current.pose_version ==
+                                expected_.pose_version;
 
-                    const bool supervision_ok =
-                        context_->authorized(current) &&
-                        !current.motion_fault_active &&
-                        !current.process_fault_active;
+                        const bool supervision_ok =
+                            context_->authorized(current) &&
+                            !current.motion_fault_active &&
+                            !current.process_fault_active;
 
-                    const bool scene_advanced =
-                        current.scene_version >
-                            expected_.scene_version;
+                        const bool scene_advanced =
+                            current.scene_version >
+                                expected_.scene_version;
 
-                    if (scene_retries_ < max_scene_retries &&
-                        same_reference &&
-                        supervision_ok &&
-                        scene_advanced &&
-                        Clock::now() < deadline_)
-                    {
-                        ++scene_retries_;
+                        if (scene_retries_ < max_scene_retries &&
+                            same_reference &&
+                            supervision_ok &&
+                            scene_advanced &&
+                            Clock::now() < deadline_)
+                        {
+                            ++scene_retries_;
 
-                        RCLCPP_WARN(
+                            RCLCPP_WARN(
+                                rclcpp::get_logger("bt_executor"),
+                                "Capture scene revision changed "
+                                "%llu -> %llu; retry %u/%u",
+                                static_cast<unsigned long long>(
+                                    expected_.scene_version),
+                                static_cast<unsigned long long>(
+                                    current.scene_version),
+                                scene_retries_,
+                                max_scene_retries);
+
+                            response_.reset();
+                            settled_since_.reset();
+
+                            // Next tick sends a new request using
+                            // a fresh TaskState snapshot.
+                            return BT::NodeStatus::RUNNING;
+                        }
+
+                        RCLCPP_ERROR(
                             rclcpp::get_logger("bt_executor"),
-                            "Capture scene revision changed "
-                            "%llu -> %llu; retry %u/%u",
-                            static_cast<unsigned long long>(
-                                expected_.scene_version),
-                            static_cast<unsigned long long>(
-                                current.scene_version),
-                            scene_retries_,
-                            max_scene_retries);
+                            "Environment capture failed: %s",
+                            response_->message.c_str());
 
                         response_.reset();
-                        settled_since_.reset();
-
-                        // Next tick sends a new request using
-                        // a fresh TaskState snapshot.
-                        return BT::NodeStatus::RUNNING;
+                        return BT::NodeStatus::FAILURE;
                     }
-
-                    RCLCPP_ERROR(
-                        rclcpp::get_logger("bt_executor"),
-                        "Environment capture failed: %s",
-                        response_->message.c_str());
-
-                    response_.reset();
-                    return BT::NodeStatus::FAILURE;
                 }
-            }
 
-    const bool acknowledged =
-        !response_->environment_id.empty() &&
-        state.cut_environment_id ==
-            response_->environment_id &&
-        (!response_->scene_changed ||
-         state.scene_version >
-             expected_.scene_version);
+        const bool acknowledged =
+            !response_->environment_id.empty() &&
+            state.cut_environment_id ==
+                response_->environment_id &&
+            (!response_->scene_changed ||
+            state.scene_version >
+                expected_.scene_version);
 
-    if (!acknowledged) {
-      settled_since_.reset();
-      return BT::NodeStatus::RUNNING;
-    }
+        if (!acknowledged) {
+          settled_since_.reset();
+          return BT::NodeStatus::RUNNING;
+        }
 
-    // Diagnostic settling interval only.
-    // This does NOT replace a completion barrier in
-    // the CaptureCutEnvironment service implementation.
-    if (state.scene_version != last_scene_version_ ||
-        state.cut_environment_id !=
-            last_environment_id_) {
-      last_scene_version_ = state.scene_version;
-      last_environment_id_ = state.cut_environment_id;
-      settled_since_ = Clock::now();
-      return BT::NodeStatus::RUNNING;
-    }
+        // Diagnostic settling interval only.
+        // This does NOT replace a completion barrier in
+        // the CaptureCutEnvironment service implementation.
+        if (state.scene_version != last_scene_version_ ||
+            state.cut_environment_id !=
+                last_environment_id_) {
+          last_scene_version_ = state.scene_version;
+          last_environment_id_ = state.cut_environment_id;
+          settled_since_ = Clock::now();
+          return BT::NodeStatus::RUNNING;
+        }
 
-    if (!settled_since_) {
-      settled_since_ = Clock::now();
-      return BT::NodeStatus::RUNNING;
-    }
+        if (!settled_since_) {
+          settled_since_ = Clock::now();
+          return BT::NodeStatus::RUNNING;
+        }
 
-    if (Clock::now() - *settled_since_ < 500ms)
-      return BT::NodeStatus::RUNNING;
+        if (Clock::now() - *settled_since_ < 500ms)
+          return BT::NodeStatus::RUNNING;
 
-    context_->captured_scene = state;
+        context_->captured_scene = state;
 
-    RCLCPP_INFO(
-        rclcpp::get_logger("bt_executor"),
-        "Capture complete: geometry=%llu pose=%llu "
-        "scene=%llu environment=%s",
-        static_cast<unsigned long long>(
-            state.geometry_version),
-        static_cast<unsigned long long>(
-            state.pose_version),
-        static_cast<unsigned long long>(
-            state.scene_version),
-        state.cut_environment_id.c_str());
+        RCLCPP_INFO(
+            rclcpp::get_logger("bt_executor"),
+            "Capture complete: geometry=%llu pose=%llu "
+            "scene=%llu environment=%s",
+            static_cast<unsigned long long>(
+                state.geometry_version),
+            static_cast<unsigned long long>(
+                state.pose_version),
+            static_cast<unsigned long long>(
+                state.scene_version),
+            state.cut_environment_id.c_str());
 
-    response_.reset();
-    return BT::NodeStatus::SUCCESS;
-  }
+        response_.reset();
+        return BT::NodeStatus::SUCCESS;
+      }
 
-  void onHalted() override {
-    if (future_.valid())
-      client_->remove_pending_request(request_id_);
+      void onHalted() override {
+        if (future_.valid())
+          client_->remove_pending_request(request_id_);
 
-    future_ = {};
-    response_.reset();
-    settled_since_.reset();
-  }
+        future_ = {};
+        response_.reset();
+        settled_since_.reset();
+      }
 
-private:
-  std::shared_ptr<Context> context_;
-  rclcpp::Client<Service>::SharedPtr client_;
+    private:
+      std::shared_ptr<Context> context_;
+      rclcpp::Client<Service>::SharedPtr client_;
 
-  rclcpp::Client<Service>::SharedFuture future_;
-  Service::Response::SharedPtr response_;
+      rclcpp::Client<Service>::SharedFuture future_;
+      Service::Response::SharedPtr response_;
 
-  int64_t request_id_ = 0;
-  recovery::State expected_;
+      int64_t request_id_ = 0;
+      recovery::State expected_;
 
-  Clock::time_point deadline_{};
-  std::optional<Clock::time_point> settled_since_;
-  unsigned scene_retries_ = 0;
-  uint64_t last_scene_version_ = 0;
-  std::string last_environment_id_;
-};
+      Clock::time_point deadline_{};
+      std::optional<Clock::time_point> settled_since_;
+      unsigned scene_retries_ = 0;
+      uint64_t last_scene_version_ = 0;
+      std::string last_environment_id_;
+    };
 
 template<class Action, class Goal, class Result>
 void registerAction(
@@ -666,6 +736,14 @@ int main(int argc, char** argv) {
         return std::make_unique<CaptureEnvironment>(
             n, c, node, context);
       });
+
+
+  factory.registerBuilder<WaitForStablePlatform>(
+    "WaitForStablePlatform",
+    [=](const auto& n, const auto& c) {
+      return std::make_unique<WaitForStablePlatform>(
+          n, c, context);
+    });
 
   auto condition =
       [&](const std::string& name, auto predicate) {

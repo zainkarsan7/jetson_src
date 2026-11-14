@@ -29,8 +29,6 @@
     /profile_inspection/metrics/coverage
     /profile_inspection/metrics/inlier_fraction
     /profile_inspection/metrics/rms_mm
-    /platform/imu/metrics
-    /platform/imu/filtered
     /k4a/imu
     /hb_robot_lidar/imu
     /hb_robot_lidar/cloud 
@@ -39,6 +37,6 @@
     /platform_supervision
     "
     output="screen" 
-    shell = "true"/>
+    shell = "false"/>
 
 </launch>

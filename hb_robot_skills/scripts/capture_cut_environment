@@ -765,10 +765,10 @@ class CaptureNode(Node):
 
         self.mask_marker_pub.publish(markers)
 
-        self.get_logger().info(
-            f"Published {marker_id} mesh capsule markers "
-            f"in frame {frame}"
-        )
+        # self.get_logger().info(
+        #     f"Published {marker_id} mesh capsule markers "
+        #     f"in frame {frame}"
+        # )
 
     # ========================================================
     # LIDAR ROBOT MASK
@@ -857,12 +857,12 @@ class CaptureNode(Node):
                 removed = int(np.count_nonzero(mask))
                 xyz = xyz[~mask]
 
-                if first_scan:
-                    self.get_logger().info(
-                        f"MASK {link}: "
-                        f"removed={removed}, "
-                        f"remaining={len(xyz)}"
-                    )
+                # if first_scan:
+                #     self.get_logger().info(
+                #         f"MASK {link}: "
+                #         f"removed={removed}, "
+                #         f"remaining={len(xyz)}"
+                #     )
 
         # ----------------------------------------------------
         # Camera housing box
@@ -1149,10 +1149,10 @@ class CaptureNode(Node):
                 filtered_scans, self.size, min_scans=2
             )
 
-            self.get_logger().info(
-                f"Voxel voting: once={len(cells_once)}, "
-                f"twice={len(cells_twice)}"
-            )
+            # self.get_logger().info(
+            #     f"Voxel voting: once={len(cells_once)}, "
+            #     f"twice={len(cells_twice)}"
+            # )
 
             cells = cells_twice
 
