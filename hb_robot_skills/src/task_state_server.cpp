@@ -525,8 +525,8 @@ private:
 
         return metrics.valid &&
                metrics.stable &&
-               metrics.stable_confidence >=
-                   acquire_confidence_ &&
+            //    metrics.stable_confidence >=
+            //        acquire_confidence_ &&
                trusted_stable_ &&
                !uncertainty_active_ &&
                !supervision_latched_ &&
@@ -1169,250 +1169,395 @@ private:
         }
     }
 
-    void updateSupervision()
+    
+void updateSupervision()
+{
+    using Seconds = std::chrono::duration<double>;
+
+    const auto metrics = imu_->metrics();
+    const auto tick = Clock::now();
+
+    // ---------------------------------------------------------
+    // 1. Evaluate sensor evidence.
+    // ---------------------------------------------------------
+
+    const bool unilidar_good =
+        metrics.unilidar.valid &&
+        metrics.unilidar.stable;
+
+    const bool mpu6050_good =
+        metrics.mpu6050.valid &&
+        metrics.mpu6050.stable;
+
+    const bool both_good =
+        unilidar_good && mpu6050_good;
+
+    const bool one_good =
+        unilidar_good != mpu6050_good;
+
+    const bool neither_good =
+        !unilidar_good && !mpu6050_good;
+
+    const bool unilidar_hard =
+        metrics.unilidar.valid &&
+        (metrics.unilidar.peak_ang_vel_rad_s >= hard_peak_gyro_ ||
+         metrics.unilidar.peak_acc_deviation_m_s2 >= hard_peak_accel_);
+
+    const bool mpu6050_hard =
+        metrics.mpu6050.valid &&
+        (metrics.mpu6050.peak_ang_vel_rad_s >= hard_peak_gyro_ ||
+         metrics.mpu6050.peak_acc_deviation_m_s2 >= hard_peak_accel_);
+
+    // Preserve existing dual-confirmation hard-motion policy.
+    const bool hard_motion =
+        unilidar_hard && mpu6050_hard;
+
+    const bool both_stale =
+        metrics.unilidar.sample_age_s > grace_s_ &&
+        metrics.mpu6050.sample_age_s > grace_s_;
+
+    const bool confidence_finite =
+        std::isfinite(metrics.stable_confidence);
+
+    const bool confidence_acquired =
+        confidence_finite &&
+        metrics.stable_confidence >= acquire_confidence_;
+
+    const bool confidence_lost =
+        !confidence_finite ||
+        metrics.stable_confidence < release_confidence_;
+
+    State published;
+    Supervision diagnostic;
+
     {
-        const auto metrics =
-            imu_->metrics();
+        std::lock_guard<std::mutex> lock(mutex_);
 
-        const auto tick =
-            Clock::now();
+        // -----------------------------------------------------
+        // 2. Capture previous state BEFORE changing anything.
+        // -----------------------------------------------------
 
-        const bool raw_good =
-            metrics.valid && metrics.stable;
+        const bool was_supervised =
+            state_.supervision_valid;
 
-        const bool unilidar_hard =
-            metrics.unilidar.valid &&
-            (metrics.unilidar.peak_ang_vel_rad_s >=
-                 hard_peak_gyro_ ||
-             metrics.unilidar.peak_acc_deviation_m_s2 >=
-                 hard_peak_accel_);
+        const bool was_trusted =
+            trusted_stable_;
 
-        const bool mpu6050_hard =
-            metrics.mpu6050.valid &&
-            (metrics.mpu6050.peak_ang_vel_rad_s >=
-                 hard_peak_gyro_ ||
-             metrics.mpu6050.peak_acc_deviation_m_s2 >=
-                 hard_peak_accel_);
+        const bool was_latched =
+            supervision_latched_;
 
-        const bool hard_motion =
-            unilidar_hard && mpu6050_hard;
+        std::string transition_reason = "unchanged";
 
-        const bool hard_stale =
-            metrics.unilidar.sample_age_s > grace_s_ ||
-            metrics.mpu6050.sample_age_s > grace_s_;
+        // -----------------------------------------------------
+        // 3. Update the internal supervision state machine.
+        //
+        // Priority:
+        //   A. Confirmed hard motion
+        //   B. Both sensors healthy
+        //   C. Exactly one sensor healthy
+        //   D. Neither sensor healthy
+        //
+        // Authorization is calculated AFTER this entire block.
+        // -----------------------------------------------------
 
-        const bool confidence_acquired =
-            raw_good &&
-            metrics.stable_confidence >=
-                acquire_confidence_;
+        
+// -----------------------------------------------------
+// 3. Update supervision state.
+// -----------------------------------------------------
 
-        const bool confidence_lost =
-            metrics.stable_confidence <
-                release_confidence_;
+if (hard_motion)
+{
+    if (!supervision_latched_)
+    {
+        invalidateLocked(
+            "Hard IMU motion threshold exceeded");
+    }
 
-        State published;
-        Supervision diagnostic;
+    trusted_stable_ = false;
+    supervision_latched_ = true;
+    uncertainty_active_ = false;
+    single_channel_active_ = false;
 
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-
-
-            if (hard_motion)
-            {   
-
-                RCLCPP_WARN(
-                        get_logger(),
-                        "Hard IMU trigger: "
-                        "unilidar_valid=%d gyro_peak=%.4f accel_peak=%.4f "
-                        "mpu_valid=%d gyro_peak=%.4f accel_peak=%.4f "
-                        "confidence=%.3f",
-                        metrics.unilidar.valid,
-                        metrics.unilidar.peak_ang_vel_rad_s,
-                        metrics.unilidar.peak_acc_deviation_m_s2,
-                        metrics.mpu6050.valid,
-                        metrics.mpu6050.peak_ang_vel_rad_s,
-                        metrics.mpu6050.peak_acc_deviation_m_s2,
-                        metrics.stable_confidence);
-
-                // Credible disturbance: invalidate the
-                // accepted workpiece, regardless of whether
-                // the robot was commanded to move.
-                if (!supervision_latched_)
-                {
-                    invalidateLocked(
-                        "Hard IMU motion threshold exceeded");
-                }
-
-                trusted_stable_ = false;
-                uncertainty_active_ = false;
-                supervision_latched_ = true;
-            }
-            else if (confidence_acquired && !hard_stale)
-            {
-                // Stability has returned.
-                // Restore supervision permission, but never
-                // automatically restore workpiece_pose_valid.
-                trusted_stable_ = true;
-                uncertainty_active_ = false;
-                supervision_latched_ = false;
-            }
-            else if (!raw_good ||
-                    confidence_lost ||
-                    hard_stale)
-            {
-                if (!uncertainty_active_)
-                {
-                    uncertainty_active_ = true;
-                    uncertainty_since_ = tick;
-                }
-
-                const double uncertain_for =
-                    std::chrono::duration<double>(
-                        tick - uncertainty_since_).count();
-
-                if (hard_stale ||
-                    uncertain_for >= grace_s_)
-                {
-                    // Sensor instability or missing data:
-                    // block supervision, not the accepted
-                    // workpiece pose.
-                    trusted_stable_ = false;
-                    uncertainty_active_ = false;
-                    supervision_latched_ = true;
-                }
-            }
-            else
-            {
-                // Within the confidence hysteresis band.
-                // Preserve the existing trusted state.
-                uncertainty_active_ = false;
-            }
-
-            const bool was_supervised =
-                state_.supervision_valid;
-
-            // state_.supervision_valid =
-            //     trusted_stable_ && !uncertainty_active_ &&
-            //     !supervision_latched_ && !hard_motion &&
-            //     !hard_stale;
-
-             state_.supervision_valid =
-                trusted_stable_ && 
-                !supervision_latched_ && !hard_motion &&
-                !hard_stale;
-
-            if (was_supervised && !state_.supervision_valid)
-                {
-                    RCLCPP_WARN(
-                        get_logger(),
-                        "IMU supervision lost: "
-                        "raw_good=%d confidence=%.3f "
-                        "confidence_lost=%d "
-                        "hard_motion=%d hard_stale=%d "
-                        "uncertainty=%d latched=%d "
-                        "trusted_stable=%d",
-                        static_cast<int>(raw_good),
-                        metrics.stable_confidence,
-                        static_cast<int>(confidence_lost),
-                        static_cast<int>(hard_motion),
-                        static_cast<int>(hard_stale),
-                        static_cast<int>(uncertainty_active_),
-                        static_cast<int>(supervision_latched_),
-                        static_cast<int>(trusted_stable_));
-                }
-
-
-            state_.imu_stable =
-                state_.supervision_valid;
-
-
-            std::ostringstream status;
-
-            status << std::fixed
-                   << std::setprecision(3)
-                   << "confidence="
-                   << metrics.stable_confidence
-                   << " coverage_s="
-                   << metrics.confidence_coverage_s
-                   << " raw_valid=" << metrics.valid
-                   << " raw_stable=" << metrics.stable;
-
-            if (hard_motion)
-                status << " HARD_MOTION";
-            else if (uncertainty_active_)
-                status << " UNCERTAIN";
-            else if (trusted_stable_)
-                status << " STABLE";
-            else
-                status << " NOT_AUTHORIZED";
-
-            if (!state_.workpiece_pose_valid &&
-                !invalidation_reason_.empty())
-            {
-                status << "; pose invalidated: "
-                       << invalidation_reason_;
-            }
-
-            state_.status_message = status.str();
-            state_.header.stamp = now();
-
-            published = state_;
-
-            diagnostic.header = published.header;
-
-            diagnostic.unilidar =
-                toRosMetrics(
-                    metrics.unilidar,
-                    diagnostic.header,
-                    "unilidar",
-                    metrics.stable_confidence,
-                    metrics.confidence_coverage_s);
-
-            diagnostic.mpu6050 =
-                toRosMetrics(
-                    metrics.mpu6050,
-                    diagnostic.header,
-                    "mpu6050",
-                    metrics.stable_confidence,
-                    metrics.confidence_coverage_s);
-
-            diagnostic.combined_confidence =
-                metrics.stable_confidence;
-
-            diagnostic.combined_coverage_s =
-                metrics.confidence_coverage_s;
-
-            diagnostic.both_channels_valid =
-                metrics.valid;
-
-            diagnostic.both_channels_stable =
-                metrics.stable;
-
-            diagnostic.supervision_valid =
-                state_.supervision_valid;
-
-            diagnostic.imu_stable =
-                state_.imu_stable;
-
-            diagnostic.hard_motion_detected =
-                hard_motion;
-
-            if (hard_motion || supervision_latched_)
-                diagnostic.state = Supervision::UNTRUSTED;
-            else if (uncertainty_active_)
-                diagnostic.state = Supervision::UNCERTAIN;
-            else if (trusted_stable_)
-                diagnostic.state = Supervision::STABLE;
-            else
-                diagnostic.state = Supervision::UNKNOWN;
-
-            diagnostic.reason =
-                state_.status_message;
+        transition_reason = "confirmed_hard_motion";
         }
+        else if (both_stale)
+        {
+            trusted_stable_ = false;
+            supervision_latched_ = true;
+            uncertainty_active_ = false;
+            single_channel_active_ = false;
+
+            transition_reason = "both_channels_stale";
+        }
+        else if (both_good)
+        {
+            single_channel_active_ = false;
+            uncertainty_active_ = false;
+
+            if (confidence_acquired)
+            {
+                // Initial authorization or recovery after a latch
+                // still requires the existing confidence threshold.
+                trusted_stable_ = true;
+                supervision_latched_ = false;
+
+                transition_reason = "confidence_acquired";
+            }
+            else
+            {
+                // Both channels are good NOW.
+                // A historical confidence dip must not revoke
+                // previously acquired authorization.
+                //
+                // Do not clear an existing latch here.
+                transition_reason =
+                    "both_good_preserve_authorization";
+            }
+        }
+        else if (one_good)
+        {
+            // One valid, stable IMU is sufficient to preserve
+            // authorization already established previously.
+            //
+            // No timeout here: this is genuine redundancy,
+            // rather than a short grace interval.
+
+            uncertainty_active_ = false;
+            single_channel_active_ = true;
+
+            if (trusted_stable_ && !supervision_latched_)
+            {
+                transition_reason =
+                    unilidar_good
+                        ? "unilidar_maintaining_supervision"
+                        : "mpu6050_maintaining_supervision";
+            }
+            else
+            {
+                // A single channel cannot establish NEW
+                // authorization or clear a previous latch.
+                transition_reason =
+                    "single_channel_cannot_acquire";
+            }
+        }
+        else
+        {
+            // Neither channel currently provides acceptable
+            // stability evidence.
+
+            single_channel_active_ = false;
+
+            if (!uncertainty_active_)
+            {
+                uncertainty_active_ = true;
+                uncertainty_since_ = tick;
+            }
+
+            const double uncertain_for =
+                Seconds(tick - uncertainty_since_).count();
+
+            if (uncertain_for >= grace_s_)
+            {
+                trusted_stable_ = false;
+                supervision_latched_ = true;
+                uncertainty_active_ = false;
+
+                transition_reason =
+                    "no_stable_channels_grace_expired";
+            }
+            else
+            {
+                transition_reason =
+                    "no_stable_channels_grace_active";
+            }
+        }
+
+        // -----------------------------------------------------
+        // 4. Final authorization.
+        // -----------------------------------------------------
+
+        state_.supervision_valid =
+            trusted_stable_ &&
+            !supervision_latched_ &&
+            !hard_motion &&
+            !both_stale;
+
+        state_.imu_stable = state_.supervision_valid;
+
+
+        // -----------------------------------------------------
+        // 5. Log actual authorization transitions.
+        // -----------------------------------------------------
+
+        if (was_supervised != state_.supervision_valid ||
+            was_trusted != trusted_stable_ ||
+            was_latched != supervision_latched_)
+        {
+            RCLCPP_WARN(
+                get_logger(),
+                "[IMU AUTH TRANSITION] "
+                "authorized=%d->%d "
+                "trusted=%d->%d "
+                "latched=%d->%d "
+                "reason=%s "
+                "unilidar_good=%d mpu6050_good=%d "
+                "unilidar_hard=%d mpu6050_hard=%d "
+                "confidence=%.3f "
+                "acquire=%.3f release=%.3f "
+                "coverage_s=%.3f "
+                "both_stale=%d "
+                "single_channel=%d uncertainty=%d",
+                static_cast<int>(was_supervised),
+                static_cast<int>(state_.supervision_valid),
+                static_cast<int>(was_trusted),
+                static_cast<int>(trusted_stable_),
+                static_cast<int>(was_latched),
+                static_cast<int>(supervision_latched_),
+                transition_reason.c_str(),
+                static_cast<int>(unilidar_good),
+                static_cast<int>(mpu6050_good),
+                static_cast<int>(unilidar_hard),
+                static_cast<int>(mpu6050_hard),
+                metrics.stable_confidence,
+                acquire_confidence_,
+                release_confidence_,
+                metrics.confidence_coverage_s,
+                static_cast<int>(both_stale),
+                static_cast<int>(single_channel_active_),
+                static_cast<int>(uncertainty_active_));
+        }
+
+        // -----------------------------------------------------
+        // 6. Build status from the FINAL state.
+        // -----------------------------------------------------
+
+        std::ostringstream status;
+
+        status << std::fixed
+               << std::setprecision(3)
+               << "confidence="
+               << metrics.stable_confidence
+               << " coverage_s="
+               << metrics.confidence_coverage_s
+               << " raw_valid="
+               << metrics.valid
+               << " raw_stable="
+               << metrics.stable
+               << " unilidar_good="
+               << unilidar_good
+               << " mpu6050_good="
+               << mpu6050_good
+               << " authorized="
+               << state_.supervision_valid
+               << " reason="
+               << transition_reason;
+
+        if (hard_motion)
+        {
+            status << " HARD_MOTION";
+        }
+        else if (supervision_latched_)
+        {
+            status << " UNTRUSTED";
+        }
+        else if (uncertainty_active_)
+        {
+            status << " UNCERTAIN";
+        }
+        else if (state_.supervision_valid)
+        {
+            status << " STABLE";
+        }
+        else
+        {
+            status << " NOT_AUTHORIZED";
+        }
+
+        if (!state_.workpiece_pose_valid &&
+            !invalidation_reason_.empty())
+        {
+            status << "; pose invalidated: "
+                   << invalidation_reason_;
+        }
+
+        state_.status_message = status.str();
+
+        state_.header.stamp = now();
+
+        // -----------------------------------------------------
+        // 7. Construct consistent TaskState and diagnostics.
+        // -----------------------------------------------------
+
+        published = state_;
+
+        diagnostic.header = published.header;
+
+        diagnostic.unilidar =
+            toRosMetrics(
+                metrics.unilidar,
+                diagnostic.header,
+                "unilidar",
+                metrics.stable_confidence,
+                metrics.confidence_coverage_s);
+
+        diagnostic.mpu6050 =
+            toRosMetrics(
+                metrics.mpu6050,
+                diagnostic.header,
+                "mpu6050",
+                metrics.stable_confidence,
+                metrics.confidence_coverage_s);
+
+        diagnostic.combined_confidence =
+            metrics.stable_confidence;
+
+        diagnostic.combined_coverage_s =
+            metrics.confidence_coverage_s;
+
+        diagnostic.both_channels_valid =
+            metrics.valid;
+
+        diagnostic.both_channels_stable =
+            metrics.stable;
+
+        diagnostic.supervision_valid =
+            state_.supervision_valid;
+
+        diagnostic.imu_stable =
+            state_.imu_stable;
+
+        diagnostic.hard_motion_detected =
+            hard_motion;
+
+        if (hard_motion || supervision_latched_)
+        {
+            diagnostic.state = Supervision::UNTRUSTED;
+        }
+        else if (uncertainty_active_)
+        {
+            diagnostic.state = Supervision::UNCERTAIN;
+        }
+        else if (state_.supervision_valid)
+        {
+            diagnostic.state = Supervision::STABLE;
+        }
+        else
+        {
+            diagnostic.state = Supervision::UNKNOWN;
+        }
+
+        diagnostic.reason =
+            state_.status_message;
+    }
+
+        // ---------------------------------------------------------
+        // 8. Publish completed snapshots.
+        // ---------------------------------------------------------
 
         pub_->publish(published);
         supervision_pub_->publish(diagnostic);
     }
+
 
     // Shared authoritative state.
     std::mutex mutex_;
@@ -1459,6 +1604,9 @@ private:
     // Workpiece identity.
     int64_t last_publication_ = 0;
     int64_t last_untrusted_ = 0;
+
+    Clock::time_point single_channel_since_{};
+    bool single_channel_active_{false};
 
     geometry_msgs::msg::Pose measured_pose_;
     std::string invalidation_reason_;

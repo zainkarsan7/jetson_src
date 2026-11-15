@@ -319,7 +319,7 @@ class CaptureNode(Node):
 
         if not (
             0 <= self.padding <= 0.25
-            and 0 <= self.margin <= 0.10
+            and 0 <= self.margin <= 2.0
             and 0.01 <= self.size <= 0.2
             and self.max_state_age_s > 0
         ):

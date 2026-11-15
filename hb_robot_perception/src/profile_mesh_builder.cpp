@@ -66,7 +66,7 @@ namespace hb_perception{
             std::vector<SurfaceMesh::Vertex_index> boundary;
             boundary.reserve(polygon.size());
             for(auto it = polygon.vertices_begin(); it!=polygon.vertices_end(); ++it){
-                boundary.push_back(section.add_vertex(Point3(it->x(),it->y(),z_min)));
+                boundary.push_back(section.add_vertex(Point3(it->x(),it->y(),z_min-0.5)));
             }
             if(section.add_face(boundary) == SurfaceMesh::null_face()){
                 std::cout<<"null face couldnt add"<<std::endl;
@@ -76,7 +76,7 @@ namespace hb_perception{
                 return std::nullopt;
             }
             SurfaceMesh solid;
-            PMP::extrude_mesh(section,solid, Kernel::Vector_3(0,0,z_max- z_min));
+            PMP::extrude_mesh(section,solid, Kernel::Vector_3(0,0,(z_max- z_min)+0.5));
             if(!CGAL::is_closed(solid)||!CGAL::is_triangle_mesh(solid)) return std::nullopt;
 
             shape_msgs::msg::Mesh result;

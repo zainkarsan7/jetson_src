@@ -274,6 +274,8 @@ ros2 bag record -s mcap <topic_name>
 
 ros2 bag record -s mcap /hb_robot_lidar/imu k4a/imu mpu6050/imu /platform_supervision /task_state /joint_states /cut_profile/torch_status
 
+ros2 bag record -s mcap /hb_robot_lidar/imu /hb_robot_lidar/cloud /mpu6050/imu /k4a/imu
+ros2 bag record -s mcap /platform_supervision /task_state
 CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build
 
 

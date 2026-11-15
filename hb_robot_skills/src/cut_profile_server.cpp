@@ -118,6 +118,7 @@ namespace hb_robot_skills{
 
         if (!permitted || !versions_match)
         {
+            
             if (!cut_stop_requested_.exchange(true))
             {
                 RCLCPP_ERROR(

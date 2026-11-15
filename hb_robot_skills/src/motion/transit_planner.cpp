@@ -28,13 +28,13 @@ std::optional<MoveGroup::Plan> planTransit(
         int planning_attempts;
     };
 
-    constexpr PlannerChoice fallback[] = {
-        {"ompl", "RRTConnectkConfigDefault", 2.0, 4},
+   constexpr PlannerChoice fallback[] = {
+        {"ompl", "RRTConnectkConfigDefault", 2.0, 1},
         {"ompl", "BiTRRTkConfigDefault",    3.0, 3},
         {"ompl", "APSConfigDefault",        5.0, 1},
-        {"ompl", "LBKPIECEkConfigDefault",  3.0, 3},
-        {"ompl", "LazyPRMkConfigDefault",   3.0, 3},
-        {"ompl", "RRTstarkConfigDefault",   5.0, 3},
+        {"ompl", "LBKPIECEkConfigDefault",  3.0, 2},
+        {"ompl", "LazyPRMkConfigDefault",   3.0, 2},
+        {"ompl", "RRTstarkConfigDefault",   5.0, 2},
     };
 
     // Match CutGraphPlanner::transitCost().
@@ -43,7 +43,7 @@ std::optional<MoveGroup::Plan> planTransit(
 
     // Quality triggers, not hard safety constraints.
     constexpr double good_cost = 75.0;
-    constexpr double good_max_joint =3.0;
+    constexpr double good_max_joint =3.5;
 
 
     const auto score = [&](const Plan& plan)
@@ -205,10 +205,10 @@ std::optional<MoveGroup::Plan> planTransit(
     // 1. Fast, deterministic joint-space motion.
     tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0,1);
     // Successful, good-quality PTP: stop immediately.
-    if (!goodEnough()) {
-        //2. try chomp and if its goode enough return it 
-        tryPlanner("chomp","CHOMP",2.0);
-    }
+    // if (!goodEnough()) {
+    //     //2. try chomp and if its goode enough return it 
+    //     tryPlanner("chomp","CHOMP",2.0);
+    // }
     if (!goodEnough()) {
         for (const auto& choice : fallback) {
             tryPlanner(
@@ -276,12 +276,12 @@ std::optional<MoveGroup::Plan> planTransit(
     };
 
     constexpr PlannerChoice fallback[] = {
-        {"ompl", "RRTConnectkConfigDefault", 2.0, 4},
+        {"ompl", "RRTConnectkConfigDefault", 2.0, 1},
         {"ompl", "BiTRRTkConfigDefault",    3.0, 3},
         {"ompl", "APSConfigDefault",        5.0, 1},
-        {"ompl", "LBKPIECEkConfigDefault",  3.0, 3},
-        {"ompl", "LazyPRMkConfigDefault",   3.0, 3},
-        {"ompl", "RRTstarkConfigDefault",   5.0, 3},
+        {"ompl", "LBKPIECEkConfigDefault",  3.0, 2},
+        {"ompl", "LazyPRMkConfigDefault",   3.0, 2},
+        {"ompl", "RRTstarkConfigDefault",   5.0, 2},
     };
 
     // Match CutGraphPlanner::transitCost().
@@ -290,7 +290,7 @@ std::optional<MoveGroup::Plan> planTransit(
 
     // Quality triggers, not hard safety constraints.
     constexpr double good_cost = 75.0;
-    constexpr double good_max_joint =3.0;
+    constexpr double good_max_joint =3.5;
 
 
     const auto score = [&](const Plan& plan)
@@ -451,10 +451,10 @@ std::optional<MoveGroup::Plan> planTransit(
 
     // 1. Fast, deterministic joint-space motion.
     tryPlanner("pilz_industrial_motion_planner", "PTP", 2.0);
-    if (!goodEnough()) {
-        //2. try chomp and if its goode enough return it 
-        tryPlanner("chomp","CHOMP",2.0);
-    }
+    // if (!goodEnough()) {
+    //     //2. try chomp and if its goode enough return it 
+    //     tryPlanner("chomp","CHOMP",2.0);
+    // }
     // Successful, good-quality PTP: stop immediately.
     if (!goodEnough()) {
 

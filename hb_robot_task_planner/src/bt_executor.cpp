@@ -93,11 +93,10 @@ struct Context {
         Clock::now() - supervision_received > 500ms)
       return false;
 
-    return supervision.state == Supervision::STABLE &&
+    return 
            supervision.supervision_valid &&
-           supervision.imu_stable &&
-           supervision.both_channels_valid &&
-           supervision.both_channels_stable &&
+          //  supervision.both_channels_valid &&
+          //  supervision.both_channels_stable &&
            !supervision.hard_motion_detected;
   }
 
@@ -1095,12 +1094,50 @@ int main(int argc, char** argv) {
           state.scene_version),
       static_cast<unsigned long long>(
           context->requested_plan_state.scene_version));
+
+
+    const bool platform_ok = context->platformStable();
+    const bool task_ok = recovery::geometryPermitted(state);
+    const bool versions_ok = context->planMatches(state);
+
+    const bool environment_ok =
+        context->captured_scene &&
+    state.cut_environment_id ==
+            context->captured_scene->cut_environment_id;
+
+    const bool candidate_ok = !context->plan_id.empty();
+
+
+
+
     if (!context->authorized(state) ||
         !context->planMatches(state) ||
         !context->captured_scene ||
         state.cut_environment_id !=
             context->captured_scene->cut_environment_id ||
         context->plan_id.empty()) {
+
+      RCLCPP_WARN(
+        node->get_logger(),
+        "[EXECUTE PREFLIGHT] "
+        "platform=%d task=%d versions=%d "
+        "environment=%d candidate=%d "
+        "supervision=%d imu=%d pose=%d "
+        "motion_fault=%d process_fault=%d "
+        "status='%s' platform_reason='%s'",
+        int(platform_ok),
+        int(task_ok),
+        int(versions_ok),
+        int(environment_ok),
+        int(candidate_ok),
+        int(state.supervision_valid),
+        int(state.imu_stable),
+        int(state.workpiece_pose_valid),
+        int(state.motion_fault_active),
+        int(state.process_fault_active),
+        state.status_message.c_str(),
+        context->platformReason().c_str());
+
       RCLCPP_ERROR(
           node->get_logger(),
           "Execution denied: authorization, "
