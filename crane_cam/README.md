@@ -19,6 +19,20 @@ Select the external camera's exact name. The default capture request is 1920×10
 
 ## Metric poses
 
+Leave the launch running when using another WSL terminal to view topics or calibrate.
+The launch restricts DDS to localhost. In the second terminal, source ROS, match
+the launch terminal's `ROS_DOMAIN_ID`, and run:
+
+```bash
+export ROS_LOCALHOST_ONLY=1
+ros2 topic list --no-daemon --spin-time 3
+ros2 topic hz /innomaker/image_raw/compressed
+```
+
+Use `record:=true` on the launch command to bag the compressed images,
+camera info, and marker TF in the current directory. Supply the camera's
+calibration YAML and measured marker width for metric poses.
+
 Use a monocular ROS calibration YAML for this lens, focus and capture resolution. To create one, keep the camera launch running and use the ROS `camera_calibration` package from a second sourced WSL terminal. For a checkerboard with **8×6 internal corners** and **25 mm squares**, run:
 
 ```bash

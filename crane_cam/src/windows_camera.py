@@ -9,7 +9,7 @@ import rclpy
 import yaml
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 
 def camera_info(path, width, height):
@@ -64,6 +64,7 @@ class WindowsCamera(Node):
         self.info = camera_info(param("calibration", ""), width, height)
         self.bridge = CvBridge()
         self.images = self.create_publisher(Image, "image_raw", 1)
+        self.compressed = self.create_publisher(CompressedImage, "image_raw/compressed", 5)
         self.infos = self.create_publisher(CameraInfo, "camera_info", 1)
         self.proc = subprocess.Popen([
             "ffmpeg.exe", "-hide_banner", "-loglevel", "error", "-f", "dshow",
@@ -85,6 +86,10 @@ class WindowsCamera(Node):
             msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             msg.header.stamp = stamp
             msg.header.frame_id = self.frame
+            if self.compressed.get_subscription_count():
+                compressed = CompressedImage(header=msg.header, format="bgr8; jpeg compressed bgr8")
+                compressed.data.frombytes(packet)
+                self.compressed.publish(compressed)
             self.info.header = msg.header
             self.infos.publish(self.info)
             self.images.publish(msg)
