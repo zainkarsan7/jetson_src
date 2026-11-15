@@ -924,7 +924,79 @@ namespace hb_robot_skills{
         motion::TransitPlannerOptions options;
         options.velocity_scaling = transit_velocity_scaling_;
         options.acceleration_scaling = transit_acceleration_scaling_;
+        // Enable the new guided PTP planner.
+        options.guided_ptp_enabled = true;
+        options.guide_link = plasma_link_;
 
+        // Use the actual SRDF named home configuration.
+        const auto* jmg =
+            move_group_->getRobotModel()->getJointModelGroup(
+                planning_group_);
+
+        if (!jmg)
+            return std::nullopt;
+
+        
+        options.guided_joint_limits_rad = {
+            1.25,  // shoulder_pan_joint
+            1.25,  // shoulder_lift_joint
+            1.25,  // elbow_joint
+            1.25,  // wrist_1_joint
+            1.25,  // wrist_2_joint
+            1.25   // wrist_3_joint
+        };
+        moveit::core::RobotState home(
+            move_group_->getRobotModel());
+
+        home.setToDefaultValues();
+
+        // Replace "home" if your SRDF uses another name.
+        const auto& state_names = jmg->getDefaultStateNames();
+
+            if (std::find(
+                    state_names.begin(),
+                    state_names.end(),
+                    "inspection_home") == state_names.end())
+            {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[GUIDED PTP] No named 'inspection_home' state");
+
+                return std::nullopt;
+            }
+        home.setToDefaultValues(jmg, "inspection_home");
+
+        home.copyJointGroupPositions(
+            jmg, options.home_joints);
+
+        // Use a consistent snapshot of the planning scene.
+        {
+            planning_scene_monitor::LockedPlanningSceneRO locked(
+                planning_scene_monitor_);
+
+            if (!locked)
+                return std::nullopt;
+
+            planning_scene::PlanningScenePtr snapshot =
+                locked->diff();
+
+            snapshot->decoupleParent();
+
+            options.scene = snapshot;
+        }
+
+        // Initial sampling settings.
+        options.guided_lift_m = 0.20;
+        options.guided_lateral_m = 0.08;
+
+        options.guided_position_tolerance_m = 0.025;
+        options.guided_orientation_tolerance_rad = 0.35;
+
+        options.guided_joint_consistency_rad = 1.0;
+
+        options.guided_max_waypoints = 5;
+        options.guided_max_ik_calls = 50;
+        options.guided_max_ptp_calls = 12;
         return motion::planTransit(
             *move_group_,
             get_logger(),
