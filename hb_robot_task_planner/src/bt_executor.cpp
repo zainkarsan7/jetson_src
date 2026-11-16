@@ -6,7 +6,8 @@
 #include <behaviortree_cpp_v3/loggers/bt_file_logger.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
-
+#include <set>
+#include <hb_robot_interfaces/msg/cut_feature_plan.hpp>
 #include <hb_robot_interfaces/recovery.hpp>
 #include <hb_robot_interfaces/srv/capture_cut_environment.hpp>
 #include <hb_robot_interfaces/action/inspect_profile.hpp>
@@ -59,6 +60,32 @@ struct Context {
 
   std::string cut_id;
   std::string plan_id;
+
+  struct FeaturePlanEntry {
+      std::string feature_id;
+      std::string plan_id;
+
+      enum class Status {
+          Ready,
+          Unplannable,
+          Selected,
+          Completed,
+          Interrupted
+      };
+
+      Status status = Status::Unplannable;
+      std::string message;
+  };
+
+  std::string batch_id;
+  std::vector<FeaturePlanEntry> feature_plans;
+  bool independent_batch = false;
+  bool batch_interrupted = false;
+
+
+
+
+
   std::string parent_id;
   std::string inspection_reference_id;
 
@@ -115,15 +142,33 @@ struct Context {
            recovery::geometryPermitted(s);
   }
 
+  
+
+
   bool planMatches(const recovery::State& s) const {
     return recovery::sameVersions(s, requested_plan_state);
   }
 
+  // void discardCandidate() {
+  //   plan_id.clear();
+  //   captured_scene.reset();
+  //   preparing_candidate = false;
+  // }
   void discardCandidate() {
     plan_id.clear();
+    batch_id.clear();
+    feature_plans.clear();
+    independent_batch = false;
+    batch_interrupted = false;
     captured_scene.reset();
     preparing_candidate = false;
-  }
+}
+
+void clearSelectedFeature() {
+    plan_id.clear();
+    preparing_candidate = false;
+}
+
 };
 
 // Generic asynchronous ROS action adapter.
@@ -669,6 +714,11 @@ void registerAction(
       });
 }
 
+
+
+
+
+
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
@@ -729,6 +779,10 @@ int main(int argc, char** argv) {
 
   BT::BehaviorTreeFactory factory;
 
+  
+
+
+
   factory.registerBuilder<CaptureEnvironment>(
       "CaptureCutEnvironment",
       [=](const auto& n, const auto& c) {
@@ -754,6 +808,71 @@ int main(int argc, char** argv) {
                   : BT::NodeStatus::FAILURE;
             });
       };
+
+  factory.registerSimpleAction(
+    "SelectNextCutFeature",
+    [=](BT::TreeNode&) {
+        if (!context->independent_batch)
+            return BT::NodeStatus::FAILURE;
+
+        if (context->batch_interrupted ||
+            !context->plan_id.empty())
+            return BT::NodeStatus::FAILURE;
+
+        const auto it = std::find_if(
+            context->feature_plans.begin(),
+            context->feature_plans.end(),
+            [](const auto& feature) {
+                return feature.status ==
+                    Context::FeaturePlanEntry::Status::Ready;
+            });
+
+        if (it == context->feature_plans.end())
+            return BT::NodeStatus::FAILURE;
+
+        context->plan_id = it->plan_id;
+        it->status =
+            Context::FeaturePlanEntry::Status::Selected;
+
+        RCLCPP_INFO(
+            node->get_logger(),
+            "[CUT SELECT] feature=%s plan=%s",
+            it->feature_id.c_str(),
+            it->plan_id.c_str());
+
+        return BT::NodeStatus::SUCCESS;
+    });
+
+  
+  condition("AllCutFeaturesCompleted", [=] {
+    if (!context->independent_batch)
+        return false;
+
+    if (context->feature_plans.empty())
+        return false;
+
+    return std::all_of(
+        context->feature_plans.begin(),
+        context->feature_plans.end(),
+        [](const auto& feature) {
+            return feature.status ==
+                Context::FeaturePlanEntry::Status::Completed;
+        });
+  });
+
+
+
+  condition("PendingCutFeatures", [=] {
+    return context->independent_batch &&
+        !context->batch_interrupted &&
+        std::any_of(
+            context->feature_plans.begin(),
+            context->feature_plans.end(),
+            [](const auto& feature) {
+                return feature.status ==
+                    Context::FeaturePlanEntry::Status::Ready;
+            });
+  });
 
   condition("ReferenceExists", [=] {
     std::lock_guard<std::mutex> lock(context->mutex);
@@ -792,8 +911,20 @@ int main(int argc, char** argv) {
         state.cut_environment_id ==
             context->captured_scene->cut_environment_id;
 
+    // const bool candidate_ok =
+    //     !context->plan_id.empty();
     const bool candidate_ok =
-        !context->plan_id.empty();
+    !context->plan_id.empty() ||
+    (context->independent_batch &&
+     !context->batch_id.empty() &&
+     !context->batch_interrupted &&
+     std::any_of(
+         context->feature_plans.begin(),
+         context->feature_plans.end(),
+         [](const auto& feature) {
+             return feature.status ==
+                 Context::FeaturePlanEntry::Status::Ready;
+         }));
 
     if (platform_ok && task_ok &&
         versions_ok && environment_ok &&
@@ -938,7 +1069,12 @@ int main(int argc, char** argv) {
 
   auto planGoal = [=](auto& goal, bool recut) {
     const auto state = context->snapshot();
-
+    if (recut && context->independent_batch) {
+        RCLCPP_ERROR(
+            node->get_logger(),
+            "Independent recut lineage is not implemented");
+        return false;
+    }
     if (!state.scene_valid ||
         (recut && !context->authorized(state)))
       return false;
@@ -1010,46 +1146,185 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  auto planResult = [=](const auto& result) {
-    RCLCPP_INFO(
-        node->get_logger(),
-        "PlanCut result: success=%d executed=%d "
-        "interrupted=%d plan_id=%s message=%s",
-        result.success,
-        result.executed,
-        result.interrupted,
-        result.plan_id.c_str(),
-        result.message.c_str());
+  // auto planResult = [=](const auto& result) {
+  //   RCLCPP_INFO(
+  //       node->get_logger(),
+  //       "PlanCut result: success=%d executed=%d "
+  //       "interrupted=%d plan_id=%s message=%s",
+  //       result.success,
+  //       result.executed,
+  //       result.interrupted,
+  //       result.plan_id.c_str(),
+  //       result.message.c_str());
 
-    if (!result.success ||
-        result.plan_id.empty() ||
-        result.executed)
-      return false;
+  //   if (!result.success ||
+  //       result.plan_id.empty() ||
+  //       result.executed)
+  //     return false;
 
-    context->plan_id = result.plan_id;
+  //   context->plan_id = result.plan_id;
 
-    if (context->parent_id.empty()) {
-      context->parent_id = result.plan_id;
-      context->required_segments =
-          result.required_segments;
-    }
+  //   if (context->parent_id.empty()) {
+  //     context->parent_id = result.plan_id;
+  //     context->required_segments =
+  //         result.required_segments;
+  //   }
 
-    const auto current = context->snapshot();
+  //   const auto current = context->snapshot();
 
-    if (!recovery::sameVersions(
-            current, context->requested_plan_state)) {
-      RCLCPP_WARN(
-          node->get_logger(),
-          "Candidate stored but versions changed "
-          "during planning: scene=%llu expected=%llu",
-          static_cast<unsigned long long>(
-              current.scene_version),
-          static_cast<unsigned long long>(
-              context->requested_plan_state.scene_version));
-    }
+  //   if (!recovery::sameVersions(
+  //           current, context->requested_plan_state)) {
+  //     RCLCPP_WARN(
+  //         node->get_logger(),
+  //         "Candidate stored but versions changed "
+  //         "during planning: scene=%llu expected=%llu",
+  //         static_cast<unsigned long long>(
+  //             current.scene_version),
+  //         static_cast<unsigned long long>(
+  //             context->requested_plan_state.scene_version));
+  //   }
 
-    return true;
-  };
+  //   return true;
+  // };
+
+
+   auto planResult = [=](const auto& result) {
+        RCLCPP_INFO(
+            node->get_logger(),
+            "PlanCut result: success=%d batch=%s "
+            "plan=%s features=%zu message=%s",
+            result.success,
+            result.batch_id.c_str(),
+            result.plan_id.c_str(),
+            result.feature_plans.size(),
+            result.message.c_str());
+
+        if (!result.success || result.executed)
+            return false;
+
+        context->plan_id.clear();
+        context->batch_id.clear();
+        context->feature_plans.clear();
+        context->independent_batch = false;
+        context->batch_interrupted = false;
+
+        if (!result.feature_plans.empty()) {
+            if (result.batch_id.empty() ||
+                !result.plan_id.empty() ||
+                result.required_segments.empty()) {
+                return false;
+            }
+
+            std::set<std::string> required(
+                result.required_segments.begin(),
+                result.required_segments.end());
+
+            if (required.size() != result.required_segments.size() ||
+                required.count("")) {
+                return false;
+            }
+
+            std::set<std::string> seen;
+            std::set<std::string> plan_ids;
+            std::size_t ready = 0;
+
+            for (const auto& feature : result.feature_plans) {
+                if (!required.count(feature.feature_id) ||
+                    !seen.insert(feature.feature_id).second) {
+                    return false;
+                }
+
+                Context::FeaturePlanEntry entry;
+                entry.feature_id = feature.feature_id;
+                entry.plan_id = feature.plan_id;
+                entry.message = feature.message;
+
+                if (feature.status ==
+                        hb_robot_interfaces::msg::
+                            CutFeaturePlan::READY) {
+
+                    if (entry.plan_id.empty() ||
+                        !plan_ids.insert(entry.plan_id).second) {
+                        return false;
+                    }
+
+                    entry.status =
+                        Context::FeaturePlanEntry::Status::Ready;
+                    ++ready;
+                } else if (feature.status ==
+                        hb_robot_interfaces::msg::
+                            CutFeaturePlan::UNPLANNABLE) {
+
+                    if (!entry.plan_id.empty())
+                        return false;
+
+                    entry.status =
+                        Context::FeaturePlanEntry::Status::Unplannable;
+                } else {
+                    return false;
+                }
+
+                context->feature_plans.push_back(
+                    std::move(entry));
+            }
+
+            if (seen != required || ready == 0)
+                return false;
+
+            context->independent_batch = true;
+            context->batch_id = result.batch_id;
+            context->required_segments = result.required_segments;
+
+            // // A recut batch needs an original stored plan as parent.
+            // // Do not substitute the batch ID.
+            // if (context->parent_id.empty()) {
+            //     const auto first = std::find_if(
+            //         context->feature_plans.begin(),
+            //         context->feature_plans.end(),
+            //         [](const auto& feature) {
+            //             return feature.status ==
+            //                 Context::FeaturePlanEntry::Status::Ready;
+            //         });
+
+            //     context->parent_id = first->plan_id;
+            // }
+
+            RCLCPP_INFO(
+                node->get_logger(),
+                "[CUT BATCH] %s: %zu/%zu ready",
+                context->batch_id.c_str(),
+                ready,
+                context->feature_plans.size());
+
+        } else {
+            if (result.plan_id.empty())
+                return false;
+
+            context->plan_id = result.plan_id;
+
+            if (context->parent_id.empty()) {
+                context->parent_id = result.plan_id;
+                context->required_segments =
+                    result.required_segments;
+            }
+        }
+
+        const auto current = context->snapshot();
+
+        if (!recovery::sameVersions(
+                current, context->requested_plan_state)) {
+            RCLCPP_WARN(
+                node->get_logger(),
+                "Stored plans require revalidation: "
+                "scene=%llu expected=%llu",
+                static_cast<unsigned long long>(
+                    current.scene_version),
+                static_cast<unsigned long long>(
+                    context->requested_plan_state.scene_version));
+        }
+
+        return true;
+    };
 
   registerAction<Cut>(
       factory, "PlanCut", node, "cut_profile",
@@ -1067,16 +1342,40 @@ int main(int argc, char** argv) {
 
   // Condition for XML to determine whether the
   // stored candidate remains usable.
+  // condition("CandidateVersionsMatch", [=] {
+  //   const auto state = context->snapshot();
+
+  //   return !context->plan_id.empty() &&
+  //          recovery::sameVersions(
+  //              state, context->requested_plan_state);
+  // });
   condition("CandidateVersionsMatch", [=] {
     const auto state = context->snapshot();
 
-    return !context->plan_id.empty() &&
+    const bool candidate_available =
+        !context->plan_id.empty() ||
+        (context->independent_batch &&
+         !context->batch_id.empty() &&
+         !context->batch_interrupted &&
+         std::any_of(
+             context->feature_plans.begin(),
+             context->feature_plans.end(),
+             [](const auto& feature) {
+                 return feature.status ==
+                     Context::FeaturePlanEntry::Status::Ready;
+             }));
+
+    return candidate_available &&
            recovery::sameVersions(
                state, context->requested_plan_state);
   });
 
 
   auto executeGoal = [=](auto& goal) {
+
+    
+
+
     context->preparing_candidate = false;  
 
     const auto state = context->snapshot();
@@ -1106,16 +1405,22 @@ int main(int argc, char** argv) {
             context->captured_scene->cut_environment_id;
 
     const bool candidate_ok = !context->plan_id.empty();
+    
 
-
-
-
-    if (!context->authorized(state) ||
-        !context->planMatches(state) ||
-        !context->captured_scene ||
-        state.cut_environment_id !=
-            context->captured_scene->cut_environment_id ||
-        context->plan_id.empty()) {
+    // if (!context->authorized(state) ||
+    //     !context->planMatches(state) ||
+    //     !context->captured_scene ||
+    //     state.cut_environment_id !=
+    //         context->captured_scene->cut_environment_id ||
+    //     context->plan_id.empty())
+    
+    
+    if (!platform_ok ||
+        !task_ok ||
+        !versions_ok ||
+        !environment_ok ||
+        !candidate_ok) 
+    {
 
       RCLCPP_WARN(
         node->get_logger(),
@@ -1145,6 +1450,26 @@ int main(int argc, char** argv) {
       return false;
     }
 
+    if (context->independent_batch) {
+    const auto selected = std::find_if(
+        context->feature_plans.begin(),
+        context->feature_plans.end(),
+        [&](const auto& feature) {
+            return feature.plan_id == context->plan_id &&
+                   feature.status ==
+                       Context::FeaturePlanEntry::Status::Selected;
+        });
+
+    if (selected == context->feature_plans.end() ||
+        context->batch_interrupted) {
+        RCLCPP_ERROR(
+            node->get_logger(),
+            "Independent cut execution denied: "
+            "no valid selected feature or batch interrupted");
+        return false;
+    }
+}
+
     goal.standoff = standoff;
     goal.pos_tol = pos_tol;
     goal.ang_tol = ang_tol;
@@ -1156,16 +1481,73 @@ int main(int argc, char** argv) {
     return true;
   };
 
+  // auto executeResult = [=](const auto& result) {
+  //   context->execution_version =
+  //       result.execution_version;
+  //   context->executed = result.executed;
+  //   context->plan_id.clear();
+
+  //   return result.success &&
+  //          result.executed &&
+  //          !result.interrupted;
+  // };
   auto executeResult = [=](const auto& result) {
     context->execution_version =
         result.execution_version;
-    context->executed = result.executed;
+
+    context->executed =
+        context->executed || result.executed;
+
+    if (context->independent_batch) {
+        const auto it = std::find_if(
+            context->feature_plans.begin(),
+            context->feature_plans.end(),
+            [&](const auto& feature) {
+                return feature.plan_id ==
+                    context->plan_id &&
+                    feature.status ==
+                        Context::FeaturePlanEntry::Status::Selected;
+            });
+
+        if (it == context->feature_plans.end()) {
+            context->batch_interrupted = true;
+            context->clearSelectedFeature();
+            // context->plan_id.clear();
+            return false;
+        }
+
+        const bool completed =
+            result.success &&
+            result.executed &&
+            !result.interrupted &&
+            result.completed_segments == 1;
+
+        it->status = completed
+            ? Context::FeaturePlanEntry::Status::Completed
+            : Context::FeaturePlanEntry::Status::Interrupted;
+
+        if (!completed)
+            context->batch_interrupted = true;
+
+        RCLCPP_INFO(
+            node->get_logger(),
+            "[CUT FEATURE] %s: %s",
+            it->feature_id.c_str(),
+            completed ? "COMPLETED" : "INTERRUPTED");
+
+        // context->plan_id.clear();
+        context->clearSelectedFeature();
+        return completed;
+    }
+
     context->plan_id.clear();
 
     return result.success &&
            result.executed &&
            !result.interrupted;
   };
+
+
 
   registerAction<Cut>(
       factory, "ExecuteCut", node, "cut_profile",

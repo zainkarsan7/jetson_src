@@ -25,6 +25,10 @@ bool interrupted
 uint32 completed_segments
 string active_segment
 uint64 execution_version
+# Populated by independent planning mode.
+# Empty in monolithic mode and individual execution results.
+string batch_id
+CutFeaturePlan[] feature_plans
 ---
 #Feedback
 string stage

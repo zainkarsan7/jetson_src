@@ -175,8 +175,29 @@ void CutProfileServer::executeStored(
   stage = "robot_start";
   auto actual = move_group_->getCurrentState(2.0);
   if(!actual) { finish("getCurrentState(2.0) returned null"); return; }
-  if(stored.executable.cuts.empty()) { finish("stored executable has zero cuts"); return; }
+  if(stored.executable.cuts.empty()) {
+     finish("stored executable has zero cuts"); 
+     return; 
+    }
+    
+
+
   const auto& start = stored.executable.cuts.front().transit_in.trajectory_.joint_trajectory;
+  
+  if (cut_planning_mode_ == CutPlanningMode::Independent) {
+    if (stored.executable.cuts.size() != 1 ||
+        !stored.executable.cuts.front().transit_out) {
+        finish(
+            "Independent stored plan must contain exactly "
+            "one complete home-to-home cut");
+        return;
+    }
+}
+  
+  
+  
+  
+  
   if(start.joint_names.empty()) { finish("first transit has no joint names"); return; }
   if(start.points.empty()) { finish("first transit has no waypoints"); return; }
   if(start.points.front().positions.size() != start.joint_names.size()) {

@@ -47,7 +47,10 @@ namespace hb_robot_skills{
 
             explicit CutProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
             void initialize();
-            
+            enum class CutPlanningMode {
+                Monolithic,
+                Independent
+            };
 
             enum class MotionOutcome{
                             SUCCESS,
@@ -209,6 +212,12 @@ namespace hb_robot_skills{
         bool motion_approved_{false};
 
         bool motion_rejected_{false};
+
+        
+        CutPlanningMode cut_planning_mode_ =
+        CutPlanningMode::Monolithic;
+
+        uint64_t next_batch_ = 0;
 
 
         void releaseGoalAdmission();

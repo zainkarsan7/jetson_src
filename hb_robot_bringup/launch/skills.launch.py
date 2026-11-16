@@ -69,10 +69,13 @@ def generate_launch_description():
         # moveit_config.robot_description_kinematics,
         parameters = [moveit_config.to_dict(),{
         "skip_cutting_motion": False,
-        "enable_cutting_process": True,
+        "enable_cutting_process": False,
         "require_plan_approval": True,
         "transit.velocity_scaling": 0.1,
         "transit.acceleration_scaling": 0.01,
+        "cut_planning.mode": ParameterValue(
+    LaunchConfiguration("cut_planning_mode"),
+    value_type=str),
         "cut_transit.return_home_between_cuts": ParameterValue(LaunchConfiguration("return_home_between_cuts"), value_type=bool),
         "cut_transit.return_home_after_last_cut": ParameterValue(LaunchConfiguration("return_home_after_last_cut"), value_type=bool),
         "cut_geometry.max_pose_samples": 64,
@@ -101,6 +104,10 @@ def generate_launch_description():
         ,
     )
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "cut_planning_mode",
+            default_value="monolithic",
+            description="Cut planning mode: monolithic or independent."),
         DeclareLaunchArgument("return_home_between_cuts", default_value="false",
             description="Force home between cuts; false compares direct and home routes by planned travel cost."),
         DeclareLaunchArgument("return_home_after_last_cut", default_value="true",

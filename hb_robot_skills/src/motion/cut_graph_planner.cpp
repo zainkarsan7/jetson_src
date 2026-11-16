@@ -80,6 +80,133 @@ namespace hb_robot_skills::motion{
 //     return total + 2.0 * maximum;
 // }
 
+        CutGraphPlanner::IndependentPlanningResult
+        CutGraphPlanner::planIndependent(
+            const CutPlan& cut_plan,
+            const std::vector<std::vector<ProcessCandidate>>&
+                candidates_by_segment,
+            const moveit::core::RobotState& home_state,
+            const std::string& batch_id,
+            const std::string& estimate_id)
+        {
+
+            statistics_ = {};
+
+            if (!options_.return_home_after_last_cut) {
+                throw std::logic_error(
+                    "Independent planning requires "
+                    "return_home_after_last_cut=true");
+            }
+
+            IndependentPlanningResult result;
+
+            const auto accumulate = [&](const Statistics& s) {
+                result.statistics.candidates_tested +=
+                    s.candidates_tested;
+
+                result.statistics.process_failures +=
+                    s.process_failures;
+
+                result.statistics.transit_in_failures +=
+                    s.transit_in_failures;
+
+                result.statistics.transit_out_failures +=
+                    s.transit_out_failures;
+
+                result.statistics.accepted_candidates +=
+                    s.accepted_candidates;
+            };
+
+            
+            
+            
+            const auto count = cut_plan.segments.size();
+
+            if (count == 0 ||
+                candidates_by_segment.size() != count) {
+                throw std::invalid_argument(
+        "CutGraphPlanner::planIndependent: segment count=" +
+        std::to_string(count) +
+        ", candidate vector count=" +
+        std::to_string(candidates_by_segment.size()));
+            }
+
+            result.features.reserve(count);
+
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& segment = cut_plan.segments[i];
+
+                IndependentFeatureResult feature;
+                feature.feature_id = segment.name;
+
+                if (candidates_by_segment[i].empty()) {
+                    feature.failure_reason =
+                        "No process candidates";
+                    result.features.push_back(std::move(feature));
+                    continue;
+                }
+
+                CutPlan single_plan;
+                single_plan.profile_name = cut_plan.profile_name;
+                single_plan.segments.push_back(segment);
+
+                std::vector<std::vector<ProcessCandidate>>
+                    single_candidates;
+
+                single_candidates.push_back(
+                    candidates_by_segment[i]);
+
+                const auto planned = plan(
+                    single_plan,
+                    single_candidates,
+                    home_state,
+                    batch_id + "/" + segment.name,
+                    estimate_id);
+
+                accumulate(statistics_);
+
+                if (!planned || planned->cuts.size() != 1) {
+                    feature.failure_reason =
+                        "No complete home-to-home route";
+
+                    result.features.push_back(std::move(feature));
+                    continue;
+                }
+
+                const auto& cut = planned->cuts.front();
+
+                if (!cut.transit_out) {
+                    feature.failure_reason =
+                        "Missing mandatory return-home transit";
+
+                    result.features.push_back(std::move(feature));
+                    continue;
+                }
+
+                const auto transit_start =
+                    firstState(cut.transit_in);
+
+                const auto return_end =
+                    lastState(*cut.transit_out);
+
+                if (!transit_start ||
+                    !return_end ||
+                    !statesMatch(*transit_start, home_state) ||
+                    !statesMatch(*return_end, home_state)) {
+                    feature.failure_reason =
+                        "Home-state boundary mismatch";
+
+                    result.features.push_back(std::move(feature));
+                    continue;
+                }
+
+                feature.executable = cut;
+                result.features.push_back(std::move(feature));
+            }
+            statistics_ = result.statistics;
+
+            return result;
+        }
 
         CutGraphPlanner::JointMotionMetrics
 CutGraphPlanner::jointMotionMetrics(const Plan& plan) const

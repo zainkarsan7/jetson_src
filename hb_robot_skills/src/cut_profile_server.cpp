@@ -266,6 +266,32 @@ namespace hb_robot_skills{
         move_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(shared_from_this(),planning_group_);
         move_group_->setPlanningTime(planning_time_);
         
+
+        if (!has_parameter("cut_planning.mode")) {
+            declare_parameter<std::string>(
+                "cut_planning.mode", "monolithic");
+        }
+
+        const auto mode =
+            get_parameter("cut_planning.mode").as_string();
+
+        if (mode == "monolithic") {
+            cut_planning_mode_ = CutPlanningMode::Monolithic;
+        } else if (mode == "independent") {
+            cut_planning_mode_ = CutPlanningMode::Independent;
+        } else {
+            throw std::invalid_argument(
+                "cut_planning.mode must be 'monolithic' or 'independent'");
+        }
+
+        RCLCPP_INFO(
+            get_logger(),
+            "Cut planning mode: %s",
+            mode.c_str());
+
+
+
+
         planning_scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(shared_from_this(),"robot_description");
         if(!planning_scene_monitor_->getPlanningScene()){
             throw std::runtime_error("failed to create planning scene");
@@ -298,6 +324,9 @@ namespace hb_robot_skills{
                 "synchoronized epsm with move group");
         const auto robot_model =
                 move_group_->getRobotModel();
+
+        
+
         
         const auto count_parameter = [this](const std::string& name, int64_t fallback, bool allow_zero = false) {
             if (!has_parameter(name)) declare_parameter<int64_t>(name, fallback);
@@ -458,6 +487,8 @@ namespace hb_robot_skills{
             goal->plan_id.c_str(),
             goal->cut_id.c_str());
 
+        
+
         const bool escape_busy = escape_busy_.load();
         const bool cut_id_empty = goal->cut_id.empty();
 
@@ -545,6 +576,18 @@ namespace hb_robot_skills{
             RCLCPP_INFO(
                 get_logger(),
                 "[CUT GOAL] PASS: basic validation");
+
+                if (cut_planning_mode_ == CutPlanningMode::Independent &&
+                goal->execute &&
+                goal->plan_id.empty()) {
+
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[CUT GOAL] REJECT: Independent mode requires a stored plan_id "
+                    "for execution; batch planning cannot execute directly");
+
+                return rclcpp_action::GoalResponse::REJECT;
+        }
 
             // --------------------------------------------------
             // Gate 2: interval validation
@@ -1559,6 +1602,40 @@ namespace hb_robot_skills{
             arbitrary_start_state =
                 *current_state;
 
+
+
+        // Independent plans must use the actual SRDF home,
+        // never the current robot configuration.
+        moveit::core::RobotState inspection_home(
+            move_group_->getRobotModel());
+
+        inspection_home.setToDefaultValues();
+
+        const auto* home_jmg =
+            move_group_->getRobotModel()->getJointModelGroup(
+                planning_group_);
+
+        if (!home_jmg) {
+            fail(0, "Unknown planning group for inspection_home");
+            return;
+        }
+
+        const auto& home_names =
+            home_jmg->getDefaultStateNames();
+
+        if (std::find(
+                home_names.begin(),
+                home_names.end(),
+                "inspection_home") == home_names.end()) {
+            fail(0, "SRDF inspection_home state is missing");
+            return;
+        }
+
+        inspection_home.setToDefaultValues(
+            home_jmg, "inspection_home");
+
+        inspection_home.update();
+
         // ----------------------------------------------------
         // 4. Obtain the authoritative MoveIt workpiece.
         // ----------------------------------------------------
@@ -1893,15 +1970,22 @@ namespace hb_robot_skills{
 
         std::vector<std::vector<motion::ProcessCandidate>> candidates_by_segment;
         candidates_by_segment.reserve(plan.segments.size());
-
+        const auto& candidate_reference =
+            cut_planning_mode_ == CutPlanningMode::Independent
+                ? inspection_home
+                : arbitrary_start_state;
         for (const auto& segment : plan.segments)
             {
 
                 RCLCPP_INFO(get_logger(), "Segment: %s generating candidates", segment.name.c_str());
 
+
+
+
+
                 auto generated = process_generator_->generate(
                     segment,
-                    arbitrary_start_state,
+                    candidate_reference,
                     scene_snapshot
                 );
 
@@ -1931,149 +2015,246 @@ namespace hb_robot_skills{
                        for(size_t j=0;j<positions.size();++j)
                          seeded.start_state->setVariablePosition(trajectory.joint_names[j],positions[j]);
                        seeded.start_state->update();
-                       auto warm=process_generator_->generate(seeded,arbitrary_start_state,scene_snapshot);
+                       auto warm=process_generator_->generate(seeded,candidate_reference,scene_snapshot);
                        generated.candidates.insert(generated.candidates.end(),
                          std::make_move_iterator(warm.candidates.begin()),std::make_move_iterator(warm.candidates.end()));
                      }
                    }
                  }
                }
-               if(generated.candidates.empty()){
-                fail(0,"no process candidates generated");
-                return;
-               }
-               candidates_by_segment.push_back(std::move(generated.candidates));
+
+
+               if (generated.candidates.empty() &&
+                    cut_planning_mode_ ==
+                        CutPlanningMode::Monolithic) {
+                    fail(0, "no process candidates generated");
+                    return;
+                }
+
+                candidates_by_segment.push_back(
+                    std::move(generated.candidates));
 
             }
         RCLCPP_INFO(get_logger(), "starting cut graph planner");
 
+        
 
-        auto executable_opt = cut_graph_planner_->plan(
-           plan,
-           candidates_by_segment,
-           arbitrary_start_state,
-           "cut_plan_001" ,
-           estimate.profile_name
-        );
+            const bool independent =
+                cut_planning_mode_ == CutPlanningMode::Independent;
 
-        RCLCPP_INFO(get_logger(), "returned  cut graph planner");
-        if(!executable_opt){
-            fail(0,"could not connect cutting operations");
+            const std::string batch_id =
+                independent
+                    ? "cut_batch_" + std::to_string(++next_batch_)
+                    : "";
+
+            std::vector<motion::ExecutablePlan> ready_plans;
+
+            if (independent) {
+                const auto batch = cut_graph_planner_->planIndependent(
+                    plan,
+                    candidates_by_segment,
+                    inspection_home,
+                    batch_id,
+                    estimate.profile_name);
+
+                result->batch_id = batch_id;
+
+                for (const auto& feature : batch.features) {
+                    hb_robot_interfaces::msg::CutFeaturePlan status;
+
+                    status.feature_id = feature.feature_id;
+
+                    if (!feature.executable) {
+                        status.status =
+                            hb_robot_interfaces::msg::CutFeaturePlan::UNPLANNABLE;
+
+                        status.message = feature.failure_reason;
+
+                        RCLCPP_WARN(
+                            get_logger(),
+                            "[CUT BATCH] feature=%s unplannable: %s",
+                            feature.feature_id.c_str(),
+                            feature.failure_reason.c_str());
+                    } else {
+                        status.status =
+                            hb_robot_interfaces::msg::CutFeaturePlan::READY;
+
+                        status.message = "Home-to-home trajectory planned";
+
+                        motion::ExecutablePlan single;
+                        single.plan_id =
+                            batch_id + "/" + feature.feature_id;
+                        single.estimate_id = estimate.profile_name;
+                        single.cuts.push_back(*feature.executable);
+
+                        ready_plans.push_back(std::move(single));
+                    }
+
+                    result->feature_plans.push_back(
+                        std::move(status));
+                }
+            } 
+            else {
+                auto executable = cut_graph_planner_->plan(
+                    plan,
+                    candidates_by_segment,
+                    arbitrary_start_state,
+                    "cut_plan_001",
+                    estimate.profile_name);
+
+                if (!executable) {
+                    fail(0, "could not connect cutting operations");
+                    return;
+                }
+
+                ready_plans.push_back(std::move(*executable));
+            }
+
+            const auto& stats = cut_graph_planner_->statistics();
+
+            RCLCPP_INFO(
+                get_logger(),
+                "graph planning: tested=%zu process_fail=%zu "
+                "transit_in_fail=%zu transit_out_fail=%zu accepted=%zu",
+                stats.candidates_tested,
+                stats.process_failures,
+                stats.transit_in_failures,
+                stats.transit_out_failures,
+                stats.accepted_candidates);
+
+            if (ready_plans.empty()) {
+                result->cut_id = goal->cut_id;
+                result->parent_plan_id = goal->parent_plan_id;
+
+                for (const auto& segment : plan.segments)
+                    result->required_segments.push_back(segment.name);
+
+                fail(0, "No executable feature plans generated");
+                return;
+            }
+
+
+
+
+        ////////////////////////////////////////////////////////////////////    
+        // auto executable_opt = cut_graph_planner_->plan(
+        //    plan,
+        //    candidates_by_segment,
+        //    arbitrary_start_state,
+        //    "cut_plan_001" ,
+        //    estimate.profile_name
+        // );
+
+        // RCLCPP_INFO(get_logger(), "returned  cut graph planner");
+        // if(!executable_opt){
+        //     fail(0,"could not connect cutting operations");
+        //     return;
+        // }
+        // motion::ExecutablePlan executable_plan_ = std::move(*executable_opt);
+        // const auto& stats = cut_graph_planner_->statistics();
+        // RCLCPP_INFO(get_logger(),
+        // "graph planning: tested %zu, process fail %zu, "
+        // "transit_in_fail: %zu, transit_out_fail: %zu, accepted: %zu",
+        // stats.candidates_tested,
+        // stats.process_failures,
+        // stats.transit_in_failures,
+        // stats.transit_out_failures,
+        // stats.accepted_candidates);
+        ////////////////////////////////////////////////////////////////////
+
+            using Plan =
+            moveit::planning_interface::MoveGroupInterface::Plan;
+
+        moveit_msgs::msg::DisplayTrajectory display_msg;
+        display_msg.model_id =
+            move_group_->getRobotModel()->getName();
+
+        auto appendPlan = [&](const Plan& phase,
+                            const std::string& name) -> bool {
+            const auto& jt = phase.trajectory_.joint_trajectory;
+
+            if (jt.joint_names.empty() || jt.points.empty()) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "Empty trajectory: %s",
+                    name.c_str());
+                return false;
+            }
+
+            display_msg.trajectory.push_back(
+                phase.trajectory_);
+
+            return true;
+        };
+
+        const auto& first =
+            ready_plans.front().cuts.front().transit_in;
+
+        display_msg.trajectory_start = first.start_state_;
+
+        if (display_msg.trajectory_start.joint_state.name.empty()) {
+            moveit::core::robotStateToRobotStateMsg(
+                independent
+                    ? inspection_home
+                    : arbitrary_start_state,
+                display_msg.trajectory_start);
+        }
+
+        bool valid = true;
+
+        for (const auto& executable : ready_plans) {
+            for (const auto& cut : executable.cuts) {
+                valid &= appendPlan(
+                    cut.transit_in,
+                    cut.name + "/transit_in");
+
+                valid &= appendPlan(
+                    cut.process.approach,
+                    cut.name + "/approach");
+
+                valid &= appendPlan(
+                    cut.process.cut,
+                    cut.name + "/cut");
+
+                valid &= appendPlan(
+                    cut.process.retract,
+                    cut.name + "/retract");
+
+                if (cut.transit_out) {
+                    valid &= appendPlan(
+                        *cut.transit_out,
+                        cut.name + "/return_home");
+                } else if (independent) {
+                    valid = false;
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Independent cut %s has no return-home trajectory",
+                        cut.name.c_str());
+                }
+            }
+        }
+
+        if (!valid) {
+            fail(0, "Empty or incomplete cutting trajectories");
             return;
         }
-        motion::ExecutablePlan executable_plan_ = std::move(*executable_opt);
-        const auto& stats = cut_graph_planner_->statistics();
-        RCLCPP_INFO(get_logger(),
-        "graph planning: tested %zu, process fail %zu, "
-        "transit_in_fail: %zu, transit_out_fail: %zu, accepted: %zu",
-        stats.candidates_tested,
-        stats.process_failures,
-        stats.transit_in_failures,
-        stats.transit_out_failures,
-        stats.accepted_candidates);
 
+        display_traj_pub_->publish(display_msg);
 
-            // for (const auto& segment : plan.segments)
-            // {
-                
-            //     RCLCPP_INFO(get_logger(), "planning trajectory for %s",segment.name.c_str());
+        RCLCPP_INFO(
+            get_logger(),
+            "Published %zu cutting trajectories",
+            display_msg.trajectory.size());
 
 
 
 
 
 
-            //     auto transit_in_traj = CutProfileServer::planToState(arbitrary_start_state,*segment.approach_state);
-
-
-            //     if(!transit_in_traj){
-            //         RCLCPP_WARN(get_logger(), "Couldnt get to %s approach", segment.name.c_str());
-            //         executable_plan_.cuts.clear();
-            //         break;
-            //     }
 
 
 
-            //     auto actual_appr = getFinalState(*transit_in_traj);
-            //     // lin motion leadin cut retract       
-            //     auto cut_smp = CutProfileServer::planSegmentPilzLinear(segment, actual_appr);
-            //     // return back to arbitrary start
-            //     if(!cut_smp){
-            //         RCLCPP_WARN(get_logger(), "Couldnt plan cuttin %s", segment.name.c_str());
-            //         executable_plan_.cuts.clear();
-            //         break;
-            //     }
-            //     auto actual_retr = getFinalState(cut_smp->retract);
 
-            //     auto transit_out_traj = CutProfileServer::planToState(actual_retr,arbitrary_start_state);
-
-            //     if(!transit_out_traj){
-            //         RCLCPP_WARN(get_logger(), "Couldnt return from %s retract", segment.name.c_str());
-            //         executable_plan_.cuts.clear();
-            //         break;
-            //     }
-
-            //     motion::ExecutableCut ex_cut_;
-            //     ex_cut_.name = segment.name;
-            //     ex_cut_.transit_in = *transit_in_traj;
-            //     ex_cut_.transit_out = *transit_out_traj;
-            //     ex_cut_.process = *cut_smp;
-            //     executable_plan_.cuts.push_back(std::move(ex_cut_));
-
-            // }
-
-            // if(executable_plan_.cuts.size() != plan.segments.size()){
-            //     fail(0,"incomplete exeuctable plan");
-            //     return;
-            // }
-            const auto robot_model = move_group_->getRobotModel();
-
-            using Plan = moveit::planning_interface::MoveGroupInterface::Plan;
-            moveit_msgs::msg::DisplayTrajectory display_msg;
-
-            display_msg.model_id = move_group_->getRobotModel()->getName();
-
-            auto appendPlan = [&](const Plan& plan, const std::string& name)->bool{
-              const auto & jt = plan.trajectory_.joint_trajectory;
-              if(jt.joint_names.empty() || jt.points.empty()){
-                RCLCPP_ERROR(get_logger(), "emtpy trajectory, %s", name.c_str());
-                return false;
-              }
-
-              RCLCPP_INFO(get_logger(),"%s: start joints = %zu, traj joint= %zu, points = %zu",
-            name.c_str(),plan.start_state_.joint_state.name.size(),jt.joint_names.size(),jt.points.size());
-            display_msg.trajectory.push_back(plan.trajectory_);
-            return true;
-            };
-
-            if(executable_plan_.cuts.empty()){
-                fail(0,"no executable cuts");
-                return;
-
-            }
-
-            const auto& first_plan = executable_plan_.cuts.front().transit_in;
-            display_msg.trajectory_start = first_plan.start_state_;
-            if(display_msg.trajectory_start.joint_state.name.empty()){
-                 moveit::core::robotStateToRobotStateMsg(arbitrary_start_state,
-                    display_msg.trajectory_start);
-            }
-            bool valid = true;
-            // auto full_trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model,planning_group_);
-            RCLCPP_INFO(get_logger(), "got %zu executable cuts",executable_plan_.cuts.size());
-           
-            for (const auto& cut: executable_plan_.cuts){
-                valid&= appendPlan(cut.transit_in, cut.name + "/transit_in");
-                valid&= appendPlan(cut.process.approach, cut.name + "/approach");
-                valid&= appendPlan(cut.process.cut, cut.name + "/cut");
-                valid&= appendPlan(cut.process.retract, cut.name + "/retract");
-                if (cut.transit_out) valid &= appendPlan(*cut.transit_out, cut.name + "/return_home");
-            }
-            if(!valid){
-                fail(0,"empty trajectories found");
-                return;
-            }
-            display_traj_pub_->publish(display_msg);
             RCLCPP_INFO(get_logger(), "published %zu cutting traj", display_msg.trajectory.size());
             
         
@@ -2126,39 +2307,154 @@ namespace hb_robot_skills{
                 current_versions.scene_id.c_str());
         }
 
-        const auto id="cut_plan_"+std::to_string(++next_plan_);
-        // Keep original geometry even for a recovery plan, so future interval
-        // coordinates always refer to the initial feature, never to a prior slice.
-        stored_plans_[id]=StoredPlan{executable_plan_,*profile_opt,planning_versions,
-          goal->cut_id,goal->parent_plan_id,goal->intervals,false};
-        for(const auto& segment:plan.segments) result->required_segments.push_back(segment.name);
-        result->plan_id=id;
-        result->cut_id=goal->cut_id;
-        result->parent_plan_id=goal->parent_plan_id;
-        if(goal->execute && !skip_motion_) {
-            executeStored(id,goal_handle);
+        // const auto id="cut_plan_"+std::to_string(++next_plan_);
+        // // Keep original geometry even for a recovery plan, so future interval
+        // // coordinates always refer to the initial feature, never to a prior slice.
+        // stored_plans_[id]=StoredPlan{executable_plan_,*profile_opt,planning_versions,
+        //   goal->cut_id,goal->parent_plan_id,goal->intervals,false};
+        // for(const auto& segment:plan.segments) result->required_segments.push_back(segment.name);
+        // result->plan_id=id;
+        // result->cut_id=goal->cut_id;
+        // result->parent_plan_id=goal->parent_plan_id;
+        // if(goal->execute && !skip_motion_) {
+        //     executeStored(id,goal_handle);
+        //     return;
+        // }
+        // result->success=true;
+       
+        // std::ostringstream summary;
+        // summary << "Candidate stored for geometry=" << planning_versions.geometry_version
+        //         << ", pose=" << planning_versions.pose_version << ", scene=" << planning_versions.scene_version;
+        // if(current) summary << "; execution requires live checks";
+        // else summary << "; execution blocked at preview completion (current geometry="
+        //              << current_versions.geometry_version << ", pose=" << current_versions.pose_version
+        //              << ", scene=" << current_versions.scene_version << ", " << current_versions.status_message << ")";
+        // result->message=summary.str();
+
+        // RCLCPP_INFO(
+        //     get_logger(),
+        //     "[CUT HANDOFF] Planning finished "
+        //     "plan_id='%s'; publishing result",
+        //     result->plan_id.c_str());
+
+        // // Release admission before the BT can observe SUCCESS.
+        // releaseGoalAdmission();
+
+        // goal_handle->succeed(result);
+        // The complete requested feature set remains authoritative,
+// even when only some features were planned successfully.
+        for (const auto& segment : plan.segments) {
+            result->required_segments.push_back(segment.name);
+        }
+
+        result->cut_id = goal->cut_id;
+        result->parent_plan_id = goal->parent_plan_id;
+
+        for (auto& executable : ready_plans) {
+            const std::string id =
+                "cut_plan_" + std::to_string(++next_plan_);
+
+            executable.plan_id = id;
+
+            // Preserve original geometry for recovery interval slicing.
+            StoredPlan stored{
+                std::move(executable),
+                *profile_opt,
+                planning_versions,
+                goal->cut_id,
+                goal->parent_plan_id,
+                goal->intervals,
+                false
+            };
+
+            // If you added StoredPlan::batch_id, assign it here.
+            // stored.batch_id = batch_id;
+
+            const std::string feature_name =
+                independent
+                    ? stored.executable.cuts.front().name
+                    : "";
+
+            stored_plans_.emplace(
+                id, std::move(stored));
+
+            if (independent) {
+                auto status = std::find_if(
+                    result->feature_plans.begin(),
+                    result->feature_plans.end(),
+                    [&](const auto& item) {
+                        return item.feature_id == feature_name &&
+                            item.status ==
+                                hb_robot_interfaces::msg::
+                                    CutFeaturePlan::READY;
+                    });
+
+                if (status == result->feature_plans.end()) {
+                    fail(0, "Internal feature result mismatch");
+                    return;
+                }
+
+                status->plan_id = id;
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[CUT BATCH] feature=%s stored plan=%s",
+                    feature_name.c_str(),
+                    id.c_str());
+            } else {
+                result->plan_id = id;
+            }
+        }
+
+        if (!independent &&
+            goal->execute &&
+            !skip_motion_) {
+            executeStored(result->plan_id, goal_handle);
             return;
         }
-        result->success=true;
-       
+
+        result->success = true;
+
         std::ostringstream summary;
-        summary << "Candidate stored for geometry=" << planning_versions.geometry_version
-                << ", pose=" << planning_versions.pose_version << ", scene=" << planning_versions.scene_version;
-        if(current) summary << "; execution requires live checks";
-        else summary << "; execution blocked at preview completion (current geometry="
-                     << current_versions.geometry_version << ", pose=" << current_versions.pose_version
-                     << ", scene=" << current_versions.scene_version << ", " << current_versions.status_message << ")";
-        result->message=summary.str();
+
+        if (independent) {
+            const auto ready = std::count_if(
+                result->feature_plans.begin(),
+                result->feature_plans.end(),
+                [](const auto& feature) {
+                    return feature.status ==
+                        hb_robot_interfaces::msg::
+                            CutFeaturePlan::READY;
+                });
+
+            summary
+                << "Independent batch " << batch_id
+                << ": " << ready << "/"
+                << result->feature_plans.size()
+                << " features planned";
+
+            if (ready != result->feature_plans.size())
+                summary << "; task remains incomplete";
+        } else {
+            summary << "Candidate stored";
+        }
+
+        summary
+            << "; geometry=" << planning_versions.geometry_version
+            << " pose=" << planning_versions.pose_version
+            << " scene=" << planning_versions.scene_version;
+
+        if (!current)
+            summary << "; execution requires renewed TaskState validation";
+
+        result->message = summary.str();
 
         RCLCPP_INFO(
             get_logger(),
-            "[CUT HANDOFF] Planning finished "
-            "plan_id='%s'; publishing result",
-            result->plan_id.c_str());
+            "[CUT HANDOFF] %s",
+            result->message.c_str());
 
-        // Release admission before the BT can observe SUCCESS.
         releaseGoalAdmission();
-
         goal_handle->succeed(result);
     }
 

@@ -1,0 +1,93 @@
+
+<?xml version="1.0"?>
+<root main_tree_to_execute="BehaviorTree"
+      BTCPP_format="3">
+
+  <BehaviorTree ID="BehaviorTree">
+
+    <Sequence name="IndependentCutDryRun">
+
+      <Action ID="InspectProfile"/>
+
+      <Action ID="AwaitPlanningReference"/>
+
+      <Fallback name="ConfirmPose">
+        <Condition ID="WorkpiecePoseValid"/>
+
+        <RetryUntilSuccessful num_attempts="3">
+          <Sequence>
+            <Action ID="WaitForStablePlatform"/>
+            <Action ID="RevalidateWorkpiece"/>
+            <Action ID="AwaitGeometry"/>
+          </Sequence>
+        </RetryUntilSuccessful>
+      </Fallback>
+
+      <RetryUntilSuccessful num_attempts="3">
+        <Sequence name="PrepareCutBatch">
+
+          <Fallback name="ConfirmPoseBeforePlanning">
+            <Condition ID="WorkpiecePoseValid"/>
+
+            <Sequence>
+              <Action ID="WaitForStablePlatform"/>
+              <Action ID="RevalidateWorkpiece"/>
+              <Action ID="AwaitGeometry"/>
+            </Sequence>
+          </Fallback>
+
+          <Action ID="CaptureCutEnvironment"/>
+
+          <!-- Store three independent home-to-home cuts. -->
+          <Action ID="PlanCut"/>
+
+          <!-- Check the batch before selecting a feature. -->
+          <Condition ID="CandidateVersionsMatch"/>
+          <Condition ID="ValidateTaskState"/>
+
+        </Sequence>
+      </RetryUntilSuccessful>
+
+      <!-- Each iteration selects a different stored plan.
+           ExecuteCut clears the selection on completion. -->
+      <Repeat num_cycles="3">
+        <Sequence name="ExecuteOneFeature">
+
+          <Action ID="SelectNextCutFeature"/>
+
+          <!-- Recheck scene, pose and supervision
+               before each individual motion. -->
+          <Condition ID="CandidateVersionsMatch"/>
+          <Condition ID="ValidateTaskState"/>
+
+          <Action ID="ExecuteCut"/>
+
+        </Sequence>
+      </Repeat>
+
+      <!-- A partially planned batch cannot pass. -->
+      <Condition ID="AllCutFeaturesCompleted"/>
+
+    </Sequence>
+
+  </BehaviorTree>
+
+  <TreeNodesModel>
+    <Action ID="InspectProfile"/>
+    <Action ID="AwaitPlanningReference"/>
+    <Action ID="RevalidateWorkpiece"/>
+    <Action ID="AwaitGeometry"/>
+    <Action ID="CaptureCutEnvironment"/>
+    <Action ID="WaitForStablePlatform"/>
+    <Action ID="PlanCut"/>
+    <Action ID="SelectNextCutFeature"/>
+    <Action ID="ExecuteCut"/>
+
+    <Condition ID="WorkpiecePoseValid"/>
+    <Condition ID="CandidateVersionsMatch"/>
+    <Condition ID="ValidateTaskState"/>
+    <Condition ID="PendingCutFeatures"/>
+    <Condition ID="AllCutFeaturesCompleted"/>
+  </TreeNodesModel>
+
+</root>

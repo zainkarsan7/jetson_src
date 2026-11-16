@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
-
+#include <algorithm>
 
 
 #include <moveit/robot_state/robot_state.h>
@@ -37,6 +37,33 @@ class CutGraphPlanner{
 
         using ProcessPlanner = std::function<std::optional<SegmentMotionPlan>(const CutSegment& segment, const ProcessCandidate& candidate)>;
 
+        struct Statistics{
+            std::size_t candidates_tested = 0;
+            std::size_t process_failures = 0;
+            std::size_t transit_in_failures = 0;
+            std::size_t transit_out_failures = 0;
+            std::size_t accepted_candidates = 0;
+        };
+
+        struct IndependentFeatureResult {
+            std::string feature_id;
+            std::optional<ExecutableCut> executable;
+            std::string failure_reason;
+        };
+
+        struct IndependentPlanningResult {
+            std::vector<IndependentFeatureResult> features;
+            Statistics statistics;
+            std::size_t successfulCount() const {
+                return std::count_if(
+                    features.begin(), features.end(),
+                    [](const auto& f) {
+                        return f.executable.has_value();
+                    });
+            }
+        };
+
+
         struct Options{
             std::size_t max_candidates_per_segment = 24;
             double boundary_tol = 1e-3;
@@ -59,14 +86,7 @@ class CutGraphPlanner{
 
         };
 
-        struct Statistics{
-            std::size_t candidates_tested = 0;
-            std::size_t process_failures = 0;
-            std::size_t transit_in_failures = 0;
-            std::size_t transit_out_failures = 0;
-            std::size_t accepted_candidates = 0;
-        };
-
+        
         struct JointMotionMetrics
         {
             double total_travel = 0.0;
@@ -83,6 +103,15 @@ class CutGraphPlanner{
             ProcessPlanner process_planner,
             Options options
         );
+
+
+        IndependentPlanningResult planIndependent(
+            const CutPlan& cut_plan,
+            const std::vector<std::vector<ProcessCandidate>>&
+                candidates_by_segment,
+            const moveit::core::RobotState& home_state,
+            const std::string& batch_id,
+            const std::string& estimate_id);
 
         std::optional<ExecutablePlan> plan(
             const CutPlan& cut_plan, 

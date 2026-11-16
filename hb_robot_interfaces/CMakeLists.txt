@@ -15,6 +15,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CutFeaturePlan.msg"
   "msg/CutInterval.msg"
   "msg/KerfSegmentEvidence.msg"
   "msg/KerfEvidence.msg"
