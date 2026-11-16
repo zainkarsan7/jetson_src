@@ -69,7 +69,7 @@ def generate_launch_description():
         # moveit_config.robot_description_kinematics,
         parameters = [moveit_config.to_dict(),{
         "skip_cutting_motion": False,
-        "enable_cutting_process": False,
+        "enable_cutting_process": True,
         "require_plan_approval": True,
         "transit.velocity_scaling": 0.1,
         "transit.acceleration_scaling": 0.01,
