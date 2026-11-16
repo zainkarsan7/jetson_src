@@ -267,6 +267,7 @@ std::optional<MoveGroup::Plan> planGuidedPTP(
 
     const auto solveIK =
     [&](const State& seed,
+        const State& opposite,
         const Eigen::Isometry3d& nominal)
         -> std::optional<State>
 {
@@ -309,7 +310,8 @@ std::optional<MoveGroup::Plan> planGuidedPTP(
     }
 
     constexpr unsigned attempts_per_pose = 13;
-
+    std::optional<State> best;
+    double best_score = std::numeric_limits<double>::infinity();
     for (unsigned k = 0;
          k < attempts_per_pose &&
          ik_calls < options.guided_max_ik_calls;
@@ -350,7 +352,7 @@ std::optional<MoveGroup::Plan> planGuidedPTP(
         }
 
         candidate.update();
-
+        
         // Independently enforce the seed-relative
         // joint displacement limits.
         const auto seed_q = jointPositions(seed);
@@ -377,10 +379,18 @@ std::optional<MoveGroup::Plan> planGuidedPTP(
         if (!validState(candidate))
             continue;
 
-        return candidate;
+        const double score = jointDifference(candidate, opposite);
+
+        if (score < best_score)
+        {
+            best_score = score;
+            best = std::move(candidate);
+        }
+
+       
     }
 
-    return std::nullopt;
+    return best;
 };
 
     // --------------------------------------------------
@@ -551,7 +561,15 @@ std::optional<MoveGroup::Plan> planGuidedPTP(
         Eigen::Isometry3d pose = tcpPose(seed);
         pose.translation() = position;
 
-        auto middle = solveIK(seed, pose);
+        /////////////////////
+        const Eigen::Quaterniond q_seed(tcpPose(seed).linear());
+        const Eigen::Quaterniond q_other(
+            tcpPose(grow_front ? back : front).linear());
+
+        pose.linear() =
+            q_seed.slerp(0.5, q_other).normalized().toRotationMatrix();
+        /////////////////////
+        auto middle = solveIK(seed, grow_front ? back : front, pose);
 
         if (!middle)
             continue;
@@ -778,7 +796,7 @@ std::optional<MoveGroup::Plan> planTransit(
     const moveit::core::RobotState& start_state, const moveit::core::RobotState& target_state,
     const TransitPlannerOptions& options){
 
-         using Plan = MoveGroup::Plan;
+    using Plan = MoveGroup::Plan;
 
     struct Metrics {
         double total = 0.0;
@@ -803,6 +821,27 @@ std::optional<MoveGroup::Plan> planTransit(
         {"ompl", "LazyPRMkConfigDefault",   3.0, 2},
         {"ompl", "RRTstarkConfigDefault",   5.0, 2},
     };
+
+    //////////////////////////////////////////////////
+    // MAKE A LOCAL SCENE COPY TO PLAN AGAINST, PAD THE TORCH LINK
+    //////////////////////////////////////////////////
+    // planning_scene::PlanningScenePtr transit_scene =
+    // options.scene->diff();
+
+    // transit_scene->decoupleParent();
+
+    // constexpr double padding_m = 0.010;
+
+    // auto* collision_env =
+    //     transit_scene->getCollisionEnvNonConst();
+
+    // collision_env->setLinkPadding(
+    //     "ur10e_torch_link", padding_m);
+
+    // collision_env->setLinkPadding(
+    //     "ur10e_bracket_link", padding_m);
+
+    //////////////////////////////////////////////////
 
     // Match CutGraphPlanner::transitCost().
     constexpr double preferred_travel = 1.0;

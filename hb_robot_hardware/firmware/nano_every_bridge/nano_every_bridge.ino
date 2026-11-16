@@ -3,10 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Nano Every: SDA=A4, SCL=A5, servo signal=D9.
+// Nano Every: SDA=A4, SCL=A5, servo signal=D13.
 // GY-521 with AD0 low.
 static const uint8_t MPU = 0x68;
-static const uint8_t SERVO_PIN = 9;
+static const uint8_t SERVO_PIN = 13;
 static const uint32_t SERIAL_BAUD = 230400;
 static const uint32_t PERIOD_US = 5000; // 200 Hz target
 bool imuReady = false;

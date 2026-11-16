@@ -21,13 +21,13 @@ def xor_checksum(payload):
 class NanoBridge(Node):
     def __init__(self):
         super().__init__('nano_bridge')
-        self.port = self.declare_parameter('port', '/dev/serial/by-id/CHANGE_ME').value
+        self.port = self.declare_parameter('port', '/dev/ttyACM1').value
         self.baud = int(self.declare_parameter('baud', 230400).value)
         self.frame = self.declare_parameter('frame_id', 'awp_mpu6050').value
         self.max_age = float(self.declare_parameter('max_sample_age_s', 0.25).value)
         self.timeout = float(self.declare_parameter('command_timeout_s', 1.0).value)
-        self.open_deg = int(self.declare_parameter('flap_open_deg', 0).value)
-        self.closed_deg = int(self.declare_parameter('flap_closed_deg', 90).value)
+        self.open_deg = int(self.declare_parameter('flap_open_deg', 30).value)
+        self.closed_deg = int(self.declare_parameter('flap_closed_deg', 0).value)
         self.accel_var = float(self.declare_parameter('accel_variance_m2_s4', 0.04).value)
         self.pub = self.create_publisher(Imu, 'mpu6050/imu', qos_profile_sensor_data)
         self.rate_pub = self.create_publisher(Float32, 'mpu6050/sample_rate_hz', 10)

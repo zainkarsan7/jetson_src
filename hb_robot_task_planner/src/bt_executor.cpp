@@ -3,7 +3,7 @@
 #include <behaviortree_cpp_v3/action_node.h>
 #include <behaviortree_cpp_v3/loggers/bt_zmq_publisher.h>
 #include <behaviortree_cpp_v3/loggers/bt_cout_logger.h>
-
+#include <behaviortree_cpp_v3/loggers/bt_file_logger.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -1246,11 +1246,15 @@ int main(int argc, char** argv) {
     const auto file =
         node->declare_parameter<std::string>(
             "tree_file", "");
+    const auto bt_log_path =
+        node->declare_parameter<std::string>(
+            "bt_log_path", "/ssd/data/execution.fbl");
 
     auto tree = factory.createTreeFromFile(file);
+    BT::FileLogger bt_logger(tree, bt_log_path.c_str());
 
-    BT::PublisherZMQ groot_publisher(
-        tree, 25, 1666, 1667);
+    // BT::PublisherZMQ groot_publisher(
+    //     tree, 25, 1666, 1667);
 
     BT::StdCoutLogger console_logger(tree);
 

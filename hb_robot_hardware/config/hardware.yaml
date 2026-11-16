@@ -5,7 +5,7 @@ nano_bridge:
     frame_id: awp_mpu6050
     max_sample_age_s: 0.25
     command_timeout_s: 1.0
-    flap_open_deg: 0
-    flap_closed_deg: 90
+    flap_open_deg: 45
+    flap_closed_deg: 5
     # Placeholder variance, replace with measured stationary variance.
     accel_variance_m2_s4: 0.04

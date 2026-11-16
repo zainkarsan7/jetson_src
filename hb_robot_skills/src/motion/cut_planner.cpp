@@ -347,31 +347,109 @@ std::vector<moveit::core::RobotStatePtr> CutPlanner::sampleConstraints(
     std::size_t budget) const
 {
     std::vector<moveit::core::RobotStatePtr> accepted;
+
     if (!p_scene || constraints.orientation_constraints.empty()) return accepted;
+
     kinematic_constraints::KinematicConstraintSet constraint_set(robot_model_);
+
     if (!constraint_set.add(constraints, p_scene->getTransforms())) return accepted;
+
     auto sampler = std::dynamic_pointer_cast<constraint_samplers::IKConstraintSampler>(
-        constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(p_scene, planning_group_, constraints));
+        constraint_samplers::ConstraintSamplerManager::selectDefaultSampler(
+            p_scene, planning_group_, constraints));
+
     if (!sampler || !sampler->isValid()) return accepted;
+
     std::size_t attempted=0, pose_failed=0, ik_failed=0, constraint_rejected=0,
         collision_rejected=0, repaired=0, duplicates=0;
-    const auto cost = [&](const auto& state) { return dq_cost(reference_state, state); };
+
+    const auto cost = [&](const auto& state) { 
+        return dq_cost(reference_state, state); 
+    };
+
+    constexpr std::array<double, 9> preferred_rolls{
+                0.0,
+                M_PI / 6.0,
+                -M_PI / 6.0,
+                M_PI / 3.0,
+                -M_PI / 3.0,
+                M_PI / 2.0,
+                -M_PI / 2.0,
+                2.0 * M_PI / 3.0,
+                -2.0 * M_PI / 3.0
+            };
+        
+    Eigen::Isometry3d pose = nominal_pose;
+
     for (std::size_t i=0; i<budget; ++i) {
-        Eigen::Isometry3d pose=nominal_pose;
-        if (i==0) pose.linear()=reference_state.getGlobalLinkTransform(plasma_link_).linear();
-        else if (i>=2) {
-            // Restore MoveIt's distribution over the COMPLETE orientation
-            // constraint; do not invent a roll/tilt distribution with different
-            // rotation-vector semantics. Deliberately discard sampled position.
+
+        ////////////////////////////////////////// 
+        //try a different sampling strategy here 
+        //////////////////////////////////////////
+        
+        if (i == 0)
+            {
+                // Preserve the existing home/reference-orientation
+                // attempt, which can be useful for local IK.
+                pose.linear() =
+                    reference_state
+                        .getGlobalLinkTransform(plasma_link_)
+                        .linear();
+            }
+        else if (i <= preferred_rolls.size())
+        {
+            const double roll = preferred_rolls[i - 1];
+
+            pose.linear() =
+                nominal_pose.linear() *
+                Eigen::AngleAxisd(
+                    roll,
+                    Eigen::Vector3d::UnitZ())
+                .toRotationMatrix();
+        }
+        else
+        {
             Eigen::Vector3d ignored_position;
             Eigen::Quaterniond orientation;
-            if (!sampler->samplePose(ignored_position, orientation, reference_state, 1)) {
-                ++pose_failed; continue;
+
+            if (!sampler->samplePose(
+                    ignored_position,
+                    orientation,
+                    reference_state,
+                    1))
+            {
+                ++pose_failed;
+                continue;
             }
-            pose.linear()=orientation.normalized().toRotationMatrix();
+
+            pose.linear() =
+                orientation.normalized().toRotationMatrix();
         }
+
+        ////////////////////////////////////////////////
+        // //try the nominal pose first 
+        // Eigen::Isometry3d pose=nominal_pose;
+        // if (i==0) pose.linear()=reference_state.getGlobalLinkTransform(plasma_link_).linear();
+        // else if (i>=2) {
+        //     // Restore MoveIt's distribution over the COMPLETE orientation
+        //     // constraint; do not invent a roll/tilt distribution with different
+        //     // rotation-vector semantics. Deliberately discard sampled position.
+        //     Eigen::Vector3d ignored_position;
+        //     Eigen::Quaterniond orientation;
+        //     if (!sampler->samplePose(ignored_position, orientation, reference_state, 1)) {
+        //         ++pose_failed; continue;
+        //     }
+        //     pose.linear()=orientation.normalized().toRotationMatrix();
+        // }
+        ////////////////////////////////////////////////
+
+
+
         moveit::core::RobotState trial(reference_state);
-        const bool explore=options_.explore_ik_branches && i>=3 && i%4==3;
+        // const bool explore=options_.explore_ik_branches && i>=3 && i%4==3;
+        //// change the exploration strategy to only do greater than predictable roll samples
+        const bool explore = options_.explore_ik_branches && i> preferred_rolls.size() && i%4==3;
+
         if (explore) trial.setToRandomPositions(joint_model_group_);
         else if (!accepted.empty() && i%2==0) trial=*accepted.front();
         trial.update();
@@ -453,7 +531,11 @@ std::optional<ConstraintChain> searchConstraintChain(
                 child.states[phase]=state;
                 const double distance=from.distance(*state,group);
                 if (!std::isfinite(distance)) continue;
-                child.cost+=distance*distance;
+                ///////////////////////////////////////////////////////////
+                constexpr double approach_weight = 3.0;
+                const double weight = phase==0 ? approach_weight : 1.0;
+                child.cost+= weight * distance*distance;
+                // child.cost+=distance*distance;
                 next.push_back(std::move(child));
             }
         }
