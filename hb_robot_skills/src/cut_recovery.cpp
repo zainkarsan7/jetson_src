@@ -18,6 +18,34 @@ CutProfileServer::~CutProfileServer() {
   if(escape_worker_.joinable()) escape_worker_.join();
 }
 
+
+
+CutProfileServer::TaskStateFreshness
+CutProfileServer::taskStateFreshness() const
+{
+    TaskStateFreshness result;
+
+    std::lock_guard<std::mutex> lock(task_mutex_);
+
+    result.state = task_state_;
+
+    result.received =
+        task_received_ !=
+        std::chrono::steady_clock::time_point{};
+
+    if (!result.received)
+        return result;
+
+    result.age_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() -
+            task_received_).count();
+
+    result.fresh = result.age_ms < 500.0;
+
+    return result;
+}
+
 bool CutProfileServer::readFreshTaskState(TaskState& snapshot) const {
   std::lock_guard<std::mutex> lock(task_mutex_);
   snapshot = task_state_;

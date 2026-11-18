@@ -1,0 +1,13 @@
+# Goal
+string interrupted_plan_id
+string feature_id
+bool prefer_retract_endpoint
+---
+# Result
+bool success
+bool home_reached
+bool pose_revalidation_required
+string message
+---
+# Feedback
+string stage

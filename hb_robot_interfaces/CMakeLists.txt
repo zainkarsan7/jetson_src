@@ -30,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlatformImuMetrics.msg"
   "msg/PlatformSupervision.msg"
   "srv/GenerateExplorePath.srv"
+  "srv/ClearTorchFault.srv"
   "srv/CommitWorkpiece.srv"
   "srv/GenerateCutPath.srv"
   "srv/ApproveMotion.srv"

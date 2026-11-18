@@ -70,7 +70,8 @@ struct Context {
           Unplannable,
           Selected,
           Completed,
-          Interrupted
+          Interrupted,
+          RecoveredPendingInspection
       };
 
       Status status = Status::Unplannable;

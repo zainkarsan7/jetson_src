@@ -16,6 +16,8 @@ find_package(rclcpp_action REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_rendering REQUIRED)
+find_package(hb_robot_interfaces REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
 qt5_wrap_cpp(MOC_FILES
@@ -33,7 +35,8 @@ rclcpp_action
 rclcpp
 sensor_msgs
 pluginlib
-rviz_common)
+rviz_common
+std_srvs)
 
 install(TARGETS zk_panel
 EXPORT export_zk_gui

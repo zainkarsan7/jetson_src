@@ -10,7 +10,7 @@
 #include <hb_robot_interfaces/msg/platform_imu_metrics.hpp>
 #include <hb_robot_interfaces/msg/platform_supervision.hpp>
 #include <hb_robot_interfaces/srv/commit_workpiece.hpp>
-
+#include <std_srvs/srv/trigger.hpp>
 #include <hb_robot_perception/imu_stability_monitor.hpp>
 
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
@@ -387,22 +387,29 @@ public:
                     std::lock_guard<std::mutex> lock(
                         mutex_);
 
-                    const bool was_faulted =
-                        state_.process_fault_active;
-                    if (msg->fault)
-                    {
+
+                    torch_status_received_ = Clock::now();
+                    torch_fault_reported_ = msg->fault;
+                    if (msg->fault) {
+                        torch_fault_cleared_observed_ = {};
+
+                        const bool was_faulted =
+                            state_.process_fault_active;
+                        
                         state_.process_fault_active = true;
                         state_.path_valid = false;
-                        if (!was_faulted)
-                            {
-                                RCLCPP_ERROR(
-                                    get_logger(),
-                                    "Torch process fault latched; "
-                                    "cutting disabled, pose retained");
-                            }
+
+                        if (!was_faulted) {
+                            RCLCPP_ERROR(
+                                get_logger(),
+                                "Torch process fault latched; "
+                                "cutting disabled, pose retained");
+                        }
                     }
-
-
+                    else if(torch_fault_cleared_observed_ ==
+                            Clock::time_point{}) {
+                        torch_fault_cleared_observed_ = Clock::now();
+                    } 
                 });
 
         fault_ =
@@ -473,6 +480,73 @@ public:
                 },
                 rmw_qos_profile_services_default,
                 commit_callbacks_);
+
+
+        
+        clear_process_fault_service_ =
+            create_service<std_srvs::srv::Trigger>(
+                "/task_state/clear_process_fault",
+                [this](
+                    const std::shared_ptr<
+                        std_srvs::srv::Trigger::Request>,
+                    std::shared_ptr<
+                        std_srvs::srv::Trigger::Response> response)
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+
+                    const auto now_steady = Clock::now();
+
+                    const bool torch_fresh =
+                        torch_status_received_ != Clock::time_point{} &&
+                        now_steady - torch_status_received_ < 500ms;
+
+                    const bool clear_observed =
+                        torch_fault_cleared_observed_ != Clock::time_point{} &&
+                        now_steady - torch_fault_cleared_observed_ >= 200ms;
+
+                    if (!torch_fresh ||
+                        torch_fault_reported_ ||
+                        !clear_observed) {
+                        response->success = false;
+                        response->message =
+                            "Fresh, continuously fault-free torch "
+                            "status required before clearing latch";
+                        return;
+                    }
+
+                    if (state_.motion_fault_active ||
+                        !state_.supervision_valid ||
+                        !state_.imu_stable ||
+                        !state_.workpiece_pose_valid) {
+                        response->success = false;
+                        response->message =
+                            "Motion fault, platform supervision, "
+                            "or pose validation prevents clearance";
+                        return;
+                    }
+
+                    if (!state_.process_fault_active) {
+                        response->success = true;
+                        response->message =
+                            "Process fault already clear";
+                        return;
+                    }
+
+                    state_.process_fault_active = false;
+
+                    // Do not automatically restore path_valid,
+                    // change geometry versions, or authorize motion.
+                    publishStateLocked();
+
+                    response->success = true;
+                    response->message =
+                        "TaskState process fault latch cleared";
+
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[PROCESS CLEAR] Process fault latch cleared");
+                });
+
 
         timer_ =
             create_wall_timer(
@@ -1610,6 +1684,16 @@ if (hard_motion)
 
     geometry_msgs::msg::Pose measured_pose_;
     std::string invalidation_reason_;
+
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr
+    clear_process_fault_service_;
+
+    Clock::time_point torch_status_received_{};
+    Clock::time_point torch_fault_cleared_observed_{};
+
+    bool torch_fault_reported_ = true;
+
+
 
     // Publishers.
     rclcpp::Publisher<State>::SharedPtr pub_;

@@ -107,14 +107,19 @@ namespace hb_robot_skills{
         if (!motion_active_)
             return;
 
-        TaskState current;
+
+
+        const auto task = taskStateFreshness();
+
+        const bool geometry_ok =
+            hb_robot::recovery::geometryPermitted(task.state);
 
         const bool permitted =
-            taskPermitsExecution(&current);
+            task.fresh && geometry_ok;
 
         const bool versions_match =
             hb_robot::recovery::sameVersions(
-                current, execution_state_);
+                task.state, execution_state_);
 
         if (!permitted || !versions_match)
         {
@@ -122,34 +127,42 @@ namespace hb_robot_skills{
             if (!cut_stop_requested_.exchange(true))
             {
                 RCLCPP_ERROR(
-                    get_logger(),
-                    "Execution supervision lost: "
-                    "permitted=%d versions_match=%d "
-                    "scene_valid=%d pose_valid=%d "
-                    "supervision_valid=%d imu_stable=%d "
-                    "motion_fault=%d process_fault=%d "
-                    "geometry=%llu/%llu pose=%llu/%llu "
-                    "scene=%llu/%llu",
-                    static_cast<int>(permitted),
-                    static_cast<int>(versions_match),
-                    static_cast<int>(current.scene_valid),
-                    static_cast<int>(current.workpiece_pose_valid),
-                    static_cast<int>(current.supervision_valid),
-                    static_cast<int>(current.imu_stable),
-                    static_cast<int>(current.motion_fault_active),
-                    static_cast<int>(current.process_fault_active),
-                    static_cast<unsigned long long>(
-                        current.geometry_version),
-                    static_cast<unsigned long long>(
-                        execution_state_.geometry_version),
-                    static_cast<unsigned long long>(
-                        current.pose_version),
-                    static_cast<unsigned long long>(
-                        execution_state_.pose_version),
-                    static_cast<unsigned long long>(
-                        current.scene_version),
-                    static_cast<unsigned long long>(
-                        execution_state_.scene_version));
+                        get_logger(),
+                        "Execution supervision lost: "
+                        "task_received=%d task_fresh=%d "
+                        "task_age_ms=%.1f "
+                        "geometry_ok=%d versions_match=%d "
+                        "scene_valid=%d pose_valid=%d "
+                        "supervision_valid=%d imu_stable=%d "
+                        "motion_fault=%d process_fault=%d "
+                        "geometry=%llu/%llu "
+                        "pose=%llu/%llu "
+                        "scene=%llu/%llu",
+                        int(task.received),
+                        int(task.fresh),
+                        task.age_ms,
+                        int(geometry_ok),
+                        int(versions_match),
+                        int(task.state.scene_valid),
+                        int(task.state.workpiece_pose_valid),
+                        int(task.state.supervision_valid),
+                        int(task.state.imu_stable),
+                        int(task.state.motion_fault_active),
+                        int(task.state.process_fault_active),
+                        static_cast<unsigned long long>(
+                            task.state.geometry_version),
+                        static_cast<unsigned long long>(
+                            execution_state_.geometry_version),
+                        static_cast<unsigned long long>(
+                            task.state.pose_version),
+                        static_cast<unsigned long long>(
+                            execution_state_.pose_version),
+                        static_cast<unsigned long long>(
+                            task.state.scene_version),
+                        static_cast<unsigned long long>(
+                            execution_state_.scene_version));
+
+
 
                 if (torch_controller_)
                 {
@@ -161,9 +174,6 @@ namespace hb_robot_skills{
                     move_group_->stop();
             }
         }
-
-
-
 
         });
         using Escape=hb_robot_interfaces::action::Escape;
@@ -224,6 +234,12 @@ namespace hb_robot_skills{
         approval_service_ = this->create_service<hb_robot_interfaces::srv::ApproveMotion>(
             "approve_cut_motion",
             std::bind(&CutProfileServer::handleApproval,this,
+                std::placeholders::_1,std::placeholders::_2)
+        );  
+
+        clear_torch_fault_service_ = this->create_service<hb_robot_interfaces::srv::ClearTorchFault>(
+            "/cut_profile/clear_torch_fault",
+            std::bind(&CutProfileServer::handleTorchFault,this,
                 std::placeholders::_1,std::placeholders::_2)
         );  
 
@@ -3161,7 +3177,102 @@ void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces:
 
 
 
+void CutProfileServer::handleTorchFault(
+    const std::shared_ptr<
+        hb_robot_interfaces::srv::ClearTorchFault::Request> request,
+    std::shared_ptr<
+        hb_robot_interfaces::srv::ClearTorchFault::Response> response)
+{
+    response->success = false;
+
+    if (!request->operator_approved) {
+        response->message = "Operator approval required";
+        return;
+    }
+
+    if (busy_.load() ||
+        motion_active_.load() ||
+        retreat_active_.load() ||
+        escape_busy_.load()) {
+        response->message =
+            "Cutting, recovery, or another action is active";
+        return;
+    }
+
+    if (!torch_controller_) {
+        response->message = "Torch controller unavailable";
+        return;
+    }
+
+    // Do not permit a fault reset while an execution worker
+    // owns the motion path.
+    std::unique_lock<std::mutex> execution_lock(
+        execution_mutex_, std::try_to_lock);
+
+    if (!execution_lock.owns_lock()) {
+        response->message =
+            "Execution worker has not finished";
+        return;
+    }
+
+    // Recheck after acquiring the execution lock.
+    if (busy_.load() ||
+        motion_active_.load() ||
+        retreat_active_.load() ||
+        escape_busy_.load()) {
+        response->message = "Execution state changed";
+        return;
+    }
+
+    const auto task = taskStateFreshness();
+
+    if (!task.fresh ||
+        !task.state.supervision_valid ||
+        !task.state.imu_stable ||
+        !task.state.workpiece_pose_valid ||
+        task.state.motion_fault_active) {
+        response->message =
+            "Fresh, stable TaskState and valid pose required";
+        return;
+    }
+
+    if (!torch_controller_->hasFreshIO()) {
+        response->message = "Torch I/O stale";
+        return;
+    }
+
+    const auto telemetry = torch_controller_->snapshot();
+
+    if (telemetry.output_on != std::optional<bool>(false) ||
+        telemetry.transfer_detected != std::optional<bool>(false)) {
+        response->message =
+            "Torch OFF and transfer absent must be confirmed";
+        return;
+    }
+
+    if (!torch_controller_->clearFault()) {
+        response->message =
+            "Torch fault could not be cleared";
+        return;
+    }
+
+    // Only the local torch controller is cleared here.
+    // TaskStateServer owns its own latched process fault.
+    response->success = true;
+    response->message =
+        "Torch controller fault cleared; "
+        "clear TaskState process latch separately";
+
+    RCLCPP_WARN(
+        get_logger(),
+        "[TORCH CLEAR] Local fault cleared by operator request");
 }
+
+
+
+
+}//namescape skills
+
 
 
 int main (int argc, char** argv){

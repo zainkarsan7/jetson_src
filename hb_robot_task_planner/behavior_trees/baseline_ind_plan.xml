@@ -59,8 +59,23 @@
                before each individual motion. -->
           <Condition ID="CandidateVersionsMatch"/>
           <Condition ID="ValidateTaskState"/>
+          <!-- <Fallback name="ExecuteOrRecover"> -->
 
           <Action ID="ExecuteCut"/>
+
+          <!-- <Sequence name="RecoverInterruptedFeature">
+
+            <Action ID="AwaitTorchFaultClear"/>
+
+            <Action ID="PlanRecoveryHome"/>
+
+            <Action ID="ApproveRecoveryMotion"/>
+
+            <Action ID="ExecuteRecoveryHome"/>
+
+            <Action ID="MarkFeatureRecoveryPendingInspection"/>
+
+          </Sequence> -->
 
         </Sequence>
       </Repeat>

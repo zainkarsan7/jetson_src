@@ -12,6 +12,7 @@
 #include "hb_robot_skills/motion/torch_controller.hpp"
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include "hb_robot_interfaces/msg/workpiece_reference.hpp"
+#include "hb_robot_interfaces/srv/clear_torch_fault.hpp"
 
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
@@ -75,7 +76,7 @@ namespace hb_robot_skills{
                 const std::shared_ptr<GoalHandleCutProfile> goal_handle
                 );
             
-          
+            
 
             rclcpp_action::GoalResponse handleGoal(const rclcpp_action::GoalUUID &uuid,
             std::shared_ptr<const CutProfile::Goal> goal);
@@ -115,7 +116,11 @@ namespace hb_robot_skills{
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
             
-
+            void handleTorchFault(
+                const std::shared_ptr<
+                    hb_robot_interfaces::srv::ClearTorchFault::Request> request,
+                std::shared_ptr<
+                    hb_robot_interfaces::srv::ClearTorchFault::Response> response);
             
             
         private:
@@ -173,6 +178,12 @@ namespace hb_robot_skills{
             std::vector<hb_robot::recovery::Interval> intervals;
             bool consumed=false;
         };
+        struct TaskStateFreshness {
+                TaskState state;
+                bool received = false;
+                bool fresh = false;
+                double age_ms = -1.0;
+            };
         std::unordered_map<std::string, StoredPlan> stored_plans_;
         std::unordered_map<std::string, std::vector<hb_robot::recovery::Interval>> attempted_;
         uint64_t next_plan_=0, execution_version_=0;
@@ -190,6 +201,8 @@ namespace hb_robot_skills{
         rclcpp_action::Server<hb_robot_interfaces::action::Escape>::SharedPtr escape_server_;
         std::thread worker_, escape_worker_;
         std::atomic<bool> escape_busy_{false};
+        TaskStateFreshness taskStateFreshness() const;
+
         bool readFreshTaskState(TaskState& snapshot) const;
         bool taskPermitsExecution(TaskState* snapshot=nullptr) const;
         void executeStored(const std::string& id,
@@ -204,6 +217,15 @@ namespace hb_robot_skills{
         double planning_time_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
         rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
+
+
+       
+
+        rclcpp::Service<
+            hb_robot_interfaces::srv::ClearTorchFault>::SharedPtr
+            clear_torch_fault_service_;
+
+
         mutable std::mutex approval_mutex_;
         std::condition_variable approval_cv_;
         std::mutex execution_mutex_;

@@ -1,0 +1,6 @@
+# ClearTorchFault.srv
+
+bool operator_approved
+---
+bool success
+string message

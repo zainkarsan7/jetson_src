@@ -169,7 +169,12 @@ ros2 action send_goal /cut_profile hb_robot_interfaces/action/CutProfile "{stand
 
 ros2 action send_goal /inspect_profile hb_robot_interfaces/action/InspectProfile "{max_views: 3, samples_per_view: 3, depth_range: .75, camera_standoff: 0.4}" --feedback
 
+ros2 service call /cut_profile/clear_torch_fault \
+  hb_robot_interfaces/srv/ClearTorchFault \
+  "{operator_approved: true}"
 
+ros2 service call /task_state/clear_process_fault \
+  std_srvs/srv/Trigger "{}"
 
 ros2 bag convert \
   -i hb_rob_bag_test_2 \
