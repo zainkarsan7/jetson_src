@@ -59,23 +59,16 @@
                before each individual motion. -->
           <Condition ID="CandidateVersionsMatch"/>
           <Condition ID="ValidateTaskState"/>
-          <!-- <Fallback name="ExecuteOrRecover"> -->
+          <Fallback name="ExecuteOrRecover">
+            <Action ID="ExecuteCut"/>
 
-          <Action ID="ExecuteCut"/>
-
-          <!-- <Sequence name="RecoverInterruptedFeature">
-
-            <Action ID="AwaitTorchFaultClear"/>
-
-            <Action ID="PlanRecoveryHome"/>
-
-            <Action ID="ApproveRecoveryMotion"/>
-
-            <Action ID="ExecuteRecoveryHome"/>
-
-            <Action ID="MarkFeatureRecoveryPendingInspection"/>
-
-          </Sequence> -->
+            <Sequence name="RecoverInterruptedFeature">
+              <Condition ID= "CutFeatureInterrupted"/>
+              <Action ID="AwaitTorchFaultClear"/>
+              <Action ID="RecoverCut"/>
+              <Action ID="MarkFeatureRecoveryPendingInspection"/>
+            </Sequence>
+          </Fallback>
 
         </Sequence>
       </Repeat>
@@ -97,7 +90,10 @@
     <Action ID="PlanCut"/>
     <Action ID="SelectNextCutFeature"/>
     <Action ID="ExecuteCut"/>
-
+    <Action ID="AwaitTorchFaultClear"/>
+    <Action ID="RecoverCut"/>
+    <Action ID="MarkFeatureRecoveryPendingInspection"/>
+    <Condition ID= "CutFeatureInterrupted"/>
     <Condition ID="WorkpiecePoseValid"/>
     <Condition ID="CandidateVersionsMatch"/>
     <Condition ID="ValidateTaskState"/>

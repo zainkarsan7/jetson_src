@@ -17,6 +17,7 @@
 #include <hb_robot_interfaces/action/escape.hpp>
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <hb_robot_interfaces/msg/platform_supervision.hpp>
+#include "hb_robot_interfaces/action/recover_cut.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -42,6 +43,7 @@ using Revalidate = hb_robot_interfaces::action::RevalidateWorkpiece;
 using Escape = hb_robot_interfaces::action::Escape;
 using Supervision = hb_robot_interfaces::msg::PlatformSupervision;
 
+using RecoverCut = hb_robot_interfaces::action::RecoverCut;
 using Clock = std::chrono::steady_clock;
 
 struct Context {
@@ -71,7 +73,8 @@ struct Context {
           Selected,
           Completed,
           Interrupted,
-          RecoveredPendingInspection
+          RecoveredPendingInspection,
+          ExecutionFailed
       };
 
       Status status = Status::Unplannable;
@@ -83,7 +86,9 @@ struct Context {
   bool independent_batch = false;
   bool batch_interrupted = false;
 
-
+  std::string interrupted_plan_id;
+    std::string interrupted_feature_id;
+    bool recovery_home_reached = false;
 
 
 
@@ -171,7 +176,7 @@ void clearSelectedFeature() {
 }
 
 };
-
+///////////////////////////////////////////////////////////////////////
 // Generic asynchronous ROS action adapter.
 // Action callbacks never mutate BT-owned state.
 // Result handlers run on the BT tick thread.
@@ -476,7 +481,84 @@ class AwaitGeometry : public BT::StatefulActionNode {
     Clock::time_point start_{};
   };
 
-class CaptureEnvironment : public BT::StatefulActionNode {
+
+class AwaitTorchFaultClear : public BT::StatefulActionNode {
+public:
+    AwaitTorchFaultClear(
+        const std::string& name,
+        const BT::NodeConfiguration& config,
+        std::shared_ptr<Context> context)
+        : BT::StatefulActionNode(name, config),
+          context_(std::move(context)) {}
+
+    static BT::PortsList providedPorts() {
+        return {};
+    }
+
+    BT::NodeStatus onStart() override {
+        
+        RCLCPP_INFO(
+            rclcpp::get_logger("bt_executor"),
+            "[CUT RECOVERY] Waiting for operator fault clearance");
+        return check();
+    }
+
+    BT::NodeStatus onRunning() override {
+        return check();
+    }
+
+    void onHalted() override {
+        saw_fault_ = false;
+    }
+
+private:
+    BT::NodeStatus check() {
+        const auto state = context_->snapshot();
+
+        if (!state.scene_valid &&
+            !state.supervision_valid) {
+            return BT::NodeStatus::RUNNING;
+        }
+
+        if (state.process_fault_active ||
+            state.motion_fault_active) {
+                if (!saw_fault_) {
+                        RCLCPP_WARN(
+                            rclcpp::get_logger("bt_executor"),
+                            "[CUT RECOVERY] Fault observed; "
+                            "waiting for operator clearance");
+                    }
+            saw_fault_ = true;
+            return BT::NodeStatus::RUNNING;
+        }
+        // RCLCPP_INFO(
+        //    rclcpp::get_logger("bt_executor"),
+        //     "[AWAIT FAULT CLEAR] saw_fault=%d "
+        //     "process_fault=%d motion_fault=%d "
+        //     "authorized=%d scene_valid=%d",
+        //     static_cast<int>(saw_fault_),
+        //     static_cast<int>(state.process_fault_active),
+        //     static_cast<int>(state.motion_fault_active),
+        //     static_cast<int>(context_->authorized(state)),
+        //     static_cast<int>(state.scene_valid));
+
+        if (!saw_fault_)
+            return BT::NodeStatus::RUNNING;
+
+        if (!context_->authorized(state) ||
+            !state.scene_valid)
+            return BT::NodeStatus::RUNNING;
+
+        return BT::NodeStatus::SUCCESS;
+    }
+    bool saw_fault_ = false;
+
+    std::shared_ptr<Context> context_;
+};
+
+
+
+  class CaptureEnvironment : public BT::StatefulActionNode {
   using Service =
       hb_robot_interfaces::srv::CaptureCutEnvironment;
 
@@ -1341,6 +1423,122 @@ int main(int argc, char** argv) {
       },
       planResult);
 
+    
+    registerAction<RecoverCut>(
+        factory,
+        "RecoverCut",
+        node,
+        "recover_cut",
+
+        [=](RecoverCut::Goal& goal) -> bool {
+        if (!context->independent_batch ||
+            !context->batch_interrupted ||
+            context->interrupted_plan_id.empty() ||
+            context->interrupted_feature_id.empty())
+            return false;
+
+        goal.interrupted_plan_id =
+            context->interrupted_plan_id;
+
+        goal.cut_id = context->cut_id;
+        goal.prefer_retract_endpoint = true;
+
+        return true;
+        },
+
+        [=](const RecoverCut::Result& result) -> bool {
+            context->recovery_home_reached =
+                result.success &&
+                result.home_reached &&
+                !result.interrupted;
+
+            RCLCPP_INFO(
+                node->get_logger(),
+                "[CUT RECOVERY] plan=%s success=%d home=%d: %s",
+                context->interrupted_plan_id.c_str(),
+                int(result.success),
+                int(result.home_reached),
+                result.message.c_str());
+
+            return context->recovery_home_reached;
+    });
+    condition("CutFeatureInterrupted", [=] {
+            using Status = Context::FeaturePlanEntry::Status;
+
+            if (context->interrupted_plan_id.empty() ||
+                context->interrupted_feature_id.empty())
+                return false;
+
+            return std::any_of(
+                context->feature_plans.begin(),
+                context->feature_plans.end(),
+                [&](const auto& feature) {
+                    return feature.plan_id ==
+                            context->interrupted_plan_id &&
+                        feature.feature_id ==
+                            context->interrupted_feature_id &&
+                        feature.status == Status::Interrupted;
+                });
+        });
+
+
+    factory.registerBuilder<AwaitTorchFaultClear>(
+    "AwaitTorchFaultClear",
+    [context](const auto& name, const auto& config) {
+        return std::make_unique<AwaitTorchFaultClear>(
+            name, config, context);
+    });
+
+
+
+    factory.registerSimpleAction(
+    "MarkFeatureRecoveryPendingInspection",
+    [=](BT::TreeNode&) {
+        using Status =
+            Context::FeaturePlanEntry::Status;
+
+        if (!context->independent_batch ||
+            !context->batch_interrupted ||
+            !context->recovery_home_reached)
+            return BT::NodeStatus::FAILURE;
+
+        const auto it = std::find_if(
+            context->feature_plans.begin(),
+            context->feature_plans.end(),
+            [&](const auto& feature) {
+                return feature.plan_id ==
+                    context->interrupted_plan_id &&
+                    feature.feature_id ==
+                    context->interrupted_feature_id &&
+                    feature.status == Status::Interrupted;
+            });
+
+        if (it == context->feature_plans.end())
+            return BT::NodeStatus::FAILURE;
+
+        it->status =
+            Status::RecoveredPendingInspection;
+
+        it->message =
+            "Returned home after interrupted cut; "
+            "cut outcome awaits inspection";
+
+        RCLCPP_WARN(
+            node->get_logger(),
+            "[CUT RECOVERY] feature=%s: "
+            "RECOVERED_PENDING_INSPECTION",
+            it->feature_id.c_str());
+
+        context->batch_interrupted = false;
+        context->recovery_home_reached = false;
+        context->interrupted_plan_id.clear();
+        context->interrupted_feature_id.clear();
+        context->plan_id.clear();
+
+        return BT::NodeStatus::SUCCESS;
+    });
+
+
   // Condition for XML to determine whether the
   // stored candidate remains usable.
   // condition("CandidateVersionsMatch", [=] {
@@ -1523,18 +1721,40 @@ int main(int argc, char** argv) {
             !result.interrupted &&
             result.completed_segments == 1;
 
-        it->status = completed
-            ? Context::FeaturePlanEntry::Status::Completed
-            : Context::FeaturePlanEntry::Status::Interrupted;
+        const bool interrupted =
+            !completed &&
+            result.interrupted &&
+            result.executed;
 
-        if (!completed)
+        if (completed) {
+            it->status =
+                Context::FeaturePlanEntry::Status::Completed;
+        } else if (interrupted) {
+            it->status =
+                Context::FeaturePlanEntry::Status::Interrupted;
+
             context->batch_interrupted = true;
+            context->interrupted_plan_id = it->plan_id;
+            context->interrupted_feature_id = it->feature_id;
+            context->recovery_home_reached = false;
+        } else {
+            it->status =
+                Context::FeaturePlanEntry::Status::ExecutionFailed;
+
+            // Stop this batch, but do not offer motion recovery.
+            context->batch_interrupted = true;
+            context->interrupted_plan_id.clear();
+            context->interrupted_feature_id.clear();
+            context->recovery_home_reached = false;
+        }
 
         RCLCPP_INFO(
             node->get_logger(),
             "[CUT FEATURE] %s: %s",
             it->feature_id.c_str(),
-            completed ? "COMPLETED" : "INTERRUPTED");
+            completed ? "COMPLETED" :
+            interrupted ? "INTERRUPTED" : "EXECUTION_FAILED");
+
 
         // context->plan_id.clear();
         context->clearSelectedFeature();
@@ -1547,6 +1767,8 @@ int main(int argc, char** argv) {
            result.executed &&
            !result.interrupted;
   };
+
+
 
 
 

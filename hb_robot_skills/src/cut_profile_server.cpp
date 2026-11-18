@@ -14,8 +14,6 @@
 #include <utility>
 #include <vector>
 #include "hb_robot_skills/workpiece_commit_validation.hpp"
-
-
 #include "rclcpp/rclcpp.hpp"
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <moveit/planning_scene_monitor/planning_scene_monitor.h>
@@ -29,6 +27,7 @@
 
 
 using namespace std::chrono_literals;
+
 namespace hb_robot_skills{
 
     CutProfileServer::CutProfileServer(const rclcpp::NodeOptions &options):Node("cut_profile_server",options){
@@ -89,9 +88,13 @@ namespace hb_robot_skills{
           "/cut_profile/execution_version",rclcpp::QoS(1).transient_local());
         supervision_timer_=create_wall_timer(20ms,[this]{
           if(retreat_active_) {
+
             TaskState state;
-            {std::lock_guard<std::mutex> lock(task_mutex_);state=task_state_;
-              if(std::chrono::steady_clock::now()-task_received_>500ms) state.supervision_valid=false;}
+            {
+                std::lock_guard<std::mutex> lock(task_mutex_);
+                state=task_state_;
+              if(std::chrono::steady_clock::now()-task_received_>500ms) state.supervision_valid=false;
+            }
             const auto t=torch_controller_->snapshot();
             if(!state.supervision_valid || !state.imu_stable || !state.workpiece_pose_valid ||
                state.motion_fault_active || !torch_controller_->hasFreshIO() ||
@@ -103,6 +106,32 @@ namespace hb_robot_skills{
               if(move_group_) move_group_->stop();
             }
           }
+          if (recovery_motion_active_.load()) {
+                const bool torch_safe =
+                    torch_controller_ &&
+                    torch_controller_->hasFreshIO() &&
+                    !torch_controller_->hasFault();
+
+                bool off_confirmed = false;
+
+                if (torch_safe) {
+                    const auto t = torch_controller_->snapshot();
+                    off_confirmed =
+                        t.output_on == std::optional<bool>(false) &&
+                        t.transfer_detected == std::optional<bool>(false);
+                }
+
+                if (!off_confirmed) {
+                    latchMotionStop("IO_fault");
+
+                    if (torch_controller_)
+                        torch_controller_->requestOutputOff();
+
+                    if (move_group_)
+                        move_group_->stop();
+                }
+            }
+        
         
         if (!motion_active_)
             return;
@@ -123,48 +152,47 @@ namespace hb_robot_skills{
 
         if (!permitted || !versions_match)
         {
+             RCLCPP_ERROR(
+            get_logger(),
+            "Execution supervision lost: "
+            "task_received=%d task_fresh=%d "
+            "task_age_ms=%.1f "
+            "geometry_ok=%d versions_match=%d "
+            "scene_valid=%d pose_valid=%d "
+            "supervision_valid=%d imu_stable=%d "
+            "motion_fault=%d process_fault=%d "
+            "geometry=%llu/%llu "
+            "pose=%llu/%llu "
+            "scene=%llu/%llu",
+            int(task.received),
+            int(task.fresh),
+            task.age_ms,
+            int(geometry_ok),
+            int(versions_match),
+            int(task.state.scene_valid),
+            int(task.state.workpiece_pose_valid),
+            int(task.state.supervision_valid),
+            int(task.state.imu_stable),
+            int(task.state.motion_fault_active),
+            int(task.state.process_fault_active),
+            static_cast<unsigned long long>(
+                task.state.geometry_version),
+            static_cast<unsigned long long>(
+                execution_state_.geometry_version),
+            static_cast<unsigned long long>(
+                task.state.pose_version),
+            static_cast<unsigned long long>(
+                execution_state_.pose_version),
+            static_cast<unsigned long long>(
+                task.state.scene_version),
+            static_cast<unsigned long long>(
+                execution_state_.scene_version));
             
-            if (!cut_stop_requested_.exchange(true))
-            {
+            if(latchMotionStop("supervision_fault")){
                 RCLCPP_ERROR(
-                        get_logger(),
-                        "Execution supervision lost: "
-                        "task_received=%d task_fresh=%d "
-                        "task_age_ms=%.1f "
-                        "geometry_ok=%d versions_match=%d "
-                        "scene_valid=%d pose_valid=%d "
-                        "supervision_valid=%d imu_stable=%d "
-                        "motion_fault=%d process_fault=%d "
-                        "geometry=%llu/%llu "
-                        "pose=%llu/%llu "
-                        "scene=%llu/%llu",
-                        int(task.received),
-                        int(task.fresh),
-                        task.age_ms,
-                        int(geometry_ok),
-                        int(versions_match),
-                        int(task.state.scene_valid),
-                        int(task.state.workpiece_pose_valid),
-                        int(task.state.supervision_valid),
-                        int(task.state.imu_stable),
-                        int(task.state.motion_fault_active),
-                        int(task.state.process_fault_active),
-                        static_cast<unsigned long long>(
-                            task.state.geometry_version),
-                        static_cast<unsigned long long>(
-                            execution_state_.geometry_version),
-                        static_cast<unsigned long long>(
-                            task.state.pose_version),
-                        static_cast<unsigned long long>(
-                            execution_state_.pose_version),
-                        static_cast<unsigned long long>(
-                            task.state.scene_version),
-                        static_cast<unsigned long long>(
-                            execution_state_.scene_version));
-
-
-
-                if (torch_controller_)
+            get_logger(),
+            "Execution supervision lost, stopping motion");
+                 if (torch_controller_)
                 {
                     // Request OFF without inventing a process fault.
                     torch_controller_->requestOutputOff();
@@ -172,10 +200,38 @@ namespace hb_robot_skills{
 
                 if (move_group_)
                     move_group_->stop();
+                
             }
+            
+               
+
+
+
+               
+            
         }
 
         });
+
+        recover_cut_server_ =
+            rclcpp_action::create_server<RecoverCut>(
+                this,
+                "recover_cut",
+                std::bind(
+                    &CutProfileServer::handleRecoveryGoal,
+                    this,
+                    std::placeholders::_1,
+                    std::placeholders::_2),
+                std::bind(
+                    &CutProfileServer::handleRecoveryCancel,
+                    this,
+                    std::placeholders::_1),
+                std::bind(
+                    &CutProfileServer::handleRecoveryAccepted,
+                    this,
+                    std::placeholders::_1));
+
+
         using Escape=hb_robot_interfaces::action::Escape;
         escape_server_=rclcpp_action::create_server<Escape>(this,"escape",
           [this](const auto&,auto goal) {
@@ -213,11 +269,9 @@ namespace hb_robot_skills{
 
         torch_controller_->setFaultCallback([this](const std::string& reason){
             RCLCPP_ERROR(get_logger(), "TORCH PROCESS FAULT %s", reason.c_str());
-            if(!cut_stop_requested_.exchange(true)){
-                    RCLCPP_ERROR(get_logger(),"execution supervision lost, stopping motion");
-                    torch_controller_->emergencyShutdown("Task supervision invalidated during execution");
-                    if(move_group_) move_group_->stop();
-                }
+            latchMotionStop("torch_fault");
+            if(move_group_) move_group_->stop();
+                
         });
 
         workpiece_reference_sub_ =
@@ -697,7 +751,8 @@ namespace hb_robot_skills{
 
     void CutProfileServer::requestCutStop(){
 
-        cut_stop_requested_.store(true);
+        latchMotionStop("requestCutStop");
+        
         // Stop requests precede any feedback wait and never wait for a BT tick.
          if (torch_controller_)
     {
@@ -819,6 +874,34 @@ namespace hb_robot_skills{
                 feedback->stage = stage;
                 goal_handle->publish_feedback(feedback);
             }
+
+
+    namespace {
+
+        bool prepareCuttingScene(
+            const planning_scene::PlanningScenePtr& scene)
+        {
+            if (!scene)
+                return false;
+
+            scene->getWorldNonConst()->removeObject(
+                "inspection_workpiece");
+
+            const auto world = scene->getWorld();
+
+            return world &&
+                !world->hasObject("inspection_workpiece") &&
+                world->hasObject("wk_workpiece_collision");
+        }
+
+    } // anonymous namespace
+
+
+
+
+
+
+
 
     std::optional<moveit::planning_interface::MoveGroupInterface::Plan> CutProfileServer::makeLinPlan(
         const moveit::core::RobotState& start_state,
@@ -1040,6 +1123,12 @@ namespace hb_robot_skills{
                 locked->diff();
 
             snapshot->decoupleParent();
+            if (!prepareCuttingScene(snapshot)) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "Transit cutting scene normalization failed");
+                return std::nullopt;
+            }
 
             options.scene = snapshot;
         }
@@ -1177,44 +1266,74 @@ namespace hb_robot_skills{
     }
 
 
-    CutProfileServer::MotionOutcome CutProfileServer::waitForPlanApproval(
-                const std::shared_ptr<GoalHandleCutProfile> goal_handle
-            ){
+    CutProfileServer::MotionOutcome
+CutProfileServer::waitForPlanApproval(
+    const std::shared_ptr<GoalHandleCutProfile> goal_handle)
+{
+    if (!require_plan_approval_)
+        return MotionOutcome::SUCCESS;
 
-                if (!require_plan_approval_) {
-                        return MotionOutcome::SUCCESS;
-                    }
+    RCLCPP_INFO(
+        get_logger(),
+        "Waiting for cutting plan approval");
 
-                RCLCPP_INFO(
-                    get_logger(),
-                    "Waiting for cutting plan approval"
-                );
-                publishFeedback(goal_handle, "awaiting plan approval");
+    publishFeedback(
+        goal_handle, "awaiting plan approval");
 
-                std::unique_lock<std::mutex> lock(approval_mutex_);
+    std::unique_lock<std::mutex> lock(approval_mutex_);
 
-                // Poll validity as well as approval: Escape must not wait behind
-                // an indefinitely blocked approval on the shared execution mutex.
-                while(!motion_approved_ && !motion_rejected_ &&
-                      !goal_handle->is_canceling() && !cut_stop_requested_ &&
-                      !escape_busy_ && rclcpp::ok() && taskPermitsExecution())
-                    approval_cv_.wait_for(lock, std::chrono::milliseconds(100));
+    // Open a fresh approval window for THIS cutting goal.
+    motion_approved_ = false;
+    motion_rejected_ = false;
+    approval_operation_ =
+        "cut/" + goal_handle->get_goal()->plan_id;
+    approval_pending_ = true;
 
-                if (goal_handle->is_canceling()) {
-                    return MotionOutcome::CANCELED;
-                }
+    while (!motion_approved_ &&
+           !motion_rejected_ &&
+           !goal_handle->is_canceling() &&
+           !cut_stop_requested_.load() &&
+           !escape_busy_.load() &&
+           rclcpp::ok())
+    {
+        lock.unlock();
+        const bool permitted = taskPermitsExecution();
+        lock.lock();
 
-                if (!rclcpp::ok() || cut_stop_requested_ || escape_busy_ || !taskPermitsExecution()) {
-                    return MotionOutcome::FAILED;
-                }
+        if (!permitted)
+            break;
 
-                if (motion_rejected_) {
-                    return MotionOutcome::REJECTED;
-                }
+        approval_cv_.wait_for(
+            lock, std::chrono::milliseconds(100));
+    }
 
-                return MotionOutcome::SUCCESS;
-            }
+    // Close the window before returning.
+    approval_pending_ = false;
+    approval_operation_.clear();
 
+    if (goal_handle->is_canceling())
+        return MotionOutcome::CANCELED;
+
+    if (!rclcpp::ok() ||
+        cut_stop_requested_.load() ||
+        escape_busy_.load())
+        return MotionOutcome::FAILED;
+
+    // Check again after approval.
+    lock.unlock();
+    const bool permitted = taskPermitsExecution();
+    lock.lock();
+
+    if (!permitted)
+        return MotionOutcome::FAILED;
+
+    if (motion_rejected_)
+        return MotionOutcome::REJECTED;
+
+    return motion_approved_
+        ? MotionOutcome::SUCCESS
+        : MotionOutcome::FAILED;
+}
 
     CutProfileServer::MotionOutcome CutProfileServer::executeMotion(
         const moveit::planning_interface::MoveGroupInterface::Plan& plan,
@@ -1669,15 +1788,15 @@ namespace hb_robot_skills{
                 "wk_workpiece_collision"
             });
 
-        if (objects.count(
-                "inspection_workpiece") != 0)
-        {
-            fail(
-                0,
-                "Temporary inspection collision "
-                "geometry is still present");
-            return;
-        }
+        // if (objects.count(
+        //         "inspection_workpiece") != 0)
+        // {
+        //     fail(
+        //         0,
+        //         "Temporary inspection collision "
+        //         "geometry is still present");
+        //     return;
+        // }
 
         const auto object_it =
             objects.find(
@@ -1757,10 +1876,10 @@ namespace hb_robot_skills{
         // Remove any stale temporary geometry from
         // the local snapshot. The authoritative
         // MoveIt scene was checked above.
-        scene_snapshot
-            ->getWorldNonConst()
-            ->removeObject(
-                "inspection_workpiece");
+        // scene_snapshot
+        //     ->getWorldNonConst()
+        //     ->removeObject(
+        //         "inspection_workpiece");
 
         // Replace the snapshot's workpiece object
         // with the one just read from MoveIt.
@@ -1783,6 +1902,11 @@ namespace hb_robot_skills{
                 0,
                 "Could not install the authoritative "
                 "workpiece into the planning snapshot");
+            return;
+        }
+
+        if (!prepareCuttingScene(scene_snapshot)) {
+            fail(0, "Cutting scene normalization failed");
             return;
         }
 
@@ -3157,11 +3281,23 @@ void CutProfileServer::publishCollisionDebug(
 
 void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
         std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response){
-            
+           std::string operation; 
             {
                 std::lock_guard<std::mutex> lock(approval_mutex_);
-            motion_approved_ = request->approve;
-            motion_rejected_ = !request->approve;
+
+                    if (!approval_pending_ ||
+                        motion_approved_ ||
+                        motion_rejected_) {
+                        response->accepted = false;
+                        response->message =
+                            "No pending motion approval";
+                        return;
+                    }
+
+
+                    operation = approval_operation_;       
+                    motion_approved_ = request->approve;
+                    motion_rejected_ = !request->approve;
         }
             approval_cv_.notify_all();
 
@@ -3169,8 +3305,8 @@ void CutProfileServer::handleApproval(const std::shared_ptr<hb_robot_interfaces:
 
             response->message =
                 request->approve
-                    ? "Cutting plan approved"
-                    : "Cutting plan rejected";
+                    ? "motion approved"
+                    : "motion rejected";
 
         }
 
@@ -3268,7 +3404,811 @@ void CutProfileServer::handleTorchFault(
         "[TORCH CLEAR] Local fault cleared by operator request");
 }
 
+    /////////////////////// RECOVERY GOALL HANDLING //////////////////////////
+   
+    rclcpp_action::GoalResponse
+        CutProfileServer::handleRecoveryGoal(
+            const rclcpp_action::GoalUUID&,
+            std::shared_ptr<const RecoverCut::Goal> goal)
+        {
+            if (goal->interrupted_plan_id.empty() ||
+                goal->cut_id.empty() ||
+                escape_busy_.load())
+                return rclcpp_action::GoalResponse::REJECT;
 
+            bool idle = false;
+
+            if (!busy_.compare_exchange_strong(idle, true))
+                return rclcpp_action::GoalResponse::REJECT;
+
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        }
+
+    rclcpp_action::CancelResponse
+CutProfileServer::handleRecoveryCancel(
+    const std::shared_ptr<GoalHandleRecoverCut>)
+{
+    requestRecoveryStop();
+    return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+    void CutProfileServer::handleRecoveryAccepted(
+        const std::shared_ptr<GoalHandleRecoverCut> goal)
+    {
+        if (recovery_worker_.joinable())
+            recovery_worker_.join();
+
+        recovery_worker_ = std::thread(
+            [this, goal] {
+                try {
+                    recoverCut(goal);
+                } catch (const std::exception& e) {
+                    requestRecoveryStop();
+                    auto result =
+                        std::make_shared<RecoverCut::Result>();
+
+                    result->success = false;
+                    result->interrupted = true;
+                    result->pose_revalidation_required = true;
+                    result->message = e.what();
+
+                    releaseGoalAdmission();
+
+                    if (goal->is_canceling())
+                        goal->canceled(result);
+                    else
+                        goal->abort(result);
+                }
+            });
+    }
+
+
+       
+CutProfileServer::MotionOutcome
+CutProfileServer::waitForRecoveryApproval(
+    const std::shared_ptr<GoalHandleRecoverCut>& goal)
+{
+    while (rclcpp::ok()) {
+        if (goal->is_canceling())
+            return MotionOutcome::CANCELED;
+
+        if (escape_busy_.load())
+            return MotionOutcome::FAILED;
+
+        const auto task = taskStateFreshness();
+
+        if (!task.fresh ||
+            !hb_robot::recovery::geometryPermitted(task.state) ||
+            !task.state.scene_valid ||
+            !hb_robot::recovery::sameVersions(
+                task.state, execution_state_) ||
+            !torch_controller_ ||
+            !torch_controller_->hasFreshIO() ||
+            torch_controller_->hasFault())
+            return MotionOutcome::FAILED;
+
+        const auto t = torch_controller_->snapshot();
+
+        if (t.output_on != std::optional<bool>(false) ||
+            t.transfer_detected != std::optional<bool>(false))
+            return MotionOutcome::FAILED;
+
+        std::unique_lock<std::mutex> lock(approval_mutex_);
+
+        if (motion_rejected_)
+            return MotionOutcome::REJECTED;
+
+        if (motion_approved_)
+            return MotionOutcome::SUCCESS;
+
+        approval_cv_.wait_for(
+            lock, std::chrono::milliseconds(100));
+    }
+
+    return MotionOutcome::FAILED;
+}
+
+void CutProfileServer::requestRecoveryStop()
+{
+    latchMotionStop("requestRecoveryStop");
+
+    if (torch_controller_)
+        torch_controller_->requestOutputOff();
+
+    if (move_group_ &&
+        (motion_active_.load() ||
+         recovery_motion_active_.load()))
+        move_group_->stop();
+
+    approval_cv_.notify_all();
+}
+
+
+    
+    CutProfileServer::MotionOutcome
+    CutProfileServer::executeRecoveryMotion(
+            const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+            const std::shared_ptr<GoalHandleRecoverCut>& goal,
+            const std::string& phase)
+        {
+            if (goal->is_canceling())
+                return MotionOutcome::CANCELED;
+
+            const auto safe = [&]() {
+                const auto task = taskStateFreshness();
+
+                if (!task.fresh ||
+                    !hb_robot::recovery::geometryPermitted(task.state) ||
+                    !task.state.scene_valid ||
+                    !hb_robot::recovery::sameVersions(
+                        task.state, execution_state_) ||
+                    !torch_controller_ ||
+                    !torch_controller_->hasFreshIO() ||
+                    torch_controller_->hasFault())
+                    return false;
+
+                const auto t = torch_controller_->snapshot();
+
+                return t.output_on == std::optional<bool>(false) &&
+                    t.transfer_detected == std::optional<bool>(false);
+            };
+
+            if (cut_stop_requested_.load() || !safe())
+                return MotionOutcome::FAILED;
+
+            auto feedback = std::make_shared<RecoverCut::Feedback>();
+            feedback->stage = phase;
+            goal->publish_feedback(feedback);
+
+            const auto outcome = move_group_->execute(plan);
+
+            if (goal->is_canceling())
+                return MotionOutcome::CANCELED;
+
+            if (cut_stop_requested_.load() ||
+                !safe() ||
+                outcome != moveit::core::MoveItErrorCode::SUCCESS)
+                return MotionOutcome::FAILED;
+
+            return MotionOutcome::SUCCESS;
+        }
+
+                    namespace {
+
+                    using RecoveryPlan =
+                        moveit::planning_interface::MoveGroupInterface::Plan;
+
+                    bool recoveryJointMatch(
+                        const moveit::core::RobotState& actual,
+                        const moveit::core::RobotState& target,
+                        const moveit::core::JointModelGroup* jmg,
+                        double tolerance_rad = 0.02)
+                    {
+                        if (!jmg) return false;
+
+                        std::vector<double> a, b;
+                        actual.copyJointGroupPositions(jmg, a);
+                        target.copyJointGroupPositions(jmg, b);
+
+                        if (a.size() != b.size() || a.empty())
+                            return false;
+
+                        for (size_t i = 0; i < a.size(); ++i) {
+                            if (!std::isfinite(a[i]) ||
+                                !std::isfinite(b[i]) ||
+                                std::abs(a[i] - b[i]) > tolerance_rad)
+                                return false;
+                        }
+                        return true;
+                    }
+
+                    bool recoveryPathValid(
+                        const RecoveryPlan& plan,
+                        const planning_scene::PlanningSceneConstPtr& scene,
+                        const std::string& group)
+                    {
+                        if (!scene) return false;
+
+                        const auto& jt = plan.trajectory_.joint_trajectory;
+                        if (jt.points.empty() || jt.joint_names.empty())
+                            return false;
+
+                        auto state = scene->getCurrentState();
+                        const auto* jmg = state.getJointModelGroup(group);
+                        if (!jmg ||
+                            jt.joint_names.size() !=
+                                jmg->getActiveJointModels().size())
+                            return false;
+
+                        for (const auto* joint : jmg->getActiveJointModels()) {
+                            if (std::count(jt.joint_names.begin(),
+                                        jt.joint_names.end(),
+                                        joint->getName()) != 1)
+                                return false;
+                        }
+
+                        for (const auto& point : jt.points) {
+                            if (point.positions.size() != jt.joint_names.size())
+                                return false;
+                            for (double q : point.positions)
+                                if (!std::isfinite(q)) return false;
+                        }
+
+                        auto collisionFree = [&](const std::vector<double>& q) {
+                            for (size_t j = 0; j < q.size(); ++j)
+                                state.setVariablePosition(jt.joint_names[j], q[j]);
+
+                            state.update();
+                            
+                            return state.satisfiesBounds(jmg) &&
+                                !scene->isStateColliding(state, group);
+                        };
+
+                        if (!collisionFree(jt.points.front().positions))
+                            return false;
+
+                        for (size_t i = 1; i < jt.points.size(); ++i) {
+                            const auto& a = jt.points[i - 1].positions;
+                            const auto& b = jt.points[i].positions;
+
+                            double max_delta = 0.0;
+                            for (size_t j = 0; j < a.size(); ++j)
+                                max_delta =
+                                    std::max(max_delta, std::abs(b[j] - a[j]));
+
+                            const int steps = std::max(
+                                1, static_cast<int>(
+                                    std::ceil(max_delta / 0.01)));
+
+                            for (int k = 1; k <= steps; ++k) {
+                                std::vector<double> q(a.size());
+
+                                const double alpha =
+                                    static_cast<double>(k) / steps;
+
+                                for (size_t j = 0; j < a.size(); ++j)
+                                    q[j] = a[j] + alpha * (b[j] - a[j]);
+
+                                if (!collisionFree(q))
+                                    return false;
+                            }
+                        }
+
+                        return true;
+                    }
+
+                    } // anonymous namespace
+
+
+bool CutProfileServer::recoveryRobotStationary(
+    const moveit::core::JointModelGroup* jmg)
+{
+    if (!jmg) return false;
+
+    auto first = move_group_->getCurrentState(2.0);
+    if (!first) return false;
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(250));
+
+    auto second = move_group_->getCurrentState(2.0);
+    if (!second) return false;
+
+    std::vector<double> a, b;
+    first->copyJointGroupPositions(jmg, a);
+    second->copyJointGroupPositions(jmg, b);
+
+    if (a.size() != b.size() || a.empty())
+        return false;
+
+    constexpr double max_delta_rad = 0.002;
+
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) ||
+            !std::isfinite(b[i]) ||
+            std::abs(a[i] - b[i]) > max_delta_rad)
+            return false;
+    }
+
+    return true;
+}
+
+    
+
+
+bool CutProfileServer::armApprovedRecoveryMotion(
+    uint64_t expected_generation,
+    const std::shared_ptr<GoalHandleRecoverCut>& goal)
+{
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+
+    if (stop_generation_.load() != expected_generation ||
+        goal->is_canceling() ||
+        escape_busy_.load() ||
+        !busy_.load() ||
+        recovery_motion_active_.load()) {
+        return false;
+    }
+
+    const auto task = taskStateFreshness();
+
+    if (!task.fresh ||
+        !hb_robot::recovery::geometryPermitted(task.state) ||
+        !task.state.scene_valid ||
+        !hb_robot::recovery::sameVersions(
+            task.state, execution_state_) ||
+        !torch_controller_ ||
+        !torch_controller_->hasFreshIO() ||
+        torch_controller_->hasFault()) {
+        return false;
+    }
+
+    const auto telemetry = torch_controller_->snapshot();
+
+    if (telemetry.output_on != std::optional<bool>(false) ||
+        telemetry.transfer_detected != std::optional<bool>(false)) {
+        return false;
+    }
+
+    // Clear only the previous interruption's stop latch.
+    // New stop requests must acquire stop_mutex_.
+    cut_stop_requested_.store(false);
+    recovery_motion_active_.store(true);
+    motion_active_.store(true);
+
+    return true;
+}
+
+void CutProfileServer::finishRecoveryMotion()
+{
+    // Call only after MoveIt execution is terminal.
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+    recovery_motion_active_.store(false);
+    motion_active_.store(false);
+}
+                
+    void CutProfileServer::recoverCut(
+        const std::shared_ptr<GoalHandleRecoverCut> goal)
+            {
+                using Clock = std::chrono::steady_clock;
+
+                auto result =
+                    std::make_shared<RecoverCut::Result>();
+
+
+                    result->success = false;
+                    result->home_reached = false;
+                    result->interrupted = true;
+
+                result->pose_revalidation_required = true;
+
+                auto fail = [&](const std::string& message) {
+                    
+
+                    result->success = false;
+                    result->home_reached = false;
+                    result->interrupted = true;
+                    result->message = message;
+
+                    releaseGoalAdmission();
+
+                    if (goal->is_canceling())
+                        goal->canceled(result);
+                    else
+                        goal->abort(result);
+                };
+
+                // Do not wait indefinitely behind an active cut.
+                std::unique_lock<std::mutex> execution_lock(
+                    execution_mutex_, std::try_to_lock);
+
+                if (!execution_lock.owns_lock()) {
+                    fail("Execution worker still active");
+                    return;
+                }
+
+                const auto request = goal->get_goal();
+
+                const auto it =
+                    stored_plans_.find(request->interrupted_plan_id);
+
+                if (it == stored_plans_.end()) {
+                    fail("Interrupted stored plan not found");
+                    return;
+                }
+
+                const auto& stored = it->second;
+
+                if (stored.cut_id != request->cut_id ||
+                    !stored.consumed ||
+                    stored.executable.cuts.size() != 1) {
+                    fail("Invalid interrupted feature plan");
+                    return;
+                }
+
+                if (!torch_controller_ ||
+                    !torch_controller_->hasFreshIO()) {
+                    fail("Torch telemetry unavailable");
+                    return;
+                }
+
+                const auto telemetry =
+                    torch_controller_->snapshot();
+
+                if (telemetry.output_on !=
+                        std::optional<bool>(false) ||
+                    telemetry.transfer_detected !=
+                        std::optional<bool>(false) ||
+                    torch_controller_->hasFault()) {
+                    fail("Torch is not confirmed safe for recovery");
+                    return;
+                }
+
+                const auto task = taskStateFreshness();
+
+                if (!task.fresh ||
+                    !hb_robot::recovery::geometryPermitted(
+                        task.state) ||
+                    !hb_robot::recovery::sameVersions(
+                        task.state, stored.versions) ||
+                    !task.state.scene_valid) {
+                    fail("TaskState is not valid for recovery");
+                    return;
+                }
+
+                
+
+                // Continue with flap opening, stationary-state checks,
+                // fresh scene validation and recovery planning.
+
+                ////
+                const auto& cut =
+                    stored.executable.cuts.front();
+
+                const auto retract_goal =
+                    getFinalState(cut.process.retract);
+
+                /// recover to home:
+
+
+                auto actual = move_group_->getCurrentState(2.0);
+
+                if (!actual) {
+                    fail("Cannot obtain actual robot state");
+                    return;
+                }
+
+                actual->update();
+
+                // Construct inspection_home from the SRDF,
+                // as already done in your planning code.
+                moveit::core::RobotState home(
+                    move_group_->getRobotModel());
+
+                home.setToDefaultValues();
+
+                const auto* jmg =
+                    home.getJointModelGroup(planning_group_);
+
+                if (!jmg) {
+                    fail("Planning group unavailable");
+                    return;
+                }
+
+                const auto& names = jmg->getDefaultStateNames();
+
+                if (std::find(
+                        names.begin(),
+                        names.end(),
+                        "inspection_home") == names.end()) {
+                    fail("SRDF inspection_home missing");
+                    return;
+                }
+
+                home.setToDefaultValues(
+                    jmg, "inspection_home");
+
+                home.update();
+
+                std::optional<
+                    moveit::planning_interface::
+                        MoveGroupInterface::Plan> to_retract;
+
+                std::optional<
+                    moveit::planning_interface::
+                        MoveGroupInterface::Plan> to_home;
+
+
+
+                if (request->prefer_retract_endpoint) {
+                    to_retract = planToState(
+                        *actual, retract_goal);
+
+                    if (to_retract) {
+                        to_home = planToState(
+                            getFinalState(*to_retract), home);
+                    }
+                }
+                if (!setFlapClosed(false)) {
+                    fail("Could not open camera flap");
+                    return;
+                }
+
+                // Do not execute anything yet.
+                // Both legs must pass fresh collision and
+                // trajectory-continuity validation.
+               
+                // Both legs must exist before asking for approval.
+                if (!to_retract || !to_home) {
+                    fail("Two-leg recovery route unavailable");
+                    return;
+                }
+           
+            ///////////////////////////////////////////////////////////////
+
+
+            if (!planning_scene_monitor_->requestPlanningSceneState(
+                    "/get_planning_scene")) {
+                fail("Cannot refresh recovery planning scene");
+                return;
+            }
+
+            planning_scene::PlanningScenePtr scene;
+            {
+                planning_scene_monitor::LockedPlanningSceneRO locked(
+                    planning_scene_monitor_);
+
+                if (!locked) {
+                    fail("Cannot lock recovery scene");
+                    return;
+                }
+
+                auto copy = locked->diff();
+                copy->decoupleParent();
+                scene = copy;
+            }
+            if (!prepareCuttingScene(scene)) {
+                    fail("Recovery scene normalization failed");
+                    return;
+                }
+
+            if (!scene ||
+                !scene->getWorld()->hasObject("wk_workpiece_collision") ||
+                scene->getWorld()->hasObject("inspection_workpiece")) {
+                fail("Recovery scene is missing authoritative workpiece");
+                return;
+            }
+
+            if (!recoveryPathValid(*to_retract, scene, planning_group_) ||
+                !recoveryPathValid(*to_home, scene, planning_group_)) {
+                fail("Recovery trajectory collision/bounds validation failed");
+                return;
+            }
+
+            const auto first_start =
+                [&] {
+                    moveit::core::RobotState s(move_group_->getRobotModel());
+                    moveit::core::robotStateMsgToRobotState(
+                        to_retract->start_state_, s);
+                    s.update();
+                    return s;
+                }();
+
+            const auto first_end = getFinalState(*to_retract);
+
+            const auto second_start =
+                [&] {
+                    moveit::core::RobotState s(move_group_->getRobotModel());
+                    moveit::core::robotStateMsgToRobotState(
+                        to_home->start_state_, s);
+                    s.update();
+                    return s;
+                }();
+
+            if (!recoveryJointMatch(*actual, first_start, jmg)) {
+                fail("First recovery plan does not start at stopped robot state");
+                return;
+            }
+
+            if (!recoveryJointMatch(first_end, second_start, jmg)) {
+                fail("Recovery legs are not joint-continuous");
+                return;
+            }
+
+            if (!recoveryJointMatch(getFinalState(*to_home), home, jmg)) {
+                fail("Recovery plan does not terminate at inspection_home");
+                return;
+            }
+            
+            if (!actual->satisfiesBounds(jmg) ||
+                scene->isStateColliding(*actual, planning_group_)) {
+                fail("Stopped robot state is invalid or colliding");
+                return;
+            }
+
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT RECOVERY] Both recovery legs validated "
+                "against synchronized scene");
+
+
+            auto feedback = std::make_shared<RecoverCut::Feedback>();
+            feedback->stage = "awaiting recovery motion approval";
+            goal->publish_feedback(feedback);
+
+               
+
+            execution_state_ = task.state;
+
+            {
+                std::lock_guard<std::mutex> lock(approval_mutex_);
+
+                motion_approved_ = false;
+                motion_rejected_ = false;
+                approval_operation_ =
+                    "recovery/" + request->interrupted_plan_id;
+                approval_pending_ = true;
+            }
+
+
+
+
+
+            RCLCPP_WARN(
+                get_logger(),
+                "[CUT RECOVERY] Awaiting operator approval: "
+                "plan=%s route=actual->retract->inspection_home",
+                request->interrupted_plan_id.c_str());
+            const uint64_t stop_generation_before_approval =
+            stop_generation_.load();
+            const auto approval = waitForRecoveryApproval(goal);
+
+            {
+                std::lock_guard<std::mutex> lock(approval_mutex_);
+                approval_pending_ = false;
+                approval_operation_.clear();
+            }
+
+            if (approval != MotionOutcome::SUCCESS) {
+                fail("Recovery approval rejected or invalidated");
+                return;
+            }
+
+            // Recheck fresh TaskState, actual start configuration,
+            // torch OFF, flap clearance, scene and both trajectories
+            // after approval. Approval alone must not bypass these gates.
+
+            ///////////////////////////////////////////////////
+
+            // Recheck after approval.
+            const auto refreshed = taskStateFreshness();
+
+            if (!refreshed.fresh ||
+                !hb_robot::recovery::geometryPermitted(refreshed.state) ||
+                !refreshed.state.scene_valid ||
+                !hb_robot::recovery::sameVersions(
+                    refreshed.state, execution_state_)) {
+                fail("TaskState changed after recovery approval");
+                return;
+            }
+
+            if (goal->is_canceling() || escape_busy_.load()) {
+                fail("Recovery canceled before execution");
+                return;
+            }
+
+            if (!recoveryRobotStationary(jmg)) {
+                fail("Robot not confirmed stationary");
+                return;
+            }
+
+            auto measured_start = move_group_->getCurrentState(2.0);
+
+            if (!measured_start ||
+                !recoveryJointMatch(*measured_start, first_start, jmg)) {
+                fail("Recovery start state changed after approval");
+                return;
+            }
+
+            // REQUIRED: synchronized recovery admission that clears
+            // only the previous stop latch and cannot erase a new stop.
+            // Do not replace this with an unconditional store(false).
+            if (!armApprovedRecoveryMotion(
+                    stop_generation_before_approval, goal)) {
+                fail("Recovery motion admission denied");
+                return;
+            }
+
+            RCLCPP_WARN(
+                get_logger(),
+                "[CUT RECOVERY] Approved recovery motion armed");
+
+            ////////////////////////////////////
+
+            const auto first = executeRecoveryMotion(
+                *to_retract, goal, "recovery: to retract");
+
+            if (first != MotionOutcome::SUCCESS) {
+                requestRecoveryStop();
+                // Keep admission owned until execution is terminal.
+                finishRecoveryMotion();
+                fail("Recovery retract motion failed");
+                return;
+            }
+
+            auto measured_retract = move_group_->getCurrentState(2.0);
+
+            if (!measured_retract ||
+                !recoveryJointMatch(
+                    *measured_retract, second_start, jmg)) {
+                requestRecoveryStop();
+                finishRecoveryMotion();
+                fail("Robot not at second recovery leg start");
+                return;
+            }
+            /////////////////////////////
+            const auto second = executeRecoveryMotion(
+                *to_home, goal, "recovery: return home");
+
+            if (second != MotionOutcome::SUCCESS) {
+                requestRecoveryStop();
+                finishRecoveryMotion();
+                fail("Recovery return-home motion failed");
+                return;
+            }
+
+            auto measured_home = move_group_->getCurrentState(2.0);
+
+            if (!measured_home ||
+                !recoveryJointMatch(*measured_home, home, jmg)) {
+                requestRecoveryStop();
+                finishRecoveryMotion();
+                fail("Inspection home not confirmed");
+                return;
+            }
+
+            finishRecoveryMotion();
+
+
+            //////////////////////////////////////////////////////
+
+            result->success = true;
+            result->home_reached = true;
+            result->interrupted = false;
+            result->pose_revalidation_required = true;
+            result->message = "Recovery completed at inspection_home";
+
+            releaseGoalAdmission();
+            goal->succeed(result);
+
+            }
+
+    bool CutProfileServer::latchMotionStop(const char* reason)
+{
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+
+    const bool first_stop =
+        !cut_stop_requested_.load();
+
+    ++stop_generation_;
+    cut_stop_requested_.store(true);
+
+    if (first_stop) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "[CUT STOP FIRST] reason=%s "
+            "generation=%llu motion_active=%d "
+            "recovery_active=%d retreat_active=%d",
+            reason,
+            static_cast<unsigned long long>(
+                stop_generation_.load()),
+            int(motion_active_.load()),
+            int(recovery_motion_active_.load()),
+            int(retreat_active_.load()));
+    }
+
+    return first_stop;
+}
 
 
 }//namescape skills

@@ -13,6 +13,7 @@
 #include "hb_robot_interfaces/msg/profile_estimate.hpp"
 #include "hb_robot_interfaces/msg/workpiece_reference.hpp"
 #include "hb_robot_interfaces/srv/clear_torch_fault.hpp"
+#include "hb_robot_interfaces/action/recover_cut.hpp"
 
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
@@ -42,10 +43,7 @@ namespace hb_robot_skills{
             using CutProfile = hb_robot_interfaces::action::CutProfile;
             using GoalHandleCutProfile = rclcpp_action::ServerGoalHandle<CutProfile>;
 
-
-
-
-
+        
             explicit CutProfileServer(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
             void initialize();
             enum class CutPlanningMode {
@@ -122,6 +120,11 @@ namespace hb_robot_skills{
                 std::shared_ptr<
                     hb_robot_interfaces::srv::ClearTorchFault::Response> response);
             
+
+                
+            
+
+    
             
         private:
 
@@ -270,6 +273,52 @@ namespace hb_robot_skills{
         hb_robot_interfaces::msg::ProfileEstimate latest_estimate_;
         std::unique_ptr<motion::CutPlanner> cut_planner_;
 
+        //////////////////////////////////////////////////////
+        using RecoverCut =
+            hb_robot_interfaces::action::RecoverCut;
+
+        using GoalHandleRecoverCut =
+            rclcpp_action::ServerGoalHandle<RecoverCut>;
+
+        rclcpp_action::Server<RecoverCut>::SharedPtr
+            recover_cut_server_;
+
+        std::thread recovery_worker_;
+
+        std::atomic<bool> recovery_busy_{false};
+
+        rclcpp_action::GoalResponse handleRecoveryGoal(
+            const rclcpp_action::GoalUUID& uuid,
+            std::shared_ptr<const RecoverCut::Goal> goal);
+
+        rclcpp_action::CancelResponse handleRecoveryCancel(
+            const std::shared_ptr<GoalHandleRecoverCut> goal);
+
+        void handleRecoveryAccepted(
+            const std::shared_ptr<GoalHandleRecoverCut> goal);
+
+        void recoverCut(
+            const std::shared_ptr<GoalHandleRecoverCut> goal);
+            
+        bool recoveryRobotStationary(
+            const moveit::core::JointModelGroup* jmg);
+        MotionOutcome waitForRecoveryApproval(
+            const std::shared_ptr<GoalHandleRecoverCut>& goal);
+        MotionOutcome executeRecoveryMotion(
+            const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+            const std::shared_ptr<GoalHandleRecoverCut>& goal,
+            const std::string& phase);
+        std::atomic<bool> recovery_motion_active_{false};
+            void requestRecoveryStop();
+            std::mutex stop_mutex_;
+            std::atomic<uint64_t> stop_generation_{0};
+
+            bool armApprovedRecoveryMotion(
+                uint64_t expected_generation,
+                const std::shared_ptr<GoalHandleRecoverCut>& goal);
+            void finishRecoveryMotion();
+        bool latchMotionStop(const char* reason);
+        ///////////////////////////////////////////////////////////
         std::unique_ptr<motion::CutProcessTrajectoryGenerator> process_generator_;
         std::unique_ptr<motion::CutGraphPlanner> cut_graph_planner_;
         rclcpp_action::Server<CutProfile>::SharedPtr action_server_;
@@ -280,6 +329,8 @@ namespace hb_robot_skills{
         rclcpp::Publisher<moveit_msgs::msg::DisplayRobotState>::SharedPtr debug_robot_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
             collision_debug_pub_;
+        bool approval_pending_ = false;  // guarded by approval_mutex_
+        std::string approval_operation_; // guarded by approval_mutex_
 
 
         planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;

@@ -38,6 +38,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ExecuteCut.action"
   "action/InspectCut.action"
   "action/InspectProfile.action"
+  "action/RecoverCut.action"
   "action/InspectScene.action"
   "action/ReturnToInspectionHome.action"
   "action/CutProfile.action"

@@ -16,6 +16,7 @@ namespace hb_robot_skills {
 CutProfileServer::~CutProfileServer() {
   if(worker_.joinable()) worker_.join();
   if(escape_worker_.joinable()) escape_worker_.join();
+  if(recovery_worker_.joinable()) recovery_worker_.join();
 }
 
 
