@@ -18,8 +18,8 @@
     <arg name="launch_rviz" default="false"/>
 
 
-    <arg name="initial_joint_controller"
-         default="scaled_joint_trajectory_controller"/>
+    <arg name="initial_joint_controller" default="passthrough_trajectory_controller"/>
+         <!-- default="scaled_joint_trajectory_controller"/> -->
     <arg name="activate_joint_controller" default="true"/>
 
 

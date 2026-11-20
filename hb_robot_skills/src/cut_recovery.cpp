@@ -42,7 +42,7 @@ CutProfileServer::taskStateFreshness() const
             std::chrono::steady_clock::now() -
             task_received_).count();
 
-    result.fresh = result.age_ms < 500.0;
+    result.fresh = result.age_ms < task_state_timeout_ms_;
 
     return result;
 }
@@ -169,25 +169,35 @@ void CutProfileServer::executeStored(
   if(require_plan_approval_) {
     RCLCPP_INFO(get_logger(), "[CUT PREFLIGHT] waiting for approval plan=%s", id.c_str());
     const auto approved = waitForPlanApproval(h);
-    if(approved != MotionOutcome::SUCCESS) {
-      bool accepted = false, rejected = false;
-      {
-        std::lock_guard<std::mutex> lock(approval_mutex_);
-        accepted = motion_approved_;
-        rejected = motion_rejected_;
+      if (approved != MotionOutcome::SUCCESS) {
+          result->approval_rejected =
+              approved == MotionOutcome::REJECTED;
+
+        finish(
+              result->approval_rejected
+                  ? "Operator rejected cut feature"
+                  : "Execution approval not granted");
+          return;
       }
-      TaskState s;
-      const bool ok = taskPermitsExecution(&s);
-      finish("approval outcome=" + std::to_string(static_cast<int>(approved)) +
-             " approved=" + std::to_string(accepted) +
-             " rejected=" + std::to_string(rejected) +
-             " canceled=" + std::to_string(h->is_canceling()) +
-             " cut_stop=" + std::to_string(cut_stop_requested_.load()) +
-             " escape=" + std::to_string(escape_busy_.load()) +
-             " task_permitted=" + std::to_string(ok) + " " +
-             stateDetails(s, stored.versions));
-      return;
-    }
+    
+    //   bool accepted = false, rejected = false;
+    //   {
+    //     std::lock_guard<std::mutex> lock(approval_mutex_);
+    //     accepted = motion_approved_;
+    //     rejected = motion_rejected_;
+    //   }
+    //   TaskState s;
+    //   const bool ok = taskPermitsExecution(&s);
+    //   finish("approval outcome=" + std::to_string(static_cast<int>(approved)) +
+    //          " approved=" + std::to_string(accepted) +
+    //          " rejected=" + std::to_string(rejected) +
+    //          " canceled=" + std::to_string(h->is_canceling()) +
+    //          " cut_stop=" + std::to_string(cut_stop_requested_.load()) +
+    //          " escape=" + std::to_string(escape_busy_.load()) +
+    //          " task_permitted=" + std::to_string(ok) + " " +
+    //          stateDetails(s, stored.versions));
+    //   return;
+    // }
   }
 
   stage = "post_approval_task_state";

@@ -258,7 +258,7 @@ namespace hb_robot_skills{
         rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr flap_client_;
         std::chrono::milliseconds flap_travel_time_{500};
         std::unique_ptr<TorchController> torch_controller_;
-
+        int task_state_timeout_ms_ = 1000;
 
         
 

@@ -74,7 +74,7 @@
       </Repeat>
 
       <!-- A partially planned batch cannot pass. -->
-      <Condition ID="AllCutFeaturesCompleted"/>
+      <Condition ID="AllCutFeaturesResolved"/>
 
     </Sequence>
 

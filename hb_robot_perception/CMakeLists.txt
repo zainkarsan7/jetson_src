@@ -27,6 +27,9 @@ find_package(cv_bridge REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(rcl_interfaces REQUIRED)
+find_package(urdf REQUIRED)
+find_package(geometric_shapes REQUIRED)
 
 include_directories(include)
 
@@ -134,6 +137,26 @@ target_link_libraries(collision_publisher_node
 hb_perception
 )
 
+add_executable(capture_cut_environment_node
+src/capture_cut_environment.cpp)
+ament_target_dependencies(capture_cut_environment_node
+  rclcpp
+  rcl_interfaces
+  hb_robot_interfaces
+  sensor_msgs
+  geometry_msgs
+  shape_msgs
+  moveit_msgs
+  std_srvs
+  visualization_msgs
+  tf2
+  tf2_ros
+  urdf
+  geometric_shapes
+)
+target_link_libraries(capture_cut_environment_node
+Eigen3::Eigen)
+
 
 add_executable(platform_telemetry_node
 src/platform_telemetry_node.cpp)
@@ -163,6 +186,7 @@ install(
   collision_publisher_node
   platform_telemetry_node
   lidar_extrinsic_calibrator
+  capture_cut_environment_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 

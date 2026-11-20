@@ -18,7 +18,7 @@
 #include <hb_robot_interfaces/msg/workpiece_reference.hpp>
 #include <hb_robot_interfaces/msg/platform_supervision.hpp>
 #include "hb_robot_interfaces/action/recover_cut.hpp"
-
+#include <type_traits>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -74,7 +74,8 @@ struct Context {
           Completed,
           Interrupted,
           RecoveredPendingInspection,
-          ExecutionFailed
+          ExecutionFailed,
+          Rejected
       };
 
       Status status = Status::Unplannable;
@@ -295,6 +296,17 @@ class ActionNode : public BT::StatefulActionNode {
       // Let the action-specific handler inspect the payload,
       // including diagnostic fields on an aborted result.
       const bool accepted = finish_(*wrapped.result);
+
+      // An operator-rejected cut is a successfully handled
+        // task decision, even though the ROS action was aborted.
+        if constexpr (std::is_same_v<Action, Cut>) {
+            if (wrapped.result->approval_rejected) {
+                return accepted
+                    ? BT::NodeStatus::SUCCESS
+                    : BT::NodeStatus::FAILURE;
+            }
+        }
+
 
       if (wrapped.code !=
               rclcpp_action::ResultCode::SUCCEEDED ||
@@ -925,7 +937,27 @@ int main(int argc, char** argv) {
 
         return BT::NodeStatus::SUCCESS;
     });
+    condition("AllCutFeaturesResolved", [=] {
+    using Status = Context::FeaturePlanEntry::Status;
 
+    if (!context->independent_batch ||
+        context->feature_plans.empty() ||
+        context->batch_interrupted ||
+        !context->plan_id.empty()) {
+        return false;
+    }
+
+    return std::all_of(
+        context->feature_plans.begin(),
+        context->feature_plans.end(),
+        [](const auto& feature) {
+            return feature.status == Status::Completed ||
+                   feature.status == Status::Rejected ||
+                   feature.status == Status::Unplannable ||
+                   feature.status ==
+                       Status::RecoveredPendingInspection;
+        });
+    });
   
   condition("AllCutFeaturesCompleted", [=] {
     if (!context->independent_batch)
@@ -1721,15 +1753,31 @@ int main(int argc, char** argv) {
             !result.interrupted &&
             result.completed_segments == 1;
 
+        const bool rejected =
+            result.approval_rejected &&
+            !result.executed &&
+            !result.interrupted &&
+            result.completed_segments == 0;
+
         const bool interrupted =
             !completed &&
+            !rejected &&
             result.interrupted &&
             result.executed;
 
         if (completed) {
             it->status =
                 Context::FeaturePlanEntry::Status::Completed;
-        } else if (interrupted) {
+        } else if(rejected) {
+            it->status = Context::FeaturePlanEntry::Status::Rejected;
+            it->message = result.message;
+            // No motion occurred. Keep the other features
+            // ready and do not initiate recovery.
+            context->batch_interrupted = false;
+
+
+
+        }else if (interrupted) {
             it->status =
                 Context::FeaturePlanEntry::Status::Interrupted;
 
@@ -1737,7 +1785,8 @@ int main(int argc, char** argv) {
             context->interrupted_plan_id = it->plan_id;
             context->interrupted_feature_id = it->feature_id;
             context->recovery_home_reached = false;
-        } else {
+        } 
+        else {
             it->status =
                 Context::FeaturePlanEntry::Status::ExecutionFailed;
 
@@ -1753,12 +1802,15 @@ int main(int argc, char** argv) {
             "[CUT FEATURE] %s: %s",
             it->feature_id.c_str(),
             completed ? "COMPLETED" :
+            rejected ? "REJECTED" :
             interrupted ? "INTERRUPTED" : "EXECUTION_FAILED");
 
 
         // context->plan_id.clear();
         context->clearSelectedFeature();
-        return completed;
+        // Both completion and deliberate rejection allow
+        // the independent batch to advance.
+        return completed || rejected;
     }
 
     context->plan_id.clear();

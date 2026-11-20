@@ -482,21 +482,47 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
             return orientationError(other, offset) < 1e-6;
         })) orientations.push_back(offset);
     }
+
+    // Match the graph's transit objective before truncating the candidate pool.
+    const auto transit_rank = [&](const moveit::core::RobotState& state) {
+        double total = 0.0, maximum = 0.0;
+        for (const auto* joint : joint_model_group_->getActiveJointModels()) {
+            if (joint->getVariableCount() != 1) continue;
+            const auto& name = joint->getVariableNames().front();
+            const double travel = std::abs(state.getVariablePosition(name) - reference_state.getVariablePosition(name));
+            total += travel;
+            maximum = std::max(maximum, travel);
+        }
+        const double excess = std::max(0.0, maximum - options_.preferred_joint_travel_rad);
+        return total + 2.0 * maximum + options_.excess_travel_weight * excess * excess;
+    };
+
+    const auto candidate_rank = [&](const ProcessCandidate& candidate) {
+    return options_.retention_process_weight * candidate.score +
+        (options_.rank_transits_via_home
+            ? options_.retention_transit_weight *
+                (transit_rank(*candidate.entry) +
+                 transit_rank(*candidate.exit))
+            : 0.0);
+    };
+
     for (const auto& offset : orientations) {
         const double roll = std::atan2(offset(1,0), offset(0,0));
-        const auto initial_count = result.candidates.size();
+        // const auto initial_count = result.candidates.size();
+        std::vector<ProcessCandidate> roll_candidates;
+
         const CartesianPath path = buildCartesianPath(segment, offset);
 
         for (std::size_t seed_index = 0;
              seed_index < options_.seeds_per_roll;
              ++seed_index)
         {
-            if (options_.max_candidates_per_roll > 0 &&
-                result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
+            // if (options_.max_candidates_per_roll > 0 &&
+            //     result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
             for (std::size_t d = 0; d < direction_count; ++d)
             {
-                if (options_.max_candidates_per_roll > 0 &&
-                    result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
+                // if (options_.max_candidates_per_roll > 0 &&
+                //     result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
                 const bool backward = d == 1;
                 const auto geometric = backward ? segment.retract_state : segment.approach_state;
                 const bool global = seed_index >= options_.seeds_per_roll - options_.global_seeds_per_roll;
@@ -557,43 +583,94 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
                     seed_index,
                     backward);
 
-                if (isDuplicate(candidate, result.candidates))
+                if (isDuplicate(candidate, roll_candidates)||isDuplicate(candidate, result.candidates))
                 {
                     ++result.stats.duplicate_candidates;
                     continue;
                 }
-
-                result.candidates.push_back(std::move(candidate));
+                roll_candidates.push_back(std::move(candidate));
+                // result.candidates.push_back(std::move(candidate));
             }
         }
-    }
+        std::stable_sort(
+            roll_candidates.begin(),
+            roll_candidates.end(),
+            [&](const auto& a, const auto& b) {
+                return candidate_rank(a) < candidate_rank(b);
+            });
 
-    // Match the graph's transit objective before truncating the candidate pool.
-    const auto transit_rank = [&](const moveit::core::RobotState& state) {
-        double total = 0.0, maximum = 0.0;
-        for (const auto* joint : joint_model_group_->getActiveJointModels()) {
-            if (joint->getVariableCount() != 1) continue;
-            const auto& name = joint->getVariableNames().front();
-            const double travel = std::abs(state.getVariablePosition(name) - reference_state.getVariablePosition(name));
-            total += travel;
-            maximum = std::max(maximum, travel);
-        }
-        const double excess = std::max(0.0, maximum - options_.preferred_joint_travel_rad);
-        return total + 2.0 * maximum + options_.excess_travel_weight * excess * excess;
-    };
-    std::stable_sort(
-        result.candidates.begin(),
-        result.candidates.end(),
-        [&](const ProcessCandidate& a,
-           const ProcessCandidate& b)
+        const std::size_t limit =
+            options_.max_candidates_per_roll == 0
+                ? roll_candidates.size()
+                : std::min(
+                    options_.max_candidates_per_roll,
+                    roll_candidates.size());
+
+        std::vector<bool> selected(roll_candidates.size(), false);
+        std::vector<ProcessCandidate> retained;
+        retained.reserve(limit);
+
+        // Best candidate always survives.
+        if (!roll_candidates.empty() && limit > 0)
         {
-            const auto rank = [&](const ProcessCandidate& candidate) {
-                return options_.retention_process_weight * candidate.score +
-                    (options_.rank_transits_via_home ? options_.retention_transit_weight *
-                    (transit_rank(*candidate.entry) + transit_rank(*candidate.exit)) : 0.0);
-            };
-            return rank(a) < rank(b);
-        });
+            retained.push_back(std::move(roll_candidates[0]));
+            selected[0] = true;
+        }
+
+        // Prefer genuinely different entry/exit configurations.
+        for (std::size_t i = 1;
+            i < roll_candidates.size() && retained.size() < limit;
+            ++i)
+        {
+            const auto& c = roll_candidates[i];
+
+            const bool distinct = std::all_of(
+                retained.begin(), retained.end(),
+                [&](const ProcessCandidate& other) {
+                    return std::max(
+                        jointDistance(*c.entry, *other.entry),
+                        jointDistance(*c.exit, *other.exit)) > 0.75;
+                });
+
+            if (distinct)
+            {
+                retained.push_back(std::move(roll_candidates[i]));
+                selected[i] = true;
+            }
+        }
+
+        // Fill remaining slots with the next best candidates.
+        for (std::size_t i = 1;
+            i < roll_candidates.size() && retained.size() < limit;
+            ++i)
+        {
+            if (!selected[i])
+                retained.push_back(std::move(roll_candidates[i]));
+        }
+
+        for (auto& c : retained)
+            result.candidates.push_back(std::move(c));
+    }
+    std::stable_sort(
+    result.candidates.begin(),
+    result.candidates.end(),
+    [&](const auto& a, const auto& b) {
+        return candidate_rank(a) < candidate_rank(b);
+    });
+    
+    // std::stable_sort(
+    //     result.candidates.begin(),
+    //     result.candidates.end(),
+    //     [&](const ProcessCandidate& a,
+    //        const ProcessCandidate& b)
+    //     {
+    //         const auto rank = [&](const ProcessCandidate& candidate) {
+    //             return options_.retention_process_weight * candidate.score +
+    //                 (options_.rank_transits_via_home ? options_.retention_transit_weight *
+    //                 (transit_rank(*candidate.entry) + transit_rank(*candidate.exit)) : 0.0);
+    //         };
+    //         return rank(a) < rank(b);
+    //     });
 
     if (result.candidates.size() > options_.max_candidates)
     {

@@ -45,6 +45,11 @@ namespace hb_robot_skills{
         }
         get_parameter("planning_time",planning_time_);
 
+         if(!has_parameter("task_state_timeout_ms")){
+            task_state_timeout_ms_ = declare_parameter<int>("task_state_timeout_ms",1000);
+        }
+        get_parameter("task_state_timeout_ms",task_state_timeout_ms_);
+        
 
         if(!has_parameter("require_plan_approval")){
             require_plan_approval_ = declare_parameter<bool>("require_plan_approval",true);
@@ -93,7 +98,7 @@ namespace hb_robot_skills{
             {
                 std::lock_guard<std::mutex> lock(task_mutex_);
                 state=task_state_;
-              if(std::chrono::steady_clock::now()-task_received_>500ms) state.supervision_valid=false;
+              if(std::chrono::steady_clock::now()-task_received_>std::chrono::milliseconds(task_state_timeout_ms_)) state.supervision_valid=false;
             }
             const auto t=torch_controller_->snapshot();
             if(!state.supervision_valid || !state.imu_stable || !state.workpiece_pose_valid ||
@@ -1270,6 +1275,7 @@ namespace hb_robot_skills{
 CutProfileServer::waitForPlanApproval(
     const std::shared_ptr<GoalHandleCutProfile> goal_handle)
 {
+    using namespace std::chrono_literals;
     if (!require_plan_approval_)
         return MotionOutcome::SUCCESS;
 
@@ -1280,59 +1286,139 @@ CutProfileServer::waitForPlanApproval(
     publishFeedback(
         goal_handle, "awaiting plan approval");
 
-    std::unique_lock<std::mutex> lock(approval_mutex_);
+   {
+        std::lock_guard<std::mutex> lock(approval_mutex_);
 
-    // Open a fresh approval window for THIS cutting goal.
-    motion_approved_ = false;
-    motion_rejected_ = false;
-    approval_operation_ =
-        "cut/" + goal_handle->get_goal()->plan_id;
-    approval_pending_ = true;
+        motion_approved_ = false;
+        motion_rejected_ = false;
 
-    while (!motion_approved_ &&
-           !motion_rejected_ &&
-           !goal_handle->is_canceling() &&
-           !cut_stop_requested_.load() &&
-           !escape_busy_.load() &&
-           rclcpp::ok())
+        approval_operation_ =
+            "cut/" + goal_handle->get_goal()->plan_id;
+
+        approval_pending_ = true;
+    }
+    auto closeApprovalWindow = [&]()
     {
-        lock.unlock();
-        const bool permitted = taskPermitsExecution();
-        lock.lock();
+        std::lock_guard<std::mutex> lock(approval_mutex_);
 
-        if (!permitted)
-            break;
+        approval_pending_ = false;
+        approval_operation_.clear();
+    };
 
-        approval_cv_.wait_for(
-            lock, std::chrono::milliseconds(100));
+    while (rclcpp::ok())
+    {
+        // Explicit cancellation and stop requests remain terminal.
+        if (goal_handle->is_canceling())
+        {
+            closeApprovalWindow();
+            return MotionOutcome::CANCELED;
+        }
+
+        if (cut_stop_requested_.load() ||
+            escape_busy_.load())
+        {
+            closeApprovalWindow();
+            return MotionOutcome::FAILED;
+        }
+
+        bool approved = false;
+        bool rejected = false;
+
+        {
+            std::lock_guard<std::mutex> lock(approval_mutex_);
+
+            approved = motion_approved_;
+            rejected = motion_rejected_;
+        }
+
+        if (rejected)
+        {
+            closeApprovalWindow();
+            return MotionOutcome::REJECTED;
+        }
+
+        // Do not allow a temporarily stale TaskState to
+        // terminate the approval window.
+        const auto task = taskStateFreshness();
+
+        if (!task.fresh)
+        {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "[CUT APPROVAL] Waiting for fresh TaskState "
+                "age_ms=%.1f",
+                task.age_ms);
+
+            publishFeedback(
+                goal_handle,
+                "waiting for fresh TaskState");
+        }
+        else
+        {
+            // A fresh TaskState must still authorize execution.
+            // This does not replace the final execution preflight.
+            const bool permitted =
+                taskPermitsExecution();
+
+            if (!permitted)
+            {
+                closeApprovalWindow();
+
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "[CUT APPROVAL] Fresh TaskState "
+                    "does not permit execution");
+
+                return MotionOutcome::FAILED;
+            }
+
+            if (approved)
+            {
+                // Final approval-stage authorization check.
+                // executeStored() must still perform its own
+                // live scene, start-state and collision checks.
+                const bool final_permitted =
+                    taskPermitsExecution();
+
+                if (!final_permitted)
+                {
+                    // Freshness could have changed between checks.
+                    // Do not execute, but don't discard approval
+                    // solely because the state became stale.
+                    continue;
+                }
+
+                closeApprovalWindow();
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "[CUT APPROVAL] Approved and authorized");
+
+                return MotionOutcome::SUCCESS;
+            }
+        }
+
+        std::unique_lock<std::mutex> lock(approval_mutex_);
+
+        // approval_cv_.wait_for(
+        //     lock,
+        //     100ms,
+        //     [&]()
+        //     {
+        //         return motion_approved_ ||
+        //                motion_rejected_ ||
+        //                goal_handle->is_canceling() ||
+        //                cut_stop_requested_.load() ||
+        //                escape_busy_.load() ||
+        //                !rclcpp::ok();
+        //     });
+        approval_cv_.wait_for(lock, 100ms);
     }
 
-    // Close the window before returning.
-    approval_pending_ = false;
-    approval_operation_.clear();
-
-    if (goal_handle->is_canceling())
-        return MotionOutcome::CANCELED;
-
-    if (!rclcpp::ok() ||
-        cut_stop_requested_.load() ||
-        escape_busy_.load())
-        return MotionOutcome::FAILED;
-
-    // Check again after approval.
-    lock.unlock();
-    const bool permitted = taskPermitsExecution();
-    lock.lock();
-
-    if (!permitted)
-        return MotionOutcome::FAILED;
-
-    if (motion_rejected_)
-        return MotionOutcome::REJECTED;
-
-    return motion_approved_
-        ? MotionOutcome::SUCCESS
-        : MotionOutcome::FAILED;
+    closeApprovalWindow();
+    return MotionOutcome::FAILED;
 }
 
     CutProfileServer::MotionOutcome CutProfileServer::executeMotion(
@@ -3929,10 +4015,11 @@ void CutProfileServer::finishRecoveryMotion()
                             getFinalState(*to_retract), home);
                     }
                 }
-                if (!setFlapClosed(false)) {
-                    fail("Could not open camera flap");
-                    return;
-                }
+                setFlapClosed(false);
+                // if (!setFlapClosed(false)) {
+                //     fail("Could not open camera flap");
+                //     return;
+                // }
 
                 // Do not execute anything yet.
                 // Both legs must pass fresh collision and

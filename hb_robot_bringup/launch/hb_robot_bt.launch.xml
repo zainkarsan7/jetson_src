@@ -7,6 +7,7 @@
     on_exit="shutdown">
     <!-- <param name="color_format" value="jpeg"/> -->
     <param name="tree_file" value="$(find-pkg-share hb_robot_task_planner)/behavior_trees/baseline_ind_plan.xml"/>
-    <param name="standoff" value = "0.015"/>
+    <param name="standoff" value = "0.01"/>
+    <param name="ang_tol" value = "0.5"/>
     </node>
 </launch>

@@ -1,284 +1,419 @@
-#include "hb_robot_perception/imu_stability_monitor.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/imu.hpp"
-#include "hb_robot_interfaces/msg/platform_imu_metrics.hpp"
-#include "std_msgs/msg/u_int8.hpp"
 
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 
-#include <algorithm>
+#include <Eigen/Geometry>
+
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <deque>
-#include <limits>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <stdexcept>
-#include <mutex>
 #include <string>
 #include <vector>
 
+namespace hb_perception {
 
-namespace hb_perception{
-
-class PlatformTelemetryNode final : public rclcpp::Node{
+class TiltFilter {
+public:
     using Imu = sensor_msgs::msg::Imu;
-    using Metrics = hb_robot_interfaces::msg::PlatformImuMetrics;
     using Clock = std::chrono::steady_clock;
-    struct Sample{
-        Clock::time_point receipt;
-        rclcpp::Time stamp;
-        std::array<double,3> w,a;
+
+    struct Output {
+        Imu imu;
+        geometry_msgs::msg::Vector3Stamped rpy;
     };
 
-    public:
-        PlatformTelemetryNode(): Node("platform_telemetry"){
+    TiltFilter(
+        double gyro_cutoff_hz,
+        double accel_cutoff_hz,
+        double correction_time_s,
+        double gravity_gate_m_s2,
+        std::array<double, 3> gyro_bias)
+        : gyro_cutoff_(gyro_cutoff_hz),
+          accel_cutoff_(accel_cutoff_hz),
+          correction_time_(correction_time_s),
+          gravity_gate_(gravity_gate_m_s2),
+          bias_(gyro_bias)
+    {}
 
-            const auto topic = declare_parameter<std::string>("imu_topic","/hb_robot_lidar/imu");
-            window_s_ = declare_parameter<double>("window_s", 0.5);
-            max_age_s_ = declare_parameter<double>("max_age_s", 0.2);
-            min_coverage_ = declare_parameter<double>("min_window_coverage", 0.9);
-            cutoff_hz_ = declare_parameter<double>("filter_cutoff_hz", 12.0);
-            max_gyro_rms_ = declare_parameter<double>("max_gyro_rms", 0.02);
-            max_accel_rms_ = declare_parameter<double>("max_accel_rms", 0.2);
-            max_mean_gyro_ = declare_parameter<double>("max_mean_gyro", 0.04);
-            stable_dwell_s_ = declare_parameter<double>("stable_dwell_s", 0.5);
-            min_samples_ = declare_parameter<int>("min_samples", 20);
+    std::optional<Output> update(
+        const Imu& raw,
+        Clock::time_point received)
+    {
+        if (raw.angular_velocity_covariance[0] == -1.0 ||
+            raw.linear_acceleration_covariance[0] == -1.0)
+            return std::nullopt;
 
-            const auto rate = declare_parameter<double>("metrics_rate_hz",10.0);
-            if(window_s_ <= 0 || 
-                max_age_s_ <= 0 || 
-                min_samples_ <= 2 || 
-                min_coverage_ <= 0 ||
-                min_coverage_ > 1 ||
-                cutoff_hz_ <= 0 ||
-                rate <= 0 ||
-                stable_dwell_s_<0
-             ){
-                throw std::invalid_argument("invalid parameters");
-             }
+        const Eigen::Vector3d w_raw(
+            raw.angular_velocity.x,
+            raw.angular_velocity.y,
+            raw.angular_velocity.z);
 
-             metrics_pub_ = create_publisher<Metrics>("/platform/imu/metrics",10);
-             state_pub_ = create_publisher<std_msgs::msg::UInt8>("/platform/imu/motion_state",10);
-             filtered_imu_pub_ = create_publisher<Imu>("/platform/imu/filtered",rclcpp::SensorDataQoS());
-             imu_sub_ = create_subscription<Imu>(topic,rclcpp::SensorDataQoS(),
-             [this](Imu::ConstSharedPtr msg){onImu(*msg);});
-             timer_ = create_wall_timer(std::chrono::duration<double>(1.0/rate),
-             [this](){publishMetrics();});
-             RCLCPP_INFO(get_logger(),"Telemetry listening on %s", topic.c_str());
+        const Eigen::Vector3d a_raw(
+            raw.linear_acceleration.x,
+            raw.linear_acceleration.y,
+            raw.linear_acceleration.z);
+
+        if (!w_raw.allFinite() || !a_raw.allFinite())
+            return std::nullopt;
+
+        const Eigen::Vector3d w =
+            w_raw - Eigen::Vector3d(
+                bias_[0], bias_[1], bias_[2]);
+
+        const int64_t stamp_ns =
+            static_cast<int64_t>(raw.header.stamp.sec) *
+                1000000000LL +
+            static_cast<int64_t>(
+                raw.header.stamp.nanosec);
+
+        double dt = 0.0;
+
+        if (ready_) {
+            if (stamp_ns > 0 && last_stamp_ns_ > 0) {
+                dt = static_cast<double>(
+                    stamp_ns - last_stamp_ns_) * 1e-9;
+            } else {
+                dt = std::chrono::duration<double>(
+                    received - last_received_).count();
             }
 
-    private:
-
-        static double norm(const std::array<double,3> v){
-            return std::sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
-        }
-
-        static geometry_msgs::msg::Vector3 vectorMsg(const std::array<double,3> v){
-            geometry_msgs::msg::Vector3 out;
-            out.x = v[0];
-            out.y = v[1];
-            out.z = v[2];
-            return out;
-        }
-        void onImu(const Imu& msg){
-            Sample s;
-            s.receipt = Clock::now();
-            s.stamp = rclcpp::Time(msg.header.stamp,get_clock()->get_clock_type());
-            s.w = {msg.angular_velocity.x, msg.angular_velocity.y,msg.angular_velocity.z};
-            s.a = {msg.linear_acceleration.x,msg.linear_acceleration.y,msg.linear_acceleration.z};
-            for(const auto v: s.w) if(!std::isfinite(v)) return;
-            for(const auto v: s.a) if(!std::isfinite(v)) return;
-            Imu filtered =msg;
-
+            if (!std::isfinite(dt) ||
+                dt <= 0.0 || dt > 0.1)
             {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if(!filter_ready_){
-
-                    filtered_w_ = s.w;
-                    filtered_a_ = s.a;
-                    filter_ready_ = true;
-
-                }else{
-                    auto elapsed = s.receipt - last_receipt_;
-                    const double dt_seconds = std::chrono::duration<double>(elapsed).count();
-                    
-
-                    // low pass signal filter:alpha =  1-e^-2pi * f * dt
-                    if(dt_seconds > 0.0 && dt_seconds < 1.0){
-                         const double alpha = 1 - std::exp(-2.0 * M_PI * dt_seconds * cutoff_hz_);
-
-                    // filter both acceleration and omega
-                        for (size_t k=0; k<3; k++){
-                            filtered_w_[k] += alpha * (s.w[k] - filtered_w_[k]);
-                            filtered_a_[k] += alpha * (s.a[k] - filtered_a_[k]);
-                        }
-                    }
-                    else{
-                        filtered_a_ = s.a;
-                        filtered_w_ = s.w;
-                    }
-                    
-                }
-                last_receipt_ = s.receipt;
-                samples_.push_back(s);
-               
-                const auto cutoff = s.receipt - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(window_s_));
-                
-                while(!samples_.empty() && 
-                samples_.front().receipt < cutoff
-            ){
-                samples_.pop_front();
+                ready_ = false;
+                last_stamp_ns_ = 0;
+                return std::nullopt;
             }
-            filtered.angular_velocity = vectorMsg(filtered_w_);
-            filtered.linear_acceleration = vectorMsg(filtered_a_);
-
-              
-            }// decon the mutex
-        filtered.angular_velocity_covariance[0] = -1.0;
-        filtered.linear_acceleration_covariance[0] = -1.0;
-        filtered_imu_pub_->publish(filtered);
         }
-        void publishMetrics(){
-            std::vector<Sample> samples;
 
-            const auto now = Clock::now();
+        if (!ready_) {
+            // Initialize only when acceleration is
+            // reasonably consistent with gravity.
+            if (std::abs(a_raw.norm() - 9.80665) >
+                gravity_gate_)
+                return std::nullopt;
+
+            w_filtered_ = w;
+            a_filtered_ = a_raw;
+
+            // Initial roll/pitch from gravity.
+            // Absolute yaw remains unobservable.
+            q_ = Eigen::Quaterniond::FromTwoVectors(
+                a_raw.normalized(),
+                Eigen::Vector3d::UnitZ());
+
+            q_.normalize();
+            ready_ = true;
+        } else {
+            const double aw = -std::expm1(
+                -2.0 * M_PI * gyro_cutoff_ * dt);
+
+            const double aa = -std::expm1(
+                -2.0 * M_PI * accel_cutoff_ * dt);
+
+            w_filtered_ +=
+                aw * (w - w_filtered_);
+
+            a_filtered_ +=
+                aa * (a_raw - a_filtered_);
+
+            Eigen::Vector3d omega = w_filtered_;
+
+            // Accelerometer correction of roll/pitch.
+            // Suppress correction during strong acceleration.
+            const double accel_norm =
+                a_filtered_.norm();
+
+            if (accel_norm > 1e-6 &&
+                std::abs(accel_norm - 9.80665) <=
+                    gravity_gate_)
             {
-                std::lock_guard<std::mutex>lock(mutex_);
-                samples.assign(samples_.begin(),samples_.end());
-            }
-            bool below =false;
-            Metrics m;
-            m.header.stamp = this->now();
-            m.sample_age = std::numeric_limits<double>::infinity();
-            m.sample_count = static_cast < size_t> (samples.size());
-            if(!samples.empty()){
-                m.header.stamp = samples.back().stamp;
-                m.sample_age = std::chrono::duration<double>(now - samples.back().receipt).count();   
-            }
-            if(samples.size() >= static_cast<size_t>(min_samples_) && 
-                m.sample_age <= max_age_s_ &&
-                std::chrono::duration<double>(samples.back().receipt - samples.front().receipt).count() >= min_coverage_ * window_s_)
-                {
-                m.valid = true;
-                std::array<double, 3> mw{}, ma{}, vw{}, va{};
-                    //clacl mean
-                for(const auto& s: samples){
-                    for (size_t k=0;k<3;k++){
-                        mw[k] +=s.w[k];
-                        ma[k] +=s.a[k];
-                        }
-                }
-                const double n = static_cast<double>(samples.size());
-                for (size_t k=0;k<3;k++){
-                        mw[k]/=n;
-                        ma[k]/=n;
-                        }
-                    
-                //calc var
-                for (const auto&s :samples){
-                    std::array<double,3> da{};
-                    for (size_t k=0;k<3;k++){
-                        const double dw = s.w[k] -mw[k];
+                const Eigen::Vector3d predicted =
+                    q_.conjugate() *
+                    Eigen::Vector3d::UnitZ();
 
-                        vw[k] += dw* dw;
+                const Eigen::Vector3d measured =
+                    a_filtered_ / accel_norm;
 
-                        da[k] += s.a[k] - ma[k];
-                        va[k] += da[k]*da[k];
-
-                    }
-                    m.gyro_peak_rad_s = std::max(m.gyro_peak_rad_s,norm(s.w));
-                    m.accel_deviation_peak_m_s2 = std::max(m.accel_deviation_peak_m_s2, norm(da));
-
-                }
-                // these are for a sqrt norm
-                double sw = 0; double sa=0;
-                for(size_t k=0;k<3;k++){
-                    vw[k]/=n;
-                    va[k]/=n;
-                    sw += vw[k];
-                    sa += va[k];
-                    vw[k] = std::sqrt(vw[k]);
-                    va[k] = std::sqrt(va[k]);
-
-                    }
-                m.gyro_mean_rad_s = vectorMsg(mw);
-                m.accel_mean_m_s2 = vectorMsg(ma);
-                m.gyro_stddev_rad_s = vectorMsg(vw);
-                m.accel_stddev_m_s2 = vectorMsg(va);
-                m.gyro_residual_rms_rad_s = std::sqrt(sw);
-                m.accel_residual_rms_m_s2 = std::sqrt(sa);
-                m.accel_mean_norm_m_s2 = norm(ma);
-                m.gyro_latest_rad_s = norm(samples.back().w);
-                std::array<double,3> latest_da{};
-                for(size_t k=0; k<3;k++){
-                    latest_da[k] = samples.back().a[k] - ma[k];
-                    }
-                m.accel_deviation_latest_m_s2 = norm(latest_da);
-                
-
-                if(m.valid){
-                    below = m.gyro_residual_rms_rad_s < max_gyro_rms_ &&
-                m.accel_residual_rms_m_s2 < max_accel_rms_ &&
-                norm(mw) < max_mean_gyro_;
-                }
-                if(!m.valid ||!below){
-                    candidate_since_.reset();
-                    m.stable=false;
-                }
-                else{
-                    if(!candidate_since_) candidate_since_ = now;
-                    const double dwell = std::chrono::duration<double>(now- *candidate_since_).count();
-                    m.stable= dwell >=stable_dwell_s_;
-                }
-
-                
-                }
-                metrics_pub_->publish(m);
-                std_msgs::msg::UInt8 state;
-                //unknown = 0, stable = 1, settling = 2, disturbed = 3
-                if(!m.valid){
-                    state.data = 0;
-                }
-                else if(m.stable){
-                    state.data = 1;
-                }
-                else if(below){
-                    state.data = 2;
-                }
-                else{
-                    state.data=3;
-                }
-                state_pub_->publish(state);
+                omega +=
+                    (1.0 / correction_time_) *
+                    measured.cross(predicted);
             }
 
-        double window_s_, max_age_s_, min_coverage_, cutoff_hz_, max_gyro_rms_, max_accel_rms_,max_mean_gyro_,stable_dwell_s_;
-        int min_samples_;
-        std::mutex mutex_;
-        std::deque<Sample> samples_;
-        std::array<double,3> filtered_w_{},filtered_a_{};
-        bool filter_ready_ = false;
-        Clock::time_point last_receipt_{};
-        std::optional<Clock::time_point> candidate_since_;
-        rclcpp::Subscription<Imu>::SharedPtr imu_sub_;
-        rclcpp::Publisher<Metrics>::SharedPtr metrics_pub_;
-        rclcpp::Publisher<Imu>::SharedPtr filtered_imu_pub_;
-        rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr state_pub_;
-        rclcpp::TimerBase::SharedPtr timer_;
+            const double angle = omega.norm() * dt;
+
+            if (angle > 1e-12) {
+                q_ = q_ * Eigen::Quaterniond(
+                    Eigen::AngleAxisd(
+                        angle,
+                        omega.normalized()));
+
+                q_.normalize();
+            }
+        }
+
+        last_stamp_ns_ = stamp_ns;
+        last_received_ = received;
+
+        Output out;
+        out.imu = raw;
+
+        out.imu.angular_velocity.x = w_filtered_.x();
+        out.imu.angular_velocity.y = w_filtered_.y();
+        out.imu.angular_velocity.z = w_filtered_.z();
+
+        out.imu.linear_acceleration.x = a_filtered_.x();
+        out.imu.linear_acceleration.y = a_filtered_.y();
+        out.imu.linear_acceleration.z = a_filtered_.z();
+
+        out.imu.orientation.x = q_.x();
+        out.imu.orientation.y = q_.y();
+        out.imu.orientation.z = q_.z();
+        out.imu.orientation.w = q_.w();
+
+        // Provisional diagnostic covariance only.
+        out.imu.orientation_covariance.fill(0.0);
+        out.imu.orientation_covariance[0] = 0.0025;
+        out.imu.orientation_covariance[4] = 0.0025;
+        out.imu.orientation_covariance[8] = 1e6;
+
+        // Retain source gyro/acceleration covariances.
+        // They must be calibrated for filtered output
+        // before use in sensor fusion.
+
+        const Eigen::Matrix3d R =
+            q_.toRotationMatrix();
+
+        out.rpy.header = raw.header;
+
+        out.rpy.vector.x =
+            std::atan2(R(2, 1), R(2, 2));
+
+        out.rpy.vector.y =
+            std::atan2(
+                -R(2, 0),
+                std::hypot(R(2, 1), R(2, 2)));
+
+        out.rpy.vector.z =
+            std::atan2(R(1, 0), R(0, 0));
+
+        return out;
+    }
+
+private:
+    double gyro_cutoff_;
+    double accel_cutoff_;
+    double correction_time_;
+    double gravity_gate_;
+
+    std::array<double, 3> bias_;
+
+    bool ready_ = false;
+    int64_t last_stamp_ns_ = 0;
+    Clock::time_point last_received_{};
+
+    Eigen::Vector3d w_filtered_ =
+        Eigen::Vector3d::Zero();
+
+    Eigen::Vector3d a_filtered_ =
+        Eigen::Vector3d::Zero();
+
+    Eigen::Quaterniond q_ =
+        Eigen::Quaterniond::Identity();
 };
 
-}
 
-int main(int argc, char** argv){
-   
-    rclcpp::init(argc,argv);
-    try{
-        rclcpp::spin(std::make_shared<hb_perception::PlatformTelemetryNode>());
-    }catch(const std::exception& e){
-        RCLCPP_FATAL(rclcpp::get_logger("platform_telemetry"),"%s",e.what());
+class PlatformTelemetryNode final : public rclcpp::Node {
+    using Imu = sensor_msgs::msg::Imu;
+    using Rpy = geometry_msgs::msg::Vector3Stamped;
+    using Clock = std::chrono::steady_clock;
+
+public:
+    PlatformTelemetryNode()
+        : Node("platform_telemetry")
+    {
+        const auto primary_topic =
+            declare_parameter<std::string>(
+                "imu_topic",
+                "/hb_robot_lidar/imu");
+
+        const auto secondary_topic =
+            declare_parameter<std::string>(
+                "mpu6050_imu_topic", "/mpu6050/imu");
+
+        const double gyro_cutoff =
+            declare_parameter<double>(
+                "attitude.gyro_cutoff_hz", 20.0);
+
+        const double accel_cutoff =
+            declare_parameter<double>(
+                "attitude.accel_cutoff_hz", 5.0);
+
+        const double correction_time =
+            declare_parameter<double>(
+                "attitude.correction_time_s", 1.5);
+
+        const double gravity_gate =
+            declare_parameter<double>(
+                "attitude.gravity_gate_m_s2", 0.5);
+
+        const auto primary_bias =
+            declare_parameter<std::vector<double>>(
+                "attitude.unilidar_gyro_bias",
+                {0.0, 0.0, 0.0});
+
+        const auto secondary_bias =
+            declare_parameter<std::vector<double>>(
+                "attitude.mpu6050_gyro_bias",
+                {0.0, 0.0, 0.0});
+
+        if (!std::isfinite(gyro_cutoff) ||
+            !std::isfinite(accel_cutoff) ||
+            !std::isfinite(correction_time) ||
+            !std::isfinite(gravity_gate) ||
+            gyro_cutoff <= 0.0 ||
+            accel_cutoff <= 0.0 ||
+            correction_time <= 0.0 ||
+            gravity_gate <= 0.0 ||
+            primary_bias.size() != 3 ||
+            secondary_bias.size() != 3 ||
+            primary_topic.empty() ||
+            (!secondary_topic.empty() &&
+             secondary_topic == primary_topic))
+        {
+            throw std::invalid_argument(
+                "Invalid platform telemetry parameters");
+        }
+
+        for (double v : primary_bias)
+            if (!std::isfinite(v))
+                throw std::invalid_argument(
+                    "Invalid UniLiDAR gyro bias");
+
+        for (double v : secondary_bias)
+            if (!std::isfinite(v))
+                throw std::invalid_argument(
+                    "Invalid MPU6050 gyro bias");
+
+        primary_filter_ = std::make_unique<TiltFilter>(
+            gyro_cutoff,
+            accel_cutoff,
+            correction_time,
+            gravity_gate,
+            std::array<double, 3>{
+                primary_bias[0],
+                primary_bias[1],
+                primary_bias[2]});
+
+        secondary_filter_ = std::make_unique<TiltFilter>(
+            gyro_cutoff,
+            accel_cutoff,
+            correction_time,
+            gravity_gate,
+            std::array<double, 3>{
+                secondary_bias[0],
+                secondary_bias[1],
+                secondary_bias[2]});
+
+        const auto qos = rclcpp::SensorDataQoS();
+
+        unilidar_pub_ = create_publisher<Imu>(
+            "/platform/imu/unilidar/filtered", qos);
+
+        mpu6050_pub_ = create_publisher<Imu>(
+            "/platform/imu/mpu6050/filtered", qos);
+
+        unilidar_rpy_pub_ = create_publisher<Rpy>(
+            "/platform/imu/unilidar/rpy", qos);
+
+        mpu6050_rpy_pub_ = create_publisher<Rpy>(
+            "/platform/imu/mpu6050/rpy", qos);
+
+        unilidar_sub_ = create_subscription<Imu>(
+            primary_topic,
+            qos,
+            [this](Imu::ConstSharedPtr msg) {
+                const auto result =
+                    primary_filter_->update(
+                        *msg, Clock::now());
+
+                if (!result)
+                    return;
+
+                unilidar_pub_->publish(result->imu);
+                unilidar_rpy_pub_->publish(result->rpy);
+            });
+
+        if (!secondary_topic.empty()) {
+            mpu6050_sub_ = create_subscription<Imu>(
+                secondary_topic,
+                qos,
+                [this](Imu::ConstSharedPtr msg) {
+                    const auto result =
+                        secondary_filter_->update(
+                            *msg, Clock::now());
+
+                    if (!result)
+                        return;
+
+                    mpu6050_pub_->publish(result->imu);
+                    mpu6050_rpy_pub_->publish(result->rpy);
+                });
+        }
+
+        RCLCPP_INFO(
+            get_logger(),
+            "UniLiDAR IMU: %s",
+            primary_topic.c_str());
+
+        RCLCPP_INFO(
+            get_logger(),
+            "MPU6050 IMU: %s",
+            secondary_topic.empty()
+                ? "(disabled)"
+                : secondary_topic.c_str());
+    }
+
+private:
+    std::unique_ptr<TiltFilter>
+        primary_filter_, secondary_filter_;
+
+    rclcpp::Subscription<Imu>::SharedPtr
+        unilidar_sub_, mpu6050_sub_;
+
+    rclcpp::Publisher<Imu>::SharedPtr
+        unilidar_pub_, mpu6050_pub_;
+
+    rclcpp::Publisher<Rpy>::SharedPtr
+        unilidar_rpy_pub_, mpu6050_rpy_pub_;
+};
+
+}  // namespace hb_perception
+
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+
+    try {
+        rclcpp::spin(
+            std::make_shared<
+                hb_perception::PlatformTelemetryNode>());
+    } catch (const std::exception& e) {
+        RCLCPP_FATAL(
+            rclcpp::get_logger("platform_telemetry"),
+            "%s",
+            e.what());
+
         rclcpp::shutdown();
         return 1;
     }
+
     rclcpp::shutdown();
     return 0;
-
 }

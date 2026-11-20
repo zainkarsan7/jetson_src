@@ -47,6 +47,7 @@
       use_fake_hardware="$(arg use_fake_hardware)"
       fake_sensor_commands="$(arg fake_sensor_commands)"
       headless_mode="$(arg headless_mode)"
+      keep_alive_count="10"
     />
     
 </robot>

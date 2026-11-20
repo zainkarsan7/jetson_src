@@ -29,6 +29,7 @@ uint64 execution_version
 # Empty in monolithic mode and individual execution results.
 string batch_id
 CutFeaturePlan[] feature_plans
+bool approval_rejected
 ---
 #Feedback
 string stage
