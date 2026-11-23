@@ -137,7 +137,7 @@ def generate_launch_description():
                                                                 0.0088,
                                                                 -0.0031,
                                                             ],
-                            "platform_imu_2.mpu6050_gyro_bias": [
+                            "platform_imu.mpu6050_2_gyro_bias": [
                                 -0.0787,
                                 0.0088,
                                 -0.0031,

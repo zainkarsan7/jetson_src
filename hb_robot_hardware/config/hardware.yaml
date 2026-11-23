@@ -15,4 +15,4 @@ torch_height_bridge:
     prep_distance_mm: 10.0
     search_distance_mm: 15.0
     home_max_travel_mm: 27.0
-    voltage_tracking_enabled: false
+    voltage_tracking_enabled: true

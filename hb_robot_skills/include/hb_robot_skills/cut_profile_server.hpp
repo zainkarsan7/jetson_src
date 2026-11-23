@@ -116,7 +116,15 @@ namespace hb_robot_skills{
             const std::string& stage);
 
             std::optional<WorkpieceReference> latestWorkpieceReference() const;
-            
+
+            ////////////////////////HEIGHT STUFF ./////////////////////////////
+           
+
+            rclcpp::CallbackGroup::SharedPtr
+                heightStatusCallbackGroup() const
+                {
+                    return height_status_callbacks_;
+                }
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
@@ -354,6 +362,8 @@ enum class HeightPhase { IDLE, PREP, IGNITION, SEARCH, CUT, RETURN };
 mutable std::mutex height_mutex_;
 std::condition_variable height_cv_;
 HeightStatus height_status_;
+ bool heightCommunicationValid(
+                 const HeightStatus& h) const;
 rclcpp::CallbackGroup::SharedPtr height_callbacks_;
 rclcpp::Subscription<std_msgs::msg::String>::SharedPtr height_full_status_sub_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_prepare_client_;
@@ -361,6 +371,7 @@ rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_search_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_home_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_stop_client_;
 rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr height_tracking_client_;
+rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_reset_client_;
 std::atomic<HeightPhase> height_phase_{HeightPhase::IDLE};
 std::atomic<uint32_t> height_cycle_session_{0};
 std::atomic<bool> height_stop_sent_{false}, height_tracking_expected_{false};

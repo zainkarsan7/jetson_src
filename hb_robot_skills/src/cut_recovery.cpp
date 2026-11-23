@@ -366,8 +366,27 @@ void CutProfileServer::executeStored(
              " torch_fault=" + std::to_string(fault));
       return;
     }
-  }
+    /////////////////////////////////////////////
+    stage = "height_preflight";
+  
 
+  if (!heightAtHomeAndReady()) {
+    const auto height = heightSnapshot();
+      std::ostringstream os;
+
+      os << "Height axis not ready:"
+        << " state=" << height.state
+        << " fault=" << int(height.fault)
+        << " position=" << height.position
+        << " referenced=" << height.referenced
+        << "; explicit height recovery required";
+
+      finish(os.str());
+      return;
+  }
+  /////////////////////////////////////////////
+  }
+  
   stage = "recut_overlap";
   for(const auto& interval : stored.intervals)
     for(const auto& attempted : attempted_[stored.cut_id])

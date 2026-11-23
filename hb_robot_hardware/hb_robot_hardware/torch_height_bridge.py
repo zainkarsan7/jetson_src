@@ -895,6 +895,29 @@ class TorchHeightBridge(Node):
                 configured=self.configured,
                 calibration=self.p['calibration_mode'],
             )
+            stats.update(
+                torch_permission=mode,
+                arc_qualified=bool(qualified),
+
+                torch_age_ms=(
+                    (now - self.torch_at) * 1000
+                    if self.torch is not None else None
+                ),
+
+                arc_continuous_ms=(
+                    (now - self.arc_since) * 1000
+                    if self.arc_since is not None else 0.0
+                ),
+
+                transfer_detected=(
+                    bool(self.torch.transfer_detected)
+                    if self.torch is not None else None
+                ),
+
+                voltage_value=voltage,
+
+                tracking_authorized=self.tracking_authorized,
+            )
 
         # H cache:
         # 0 state, 1 position, 2 switch, 3 fault, 4 heartbeat age,

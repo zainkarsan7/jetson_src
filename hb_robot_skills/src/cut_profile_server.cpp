@@ -160,7 +160,10 @@ namespace hb_robot_skills{
 
         if (!permitted || !versions_match)
         {
-             RCLCPP_ERROR(
+             
+            
+            if (latchObservedMotionStop("supervision_fault")) {
+                RCLCPP_ERROR(
             get_logger(),
             "Execution supervision lost: "
             "task_received=%d task_fresh=%d "
@@ -195,8 +198,8 @@ namespace hb_robot_skills{
                 task.state.scene_version),
             static_cast<unsigned long long>(
                 execution_state_.scene_version));
-            
-            if (latchObservedMotionStop("supervision_fault")) {
+                
+                
                 RCLCPP_ERROR(
             get_logger(),
             "Execution supervision lost, stopping motion");
@@ -1548,12 +1551,13 @@ void CutProfileServer::initializeHeightInterface()
     height_search_client_ = trigger("/torch_height/arc_search");
     height_home_client_ = trigger("/torch_height/home");
     height_stop_client_ = trigger("/torch_height/stop");
+    height_reset_client_ = trigger("/torch_height/reset_fault");
     height_tracking_client_ = create_client<std_srvs::srv::SetBool>(
         "/torch_height/set_tracking_enabled", rmw_qos_profile_services_default,
         height_callbacks_);
     rclcpp::SubscriptionOptions options;
     height_status_callbacks_ = create_callback_group(
-    rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::CallbackGroupType::MutuallyExclusive, false);
 
 options.callback_group = height_status_callbacks_;
 
@@ -1628,18 +1632,18 @@ height_full_status_sub_ =
 
                 height_cv_.notify_all();
 
-                // Diagnostic threshold only; does not alter permission.
-                if (gap_ms > 250.0) {
-                    RCLCPP_WARN(
-                        get_logger(),
-                        "[HEIGHT RX GAP] count=%llu gap_ms=%.1f "
-                        "max_gap_ms=%.1f state=%s session=%u",
-                        static_cast<unsigned long long>(count),
-                        gap_ms,
-                        max_gap_ms,
-                        h.state.c_str(),
-                        h.session);
-                }
+                // // Diagnostic threshold only; does not alter permission.
+                // if (gap_ms > 750.0) {
+                //     RCLCPP_WARN(
+                //         get_logger(),
+                //         "[HEIGHT RX GAP] count=%llu gap_ms=%.1f "
+                //         "max_gap_ms=%.1f state=%s session=%u",
+                //         static_cast<unsigned long long>(count),
+                //         gap_ms,
+                //         max_gap_ms,
+                //         h.state.c_str(),
+                //         h.session);
+                // }
 
             } catch (const std::exception& e) {
                 // Malformed status must not refresh the cached timestamp.
@@ -1883,8 +1887,8 @@ bool CutProfileServer::returnHeightHomeAndWait(
 
     const auto h = heightSnapshot();
 
-    if (!heightValid(h))
-        return false;
+    // if (!heightValid(h))
+    //     return false;
 
     // Already safely retracted and tracking is off.
     // No service round trip is needed.
@@ -2013,6 +2017,26 @@ void CutProfileServer::stopHeightAsync()
     }
 
 }
+
+bool CutProfileServer::heightCommunicationValid(
+    const HeightStatus& h) const
+{
+    return h.received != HeightClock::time_point{} &&
+        HeightClock::now() - h.received <=
+            std::chrono::milliseconds(
+                height_status_timeout_ms_) &&
+        h.configured &&
+        !h.calibration &&
+        h.session != 0 &&
+        h.state != "OFFLINE";
+}
+
+
+
+
+
+
+
 void CutProfileServer::superviseHeight()
 {
     const auto phase = height_phase_.load();
@@ -4972,10 +4996,36 @@ int main (int argc, char** argv){
         rclcpp::shutdown();
         return 1;
     }
-    rclcpp::executors::MultiThreadedExecutor executor;
+
+    rclcpp::executors::SingleThreadedExecutor height_executor;
+
+    height_executor.add_callback_group(
+        node->heightStatusCallbackGroup(),
+        node->get_node_base_interface());
+
+    rclcpp::executors::MultiThreadedExecutor executor(
+        rclcpp::ExecutorOptions{}, 4);
+
     executor.add_node(node);
+
+    std::thread height_thread([&]() {
+        height_executor.spin();
+    });
+
     executor.spin();
+
+    height_executor.cancel();
+
+    if (height_thread.joinable())
+        height_thread.join();
+
     rclcpp::shutdown();
 
     return 0;
+    // rclcpp::executors::MultiThreadedExecutor executor;
+    // executor.add_node(node);
+    // executor.spin();
+    // rclcpp::shutdown();
+
+    // return 0;
 }

@@ -90,6 +90,23 @@ target_link_libraries(cut_debug_node_torch
 hb_motion
 )
 
+add_executable(cut_height_debug_node src/cut_height_debug_node.cpp)
+ament_target_dependencies(cut_height_debug_node
+  rclcpp
+  geometry_msgs
+  hb_robot_interfaces
+  Eigen3
+  tf2_eigen
+  moveit_msgs
+  moveit_ros_planning_interface
+  ur_msgs
+  hb_robot_interfaces
+)
+target_link_libraries(cut_height_debug_node
+hb_motion
+)
+
+
 add_executable(approve_motion_server
 src/approve_motion_server.cpp)
 
@@ -209,6 +226,7 @@ install(
     hb_motion
     cut_debug_node
     cut_debug_node_torch
+    cut_height_debug_node
     rgbd_subscriber_debug_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
