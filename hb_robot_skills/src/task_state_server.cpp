@@ -261,28 +261,47 @@ public:
                 "platform_imu.hard_peak_accel_m_s2",
                 0.80);
 
-        const auto bias =
+        const auto mpu_bias =
             declare_parameter<std::vector<double>>(
-                "platform_imu.mpu6050_gyro_bias",
-                {-0.0787, 0.0088, -0.0031});
+            "platform_imu.mpu6050_gyro_bias",
+            {-0.04716386, -0.00346401, 0.05875498},
+            read_only);
 
-        if (bias.size() != 3 ||
-            !std::all_of(
-                bias.begin(),
-                bias.end(),
-                [](double value)
-                {
-                    return std::isfinite(value);
-                }))
+        const auto mpu_2_bias =
+            declare_parameter<std::vector<double>>(
+                "platform_imu.mpu6050_2_gyro_bias",
+                {-0.07190013, 0.02460354, -0.01190212},
+                read_only);
+
+        const auto valid_bias =
+            [](const std::vector<double>& bias)
+        {
+            return bias.size() == 3 &&
+                std::all_of(
+                    bias.begin(),
+                    bias.end(),
+                    [](double value) {
+                        return std::isfinite(value);
+                    });
+        };
+
+        if (!valid_bias(mpu_bias) ||
+            !valid_bias(mpu_2_bias))
         {
             throw std::invalid_argument(
-                "Invalid MPU6050 gyro bias");
+                "Invalid MPU6050 gyro biases");
         }
 
         std::copy(
-            bias.begin(),
-            bias.end(),
+            mpu_bias.begin(),
+            mpu_bias.end(),
             config.mpu6050_gyro_bias.begin());
+
+        std::copy(
+            mpu_2_bias.begin(),
+            mpu_2_bias.end(),
+            config.mpu6050_2_gyro_bias.begin());
+
 
         if (acquire_confidence_ > 1.0 ||
             release_confidence_ >=
@@ -295,19 +314,19 @@ public:
         const auto primary_topic =
             declare_parameter<std::string>(
                 "platform_imu_topic",
-                "/hb_robot_lidar/imu");
+                "/mpu6050/imu");
 
         config.auxiliary_accel_topic =
             declare_parameter<std::string>(
-                "platform_accel_topic",
-                "/mpu6050/imu",
+                "platform_imu_2_topic",
+                "/mpu6050_2/imu",
                 read_only);
 
         if (config.auxiliary_accel_topic.empty())
         {
             throw std::invalid_argument(
                 "Two-channel IMU supervision "
-                "requires platform_accel_topic");
+                "requires platform_imu_2_topic");
         }
 
         imu_callbacks_ =
@@ -1255,27 +1274,27 @@ void updateSupervision()
     // 1. Evaluate sensor evidence.
     // ---------------------------------------------------------
 
-    const bool unilidar_good =
-        metrics.unilidar.valid &&
-        metrics.unilidar.stable;
+    const bool mpu6050_2_good =
+        metrics.mpu6050_2.valid &&
+        metrics.mpu6050_2.stable;
 
     const bool mpu6050_good =
         metrics.mpu6050.valid &&
         metrics.mpu6050.stable;
 
     const bool both_good =
-        unilidar_good && mpu6050_good;
+        mpu6050_2_good && mpu6050_good;
 
     const bool one_good =
-        unilidar_good != mpu6050_good;
+        mpu6050_2_good != mpu6050_good;
 
     const bool neither_good =
-        !unilidar_good && !mpu6050_good;
+        !mpu6050_2_good && !mpu6050_good;
 
-    const bool unilidar_hard =
-        metrics.unilidar.valid &&
-        (metrics.unilidar.peak_ang_vel_rad_s >= hard_peak_gyro_ ||
-         metrics.unilidar.peak_acc_deviation_m_s2 >= hard_peak_accel_);
+    const bool mpu6050_2_hard =
+        metrics.mpu6050_2.valid &&
+        (metrics.mpu6050_2.peak_ang_vel_rad_s >= hard_peak_gyro_ ||
+         metrics.mpu6050_2.peak_acc_deviation_m_s2 >= hard_peak_accel_);
 
     const bool mpu6050_hard =
         metrics.mpu6050.valid &&
@@ -1283,11 +1302,26 @@ void updateSupervision()
          metrics.mpu6050.peak_acc_deviation_m_s2 >= hard_peak_accel_);
 
     // Preserve existing dual-confirmation hard-motion policy.
+
+    const bool both_gyro_hard =
+    metrics.mpu6050.valid &&
+    metrics.mpu6050_2.valid &&
+    metrics.mpu6050.peak_ang_vel_rad_s >= hard_peak_gyro_ &&
+    metrics.mpu6050_2.peak_ang_vel_rad_s >= hard_peak_gyro_;
+
+    const bool both_accel_hard =
+    metrics.mpu6050.valid &&
+    metrics.mpu6050_2.valid &&
+    metrics.mpu6050.peak_acc_deviation_m_s2 >= hard_peak_accel_ &&
+    metrics.mpu6050_2.peak_acc_deviation_m_s2 >= hard_peak_accel_;
+
     const bool hard_motion =
-        unilidar_hard && mpu6050_hard;
+        both_gyro_hard || both_accel_hard;
+    // const bool hard_motion =
+    //     mpu6050_2_hard && mpu6050_hard;
 
     const bool both_stale =
-        metrics.unilidar.sample_age_s > grace_s_ &&
+        metrics.mpu6050_2.sample_age_s > grace_s_ &&
         metrics.mpu6050.sample_age_s > grace_s_;
 
     const bool confidence_finite =
@@ -1341,6 +1375,15 @@ void updateSupervision()
 
 if (hard_motion)
 {
+    RCLCPP_WARN(
+            get_logger(),
+            "[IMU HARD] "
+            "mpu1 gyro=%.4f accel=%.4f "
+            "mpu2 gyro=%.4f accel=%.4f",
+            metrics.mpu6050.peak_ang_vel_rad_s,
+            metrics.mpu6050.peak_acc_deviation_m_s2,
+            metrics.mpu6050_2.peak_ang_vel_rad_s,
+            metrics.mpu6050_2.peak_acc_deviation_m_s2);
     if (!supervision_latched_)
     {
         invalidateLocked(
@@ -1402,8 +1445,8 @@ if (hard_motion)
             if (trusted_stable_ && !supervision_latched_)
             {
                 transition_reason =
-                    unilidar_good
-                        ? "unilidar_maintaining_supervision"
+                    mpu6050_2_good
+                        ? "mpu6050_2_maintaining_supervision"
                         : "mpu6050_maintaining_supervision";
             }
             else
@@ -1474,8 +1517,8 @@ if (hard_motion)
                 "trusted=%d->%d "
                 "latched=%d->%d "
                 "reason=%s "
-                "unilidar_good=%d mpu6050_good=%d "
-                "unilidar_hard=%d mpu6050_hard=%d "
+                "mpu6050_2_good=%d mpu6050_good=%d "
+                "mpu6050_2_hard=%d mpu6050_hard=%d "
                 "confidence=%.3f "
                 "acquire=%.3f release=%.3f "
                 "coverage_s=%.3f "
@@ -1488,9 +1531,9 @@ if (hard_motion)
                 static_cast<int>(was_latched),
                 static_cast<int>(supervision_latched_),
                 transition_reason.c_str(),
-                static_cast<int>(unilidar_good),
+                static_cast<int>(mpu6050_2_good),
                 static_cast<int>(mpu6050_good),
-                static_cast<int>(unilidar_hard),
+                static_cast<int>(mpu6050_2_hard),
                 static_cast<int>(mpu6050_hard),
                 metrics.stable_confidence,
                 acquire_confidence_,
@@ -1517,8 +1560,8 @@ if (hard_motion)
                << metrics.valid
                << " raw_stable="
                << metrics.stable
-               << " unilidar_good="
-               << unilidar_good
+               << " mpu6050_2_good="
+               << mpu6050_2_good
                << " mpu6050_good="
                << mpu6050_good
                << " authorized="
@@ -1566,11 +1609,11 @@ if (hard_motion)
 
         diagnostic.header = published.header;
 
-        diagnostic.unilidar =
+        diagnostic.mpu6050_2 =
             toRosMetrics(
-                metrics.unilidar,
+                metrics.mpu6050_2,
                 diagnostic.header,
-                "unilidar",
+                "mpu6050_2",
                 metrics.stable_confidence,
                 metrics.confidence_coverage_s);
 
@@ -1663,8 +1706,8 @@ if (hard_motion)
         hb_perception::ImuStabilityMonitor> imu_;
 
     double acquire_confidence_ = 0.90;
-    double release_confidence_ = 0.65;
-    double grace_s_ = 0.80;
+    double release_confidence_ = 0.5;
+    double grace_s_ = 1.20;
 
     double hard_peak_gyro_ = 0.20;
     double hard_peak_accel_ = 0.80;

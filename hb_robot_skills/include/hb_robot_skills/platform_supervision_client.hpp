@@ -22,7 +22,7 @@ public:
   explicit PlatformSupervisionClient(
       rclcpp::Node& node,
       std::chrono::milliseconds max_age =
-          std::chrono::milliseconds(500))
+          std::chrono::milliseconds(750))
       : max_age_(max_age) {
 
     sub_ = node.create_subscription<Message>(
@@ -117,8 +117,6 @@ private:
            latest_.state == Message::STABLE &&
            latest_.supervision_valid &&
            latest_.imu_stable &&
-           latest_.both_channels_valid &&
-           latest_.both_channels_stable &&
            !latest_.hard_motion_detected;
   }
 

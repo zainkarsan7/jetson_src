@@ -52,7 +52,7 @@ bool CutProfileServer::readFreshTaskState(TaskState& snapshot) const {
   snapshot = task_state_;
   return task_received_ != std::chrono::steady_clock::time_point{} &&
          std::chrono::steady_clock::now() - task_received_ <
-             std::chrono::milliseconds(500);
+             std::chrono::milliseconds(task_state_timeout_ms_);
 }
 
 bool CutProfileServer::taskPermitsExecution(TaskState* snapshot) const {
@@ -260,17 +260,47 @@ void CutProfileServer::executeStored(
   }
 
   stage = "trajectory_validation";
-  {
-    planning_scene_monitor::LockedPlanningSceneRO scene(planning_scene_monitor_);
-    if(!scene) { finish("planning_scene_monitor lock returned null"); return; }
-    const auto ids = scene->getWorld()->getObjectIds();
+{
+    planning_scene::PlanningScenePtr validation_scene;
+
     {
-      std::ostringstream os;
-      for(const auto& object_id : ids) os << " '" << object_id << "'";
-      RCLCPP_INFO(get_logger(),
-          "[CUT SCENE] plan=%s world_objects=%zu ids=%s",
-          id.c_str(), ids.size(), os.str().c_str());
+        planning_scene_monitor::LockedPlanningSceneRO locked(
+            planning_scene_monitor_);
+
+        if (!locked) {
+            finish("planning_scene_monitor lock returned null");
+            return;
+        }
+
+        validation_scene = locked->diff();
+        validation_scene->decoupleParent();
     }
+
+    // Apply exactly the same normalization as the planner.
+    if (!prepareCuttingScene(validation_scene)) {
+        finish(
+            "Execution cutting scene normalization failed");
+        return;
+    }
+
+    const auto ids =
+        validation_scene->getWorld()->getObjectIds();
+
+    {
+        std::ostringstream os;
+
+        for (const auto& object_id : ids)
+            os << " '" << object_id << "'";
+
+        RCLCPP_INFO(
+            get_logger(),
+            "[CUT SCENE] plan=%s world_objects=%zu ids=%s",
+            id.c_str(),
+            ids.size(),
+            os.str().c_str());
+    }
+
+    // Keep your existing validate lambda and loop below.
     auto validate = [&](const auto& plan, const std::string& segment,
                         const char* phase) -> bool {
       robot_trajectory::RobotTrajectory trajectory(
@@ -293,14 +323,14 @@ void CutProfileServer::executeStored(
           finish(os.str());
           return false;
         }
-        if(scene->isStateColliding(waypoint, planning_group_)) {
+        if(validation_scene->isStateColliding(waypoint, planning_group_)) {
           collision_detection::CollisionRequest request;
           collision_detection::CollisionResult collision;
           request.group_name = planning_group_;
           request.contacts = true;
           request.max_contacts = 32;
           request.max_contacts_per_pair = 4;
-          scene->checkCollision(request, collision, waypoint);
+          validation_scene->checkCollision(request, collision, waypoint);
           std::ostringstream os;
           os << "segment=" << segment << " phase=" << phase
              << " waypoint=" << i << "/" << count

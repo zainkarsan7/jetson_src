@@ -110,11 +110,20 @@ class TorchController{
             io_client_ = node_.create_client<ur_msgs::srv::SetIO>(
                 config_.set_io_service
             );
+            status_callback_group_ =
+                node_.create_callback_group(
+                    rclcpp::CallbackGroupType::MutuallyExclusive);
 
-            status_timer_ = node_.create_wall_timer(std::chrono::milliseconds(100),
-            [this](){
-                publishStatus();
-            });
+            status_timer_ = node_.create_wall_timer(
+                std::chrono::milliseconds(100),
+                [this]() {
+                    publishStatus();
+                },
+                status_callback_group_);
+            // status_timer_ = node_.create_wall_timer(std::chrono::milliseconds(100),
+            // [this](){
+            //     publishStatus();
+            // });
 
             monitor_timer_ = node_.create_wall_timer(std::chrono::milliseconds(20),
         [this](){
@@ -132,6 +141,8 @@ class TorchController{
     void emergencyShutdown(const std::string& reason) {
         { 
             std::lock_guard<std::mutex> lock(mutex_); 
+                telemetry_.command_on = false;
+
             latchFaultLocked(reason); 
         }
         if (!io_client_->service_is_ready()) return;
@@ -170,6 +181,10 @@ class TorchController{
                 return TorchCommandResult::NOT_READY;
             }
             state_ = State::IGNITING;
+
+            // Command intent must precede any physical output feedback.
+            // output_on remains the separately measured feedback.
+            telemetry_.command_on = true;
         }
             const auto result = setTorchEnabled(true, timeout, canceled);
             if(result!=TorchCommandResult::CONFIRMED){
@@ -186,6 +201,7 @@ class TorchController{
             std::unique_lock<std::mutex>command_lock(command_mutex_);
             {
                 std::lock_guard<std::mutex>lock(mutex_);
+                telemetry_.command_on = false;
                 if(state_ != State::FAULT) state_= State::SHUTTING_DOWN;
             }
             
@@ -322,6 +338,10 @@ class TorchController{
 
     void requestOutputOff()
     {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            telemetry_.command_on = false;
+        }
         if (!io_client_->service_is_ready())
             return;
 
@@ -401,7 +421,7 @@ class TorchController{
                     if(!freshLocked()) return TorchCommandResult::IO_LOST;
                     if(telemetry_.output_on == std::optional<bool>(enabled)){
 
-                        telemetry_.command_on = enabled;
+                        // telemetry_.command_on = enabled;
                         return TorchCommandResult::CONFIRMED;
                     }
                 cv_.wait_for(lock,std::chrono::milliseconds(20));
@@ -498,6 +518,7 @@ class TorchController{
 
         }
         cv_.notify_all();
+        publishStatus();
 
     }
 
@@ -588,6 +609,8 @@ class TorchController{
     rclcpp::Node& node_;
     rclcpp::TimerBase::SharedPtr status_timer_;
     rclcpp::TimerBase::SharedPtr monitor_timer_;
+    // Add as a TorchController member:
+    rclcpp::CallbackGroup::SharedPtr status_callback_group_;
     
     TorchIOConfig config_;
     TorchTelemetry telemetry_;

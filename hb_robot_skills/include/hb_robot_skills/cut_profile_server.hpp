@@ -1,4 +1,6 @@
 #pragma once
+#include <cstdint>
+#include <future>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/display_trajectory.hpp>
@@ -27,6 +29,11 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <string>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
+
+#include <chrono>
+#include <functional>
 
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -119,16 +126,13 @@ namespace hb_robot_skills{
                     hb_robot_interfaces::srv::ClearTorchFault::Request> request,
                 std::shared_ptr<
                     hb_robot_interfaces::srv::ClearTorchFault::Response> response);
-            
-
-                
-            
-
-    
-            
         private:
 
+                rclcpp::CallbackGroup::SharedPtr height_status_callbacks_;
 
+// Protected by height_mutex_.
+uint64_t height_status_rx_count_{0};
+double height_status_max_gap_ms_{0.0};
             std::shared_ptr<robot_trajectory::RobotTrajectory> planToTrajectory(
             const moveit::planning_interface::MoveGroupInterface::Plan& plan
             );
@@ -137,7 +141,7 @@ namespace hb_robot_skills{
 
             void publishDebugRobot(const moveit::core::RobotState& state);
 
-
+bool latchObservedMotionStop(const char* reason);
             void publishCandidateVisualization(const motion::CutSegment segment);
             
             std::optional<moveit::planning_interface::MoveGroupInterface::Plan> planConstrainedCut(
@@ -329,6 +333,61 @@ namespace hb_robot_skills{
         rclcpp::Publisher<moveit_msgs::msg::DisplayRobotState>::SharedPtr debug_robot_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
             collision_debug_pub_;
+
+
+
+        ///////////////////////////////////////////////////////
+using HeightClock = std::chrono::steady_clock;
+struct HeightStatus {
+    std::string state = "OFFLINE";
+    int32_t position = 0;
+    bool switch_active = false;
+    int fault = 2;
+    bool referenced = false;
+    uint32_t session = 0, active_id = 0, done_id = 0;
+    int done_result = 0;
+    bool calibration = true, configured = false, tracking = false;
+    HeightClock::time_point received{};
+};
+enum class HeightPhase { IDLE, PREP, IGNITION, SEARCH, CUT, RETURN };
+mutable std::mutex height_mutex_;
+std::condition_variable height_cv_;
+HeightStatus height_status_;
+rclcpp::CallbackGroup::SharedPtr height_callbacks_;
+rclcpp::Subscription<std_msgs::msg::String>::SharedPtr height_full_status_sub_;
+rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_prepare_client_;
+rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_search_client_;
+rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_home_client_;
+rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_stop_client_;
+rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr height_tracking_client_;
+std::atomic<HeightPhase> height_phase_{HeightPhase::IDLE};
+std::atomic<uint32_t> height_cycle_session_{0};
+std::atomic<bool> height_stop_sent_{false}, height_tracking_expected_{false};
+bool height_use_tracking_ = false;
+int height_status_timeout_ms_ = 250;
+int height_prepare_timeout_ms_ = 5000;
+int height_search_timeout_ms_ = 8000;
+int height_home_timeout_ms_ = 20000;
+int height_pierce_dwell_ms_ = 0;
+void initializeHeightInterface();
+HeightStatus heightSnapshot() const;
+bool heightValid(const HeightStatus& h) const;
+bool heightAtHomeAndReady() const;
+bool requestHeightCommand(
+    const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr& client,
+    const std::function<bool()>& canceled, uint32_t& command_id);
+bool waitHeightCompletion(uint32_t session, uint32_t command_id,
+    const std::string& expected_state, std::chrono::milliseconds timeout,
+    const std::function<bool()>& canceled);
+bool prepareHeightAndWaitReady(const std::function<bool()>& canceled);
+bool searchHeightAndWaitForArc(const std::function<bool()>& canceled);
+bool setHeightTrackingAndWait(bool enabled);
+bool enableHeightTracking();
+bool disableHeightTracking();
+bool returnHeightHomeAndWait(const std::function<bool()>& canceled);
+void stopHeightAsync();
+void superviseHeight();
+
         bool approval_pending_ = false;  // guarded by approval_mutex_
         std::string approval_operation_; // guarded by approval_mutex_
 

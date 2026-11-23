@@ -83,7 +83,7 @@ public:
             }
 
             if (!std::isfinite(dt) ||
-                dt <= 0.0 || dt > 0.1)
+                dt <= 0.0 || dt > max_sample_gap_s_)
             {
                 ready_ = false;
                 last_stamp_ns_ = 0;
@@ -212,6 +212,7 @@ private:
     double gravity_gate_;
 
     std::array<double, 3> bias_;
+    const double max_sample_gap_s_ = 0.25;
 
     bool ready_ = false;
     int64_t last_stamp_ns_ = 0;
@@ -240,11 +241,11 @@ public:
         const auto primary_topic =
             declare_parameter<std::string>(
                 "imu_topic",
-                "/hb_robot_lidar/imu");
+                "/mpu6050/imu");
 
         const auto secondary_topic =
             declare_parameter<std::string>(
-                "mpu6050_imu_topic", "/mpu6050/imu");
+                "mpu6050_imu_topic", "/mpu6050_2/imu");
 
         const double gyro_cutoff =
             declare_parameter<double>(
@@ -264,7 +265,7 @@ public:
 
         const auto primary_bias =
             declare_parameter<std::vector<double>>(
-                "attitude.unilidar_gyro_bias",
+                "attitude.mpu6050_2_gyro_bias",
                 {0.0, 0.0, 0.0});
 
         const auto secondary_bias =
@@ -293,7 +294,7 @@ public:
         for (double v : primary_bias)
             if (!std::isfinite(v))
                 throw std::invalid_argument(
-                    "Invalid UniLiDAR gyro bias");
+                    "Invalid mpu6050_2 gyro bias");
 
         for (double v : secondary_bias)
             if (!std::isfinite(v))
@@ -322,19 +323,19 @@ public:
 
         const auto qos = rclcpp::SensorDataQoS();
 
-        unilidar_pub_ = create_publisher<Imu>(
-            "/platform/imu/unilidar/filtered", qos);
+        mpu6050_2_pub_ = create_publisher<Imu>(
+            "/platform/imu/mpu6050_2/filtered", qos);
 
         mpu6050_pub_ = create_publisher<Imu>(
             "/platform/imu/mpu6050/filtered", qos);
 
-        unilidar_rpy_pub_ = create_publisher<Rpy>(
-            "/platform/imu/unilidar/rpy", qos);
+        mpu6050_2_rpy_pub_ = create_publisher<Rpy>(
+            "/platform/imu/mpu6050_2/rpy", qos);
 
         mpu6050_rpy_pub_ = create_publisher<Rpy>(
             "/platform/imu/mpu6050/rpy", qos);
 
-        unilidar_sub_ = create_subscription<Imu>(
+        mpu6050_2_sub_ = create_subscription<Imu>(
             primary_topic,
             qos,
             [this](Imu::ConstSharedPtr msg) {
@@ -345,8 +346,8 @@ public:
                 if (!result)
                     return;
 
-                unilidar_pub_->publish(result->imu);
-                unilidar_rpy_pub_->publish(result->rpy);
+                mpu6050_2_pub_->publish(result->imu);
+                mpu6050_2_rpy_pub_->publish(result->rpy);
             });
 
         if (!secondary_topic.empty()) {
@@ -368,7 +369,7 @@ public:
 
         RCLCPP_INFO(
             get_logger(),
-            "UniLiDAR IMU: %s",
+            "mpu6050_2 IMU: %s",
             primary_topic.c_str());
 
         RCLCPP_INFO(
@@ -384,13 +385,13 @@ private:
         primary_filter_, secondary_filter_;
 
     rclcpp::Subscription<Imu>::SharedPtr
-        unilidar_sub_, mpu6050_sub_;
+        mpu6050_2_sub_, mpu6050_sub_;
 
     rclcpp::Publisher<Imu>::SharedPtr
-        unilidar_pub_, mpu6050_pub_;
+        mpu6050_2_pub_, mpu6050_pub_;
 
     rclcpp::Publisher<Rpy>::SharedPtr
-        unilidar_rpy_pub_, mpu6050_rpy_pub_;
+        mpu6050_2_rpy_pub_, mpu6050_rpy_pub_;
 };
 
 }  // namespace hb_perception

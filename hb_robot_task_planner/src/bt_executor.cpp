@@ -48,7 +48,7 @@ using Clock = std::chrono::steady_clock;
 
 struct Context {
   std::mutex mutex;
-
+  const int max_age_ms_ = 750;
   recovery::State state;
   recovery::State requested_plan_state;
   hb_robot_interfaces::msg::ProfileEstimate estimate;
@@ -111,7 +111,7 @@ struct Context {
     std::lock_guard<std::mutex> lock(mutex);
     auto result = state;
 
-    if (Clock::now() - received > 500ms) {
+    if (Clock::now() - received > std::chrono::milliseconds(max_age_ms_)) {
       result.supervision_valid = false;
       result.imu_stable = false;
       result.scene_valid = false;
@@ -124,7 +124,7 @@ struct Context {
     std::lock_guard<std::mutex> lock(mutex);
 
     if (!supervision_received_any ||
-        Clock::now() - supervision_received > 500ms)
+        Clock::now() - supervision_received > std::chrono::milliseconds(max_age_ms_))
       return false;
 
     return 
@@ -138,7 +138,7 @@ struct Context {
     std::lock_guard<std::mutex> lock(mutex);
 
     if (!supervision_received_any ||
-        Clock::now() - supervision_received > 500ms)
+        Clock::now() - supervision_received > std::chrono::milliseconds(max_age_ms_))
       return "Platform supervision heartbeat stale";
 
     return supervision.reason;
@@ -992,7 +992,7 @@ int main(int argc, char** argv) {
   condition("ReferenceExists", [=] {
     std::lock_guard<std::mutex> lock(context->mutex);
 
-    return Clock::now() - context->received <= 500ms &&
+    return Clock::now() - context->received <= std::chrono::milliseconds(context->max_age_ms_) &&
            context->state.scene_valid &&
            !context->estimate.profile_name.empty() &&
            context->state.scene_id ==

@@ -1,5 +1,7 @@
 #include "hb_robot_skills/motion/transit_planner.hpp"
 #include <set>
+#include <cstdint>
+#include <future>
 #include "hb_robot_skills/cut_profile_server.hpp"
 #include <chrono>
 #include <thread>
@@ -92,6 +94,7 @@ namespace hb_robot_skills{
         execution_pub_=create_publisher<std_msgs::msg::UInt64>(
           "/cut_profile/execution_version",rclcpp::QoS(1).transient_local());
         supervision_timer_=create_wall_timer(20ms,[this]{
+          superviseHeight();
           if(retreat_active_) {
 
             TaskState state;
@@ -127,7 +130,7 @@ namespace hb_robot_skills{
                 }
 
                 if (!off_confirmed) {
-                    latchMotionStop("IO_fault");
+                    latchObservedMotionStop("IO_fault");
 
                     if (torch_controller_)
                         torch_controller_->requestOutputOff();
@@ -193,7 +196,7 @@ namespace hb_robot_skills{
             static_cast<unsigned long long>(
                 execution_state_.scene_version));
             
-            if(latchMotionStop("supervision_fault")){
+            if (latchObservedMotionStop("supervision_fault")) {
                 RCLCPP_ERROR(
             get_logger(),
             "Execution supervision lost, stopping motion");
@@ -319,9 +322,12 @@ namespace hb_robot_skills{
                 std::placeholders::_1
             ));
 
+
+        initializeHeightInterface();
+
         auto estimate_qos = rclcpp::QoS(1).reliable().transient_local();
 
-
+        
 
         // profile_estimate_sub_ = create_subscription<hb_robot_interfaces::msg::ProfileEstimate>("/profile_inspection/estimate",
         // estimate_qos, std::bind(&CutProfileServer::profileEstimateCallback,this,
@@ -1359,11 +1365,35 @@ CutProfileServer::waitForPlanApproval(
         {
             // A fresh TaskState must still authorize execution.
             // This does not replace the final execution preflight.
+            // const bool permitted =
+            //     taskPermitsExecution();
             const bool permitted =
-                taskPermitsExecution();
+    hb_robot::recovery::geometryPermitted(task.state);
 
             if (!permitted)
-            {
+            {   
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    2000,
+                    "[CUT APPROVAL] Authorization unavailable: "
+                    "age_ms=%.1f supervision=%d imu=%d "
+                    "scene=%d pose=%d motion_fault=%d "
+                    "process_fault=%d status='%s'",
+                    task.age_ms,
+                    int(task.state.supervision_valid),
+                    int(task.state.imu_stable),
+                    int(task.state.scene_valid),
+                    int(task.state.workpiece_pose_valid),
+                    int(task.state.motion_fault_active),
+                    int(task.state.process_fault_active),
+                    task.state.status_message.c_str());
+
+                if (task.state.motion_fault_active ||
+                    task.state.process_fault_active ||
+                    !task.state.workpiece_pose_valid ||
+                    !task.state.scene_valid)
+                {
                 closeApprovalWindow();
 
                 RCLCPP_ERROR(
@@ -1372,23 +1402,29 @@ CutProfileServer::waitForPlanApproval(
                     "does not permit execution");
 
                 return MotionOutcome::FAILED;
+                }
             }
 
-            if (approved)
+            else if (approved)
             {
+                // Recheck authorization immediately before returning.
+                TaskState final_state;
+
+                if (!taskPermitsExecution(&final_state))
+                    continue;
                 // Final approval-stage authorization check.
                 // executeStored() must still perform its own
                 // live scene, start-state and collision checks.
-                const bool final_permitted =
-                    taskPermitsExecution();
+                // const bool final_permitted =
+                //     taskPermitsExecution();
 
-                if (!final_permitted)
-                {
-                    // Freshness could have changed between checks.
-                    // Do not execute, but don't discard approval
-                    // solely because the state became stale.
-                    continue;
-                }
+                // if (!final_permitted)
+                // {
+                //     // Freshness could have changed between checks.
+                //     // Do not execute, but don't discard approval
+                //     // solely because the state became stale.
+                //     continue;
+                // }
 
                 closeApprovalWindow();
 
@@ -1420,6 +1456,11 @@ CutProfileServer::waitForPlanApproval(
     closeApprovalWindow();
     return MotionOutcome::FAILED;
 }
+
+
+
+
+
 
     CutProfileServer::MotionOutcome CutProfileServer::executeMotion(
         const moveit::planning_interface::MoveGroupInterface::Plan& plan,
@@ -1453,7 +1494,8 @@ CutProfileServer::waitForPlanApproval(
     }
     return MotionOutcome::SUCCESS;
     }
-            
+           
+    ////////////////////////////////////////////////////////////////
     bool CutProfileServer::setFlapClosed(bool closed) {
         using namespace std::chrono_literals;
         const char* command = closed ? "close" : "open";
@@ -1483,97 +1525,682 @@ CutProfileServer::waitForPlanApproval(
         }
     }
 
-    CutProfileServer::MotionOutcome CutProfileServer::executeCut(
-                const motion::ExecutableCut& cut,
-                const std::shared_ptr<GoalHandleCutProfile> goal_handle
-                ){
-                    using namespace std::chrono_literals;
-                    if(!torch_controller_){
-                        RCLCPP_ERROR(get_logger(),"torch not available, doing try run instead");
-                        return MotionOutcome::FAILED;
+void CutProfileServer::initializeHeightInterface()
+{
+    auto integer = [this](const char* key, int fallback) {
+        if (!has_parameter(key)) declare_parameter<int>(key, fallback);
+        return static_cast<int>(get_parameter(key).as_int());
+    };
+    height_status_timeout_ms_ = integer("height.status_timeout_ms", 250);
+    height_prepare_timeout_ms_ = integer("height.prepare_timeout_ms", 5000);
+    height_search_timeout_ms_ = integer("height.search_timeout_ms", 8000);
+    height_home_timeout_ms_ = integer("height.home_timeout_ms", 20000);
+    height_pierce_dwell_ms_ = integer("height.pierce_dwell_ms", 0);
+    if (!has_parameter("height.enable_voltage_tracking"))
+        declare_parameter<bool>("height.enable_voltage_tracking", false);
+    height_use_tracking_ = get_parameter("height.enable_voltage_tracking").as_bool();
+    if (height_status_timeout_ms_ < 100 || height_prepare_timeout_ms_ <= 0 ||
+        height_search_timeout_ms_ <= 0 || height_home_timeout_ms_ <= 0 ||
+        height_pierce_dwell_ms_ < 0)
+        throw std::invalid_argument("Invalid height timing parameters");
+
+    height_callbacks_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    auto trigger = [this](const char* topic) {
+        return create_client<std_srvs::srv::Trigger>(
+            topic, rmw_qos_profile_services_default, height_callbacks_);
+    };
+    height_prepare_client_ = trigger("/torch_height/prepare");
+    height_search_client_ = trigger("/torch_height/arc_search");
+    height_home_client_ = trigger("/torch_height/home");
+    height_stop_client_ = trigger("/torch_height/stop");
+    height_tracking_client_ = create_client<std_srvs::srv::SetBool>(
+        "/torch_height/set_tracking_enabled", rmw_qos_profile_services_default,
+        height_callbacks_);
+    rclcpp::SubscriptionOptions options;
+    height_status_callbacks_ = create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+
+options.callback_group = height_status_callbacks_;
+
+height_full_status_sub_ =
+    create_subscription<std_msgs::msg::String>(
+        "/torch_height/status_full",
+        rclcpp::QoS(1),
+        [this](std_msgs::msg::String::ConstSharedPtr msg) {
+            const auto callback_entered = HeightClock::now();
+
+            try {
+                std::istringstream input(msg->data);
+                std::vector<std::string> f;
+                std::string part;
+
+                while (std::getline(input, part, ','))
+                    f.push_back(part);
+
+                if (f.size() != 12)
+                    throw std::invalid_argument("Height field count");
+
+                auto number = [&f](
+                    size_t i, int64_t low, int64_t high) -> int64_t {
+                    size_t end = 0;
+                    const auto value = std::stoll(f[i], &end);
+
+                    if (end != f[i].size() ||
+                        value < low || value > high) {
+                        throw std::invalid_argument("Height field");
                     }
-                    auto& torch = *torch_controller_;
-                    const auto canceled = [&](){
-                        return goal_handle->is_canceling() || cut_stop_requested_.load() || !rclcpp::ok();
-                    };
-                    if(canceled()){
-                        return goal_handle->is_canceling() ? MotionOutcome::CANCELED : MotionOutcome::FAILED;
+
+                    return value;
+                };
+
+                HeightStatus h;
+                h.state = f[0];
+                h.position = number(1, INT32_MIN, INT32_MAX);
+                h.switch_active = number(2, 0, 1);
+                h.fault = number(3, 0, 255);
+                h.referenced = number(4, 0, 1);
+                h.session = number(5, 0, UINT32_MAX);
+                h.active_id = number(6, 0, UINT32_MAX);
+                h.done_id = number(7, 0, UINT32_MAX);
+                h.done_result = number(8, 0, 2);
+                h.calibration = number(9, 0, 1);
+                h.configured = number(10, 0, 1);
+                h.tracking = number(11, 0, 1);
+                h.received = callback_entered;
+
+                double gap_ms = 0.0;
+                double max_gap_ms = 0.0;
+                uint64_t count = 0;
+
+                {
+                    std::lock_guard<std::mutex> lock(height_mutex_);
+
+                    if (height_status_.received !=
+                        HeightClock::time_point{}) {
+                        gap_ms =
+                            std::chrono::duration<double, std::milli>(
+                                callback_entered -
+                                height_status_.received).count();
                     }
-                    if(torch.hasFault() || !torch.hasFreshIO()){
-                        RCLCPP_ERROR(get_logger(),"torch is faulted or IO Stale");
-                         return MotionOutcome::FAILED;
-                    }
 
-                    const auto before = torch.snapshot();
-                    if(before.output_on!=std::optional<bool>(false)||
-                        before.transfer_detected!=std::optional<bool>(false)){
-                         RCLCPP_ERROR(get_logger(),"torch IO is not confirmed off");
-                        return MotionOutcome::FAILED;
-                    }
-                    const auto& params= cut.parameters;
-                    torch_controller_->setActiveSegment(cut.name);
-                    MotionOutcome outcome = MotionOutcome::FAILED;
-                    const auto shutdown = [&]()->bool{
-                        const auto off = torch.requestShutdown(1500ms);
-                        if(off != TorchCommandResult::CONFIRMED){
-                            RCLCPP_ERROR(get_logger(),"Torch off not confirmed for cut %s",
-                        cut.name.c_str());
-                        return false;
-                        }
-                        if(!torch.finishCut()){
-                            RCLCPP_ERROR(get_logger(),"torch could not return to IDLE");
-                            return false;
-                        }
-                        return true;
-                    };
+                    if (gap_ms > height_status_max_gap_ms_)
+                        height_status_max_gap_ms_ = gap_ms;
 
-                    do{
-                        if (!setFlapClosed(true) || canceled()) break;
-                        // request remote start on:
-                        publishFeedback(goal_handle,cut.name + ":ignition");
-                        const auto ignition = torch.requestIgnition(1500ms, canceled);
-                        if(ignition != TorchCommandResult::CONFIRMED){
+                    count = ++height_status_rx_count_;
+                    max_gap_ms = height_status_max_gap_ms_;
+                    height_status_ = h;
+                }
 
-                            RCLCPP_ERROR(get_logger(),"IGNITION NOT CONFIRMED");
-                            break;
+                height_cv_.notify_all();
 
-                        }
-                        // wait for arc transfer
-                        publishFeedback(goal_handle,cut.name + ": waiting for arc transfer");
-                        const auto transfer = torch.waitForArcTransfer(2000ms,canceled);
-                        if(transfer != TorchController::WaitResult::CONFIRMED){
-                            RCLCPP_ERROR(get_logger(),"TRANSFER NOT CONFIRMED");
-                            break;
-                        }
-                        // pierce dwell is here eventually , 
-                        if(canceled()) break;
-                        // arm cutting state watchdog by using markcut:
-                        if(!torch.markCutting()){
-                            RCLCPP_ERROR(get_logger(),"CUTTING STATE NOT CONFIRMED");
-                            break;
-                        }
-                        if(canceled() || torch.hasFault())
-                            break;
-                        
-                        // FINALLY execute motion now: this call blocks, 
-                        //torch controller is running in background
-                        outcome = executeMotion(cut.process.cut, 
-                            goal_handle,cut.name+": cut");
-                        if(canceled() || torch.hasFault()) 
-                            outcome = MotionOutcome::FAILED;
-                        }
-                        while(false);
+                // Diagnostic threshold only; does not alter permission.
+                if (gap_ms > 250.0) {
+                    RCLCPP_WARN(
+                        get_logger(),
+                        "[HEIGHT RX GAP] count=%llu gap_ms=%.1f "
+                        "max_gap_ms=%.1f state=%s session=%u",
+                        static_cast<unsigned long long>(count),
+                        gap_ms,
+                        max_gap_ms,
+                        h.state.c_str(),
+                        h.session);
+                }
 
-                        const bool off_confirmed = shutdown();
+            } catch (const std::exception& e) {
+                // Malformed status must not refresh the cached timestamp.
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    2000,
+                    "[HEIGHT RX INVALID] %s",
+                    e.what());
+            }
+        },
+        options);
+    
+}
 
-                        torch.setActiveSegment("");
-                        if(!off_confirmed || !setFlapClosed(false)) return MotionOutcome::FAILED;
-                        if(goal_handle->is_canceling()) return MotionOutcome::CANCELED;
-                        if(cut_stop_requested_.load() || torch.hasFault()) return MotionOutcome::FAILED;
-                        return outcome;
-                    
+CutProfileServer::HeightStatus CutProfileServer::heightSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(height_mutex_);
+    return height_status_;
+}
 
+bool CutProfileServer::heightValid(const HeightStatus& h) const
+{
+    return h.received != HeightClock::time_point{} &&
+        HeightClock::now() - h.received <=
+            std::chrono::milliseconds(height_status_timeout_ms_) &&
+        h.configured && !h.calibration && h.session != 0 && h.fault == 0 &&
+        h.state != "OFFLINE" && h.state != "FAULT" && h.state != "PAUSED";
+}
+
+bool CutProfileServer::heightAtHomeAndReady() const
+{
+    const auto h = heightSnapshot();
+    RCLCPP_INFO(
+            get_logger(),
+            "[HEIGHT PREFLIGHT] "
+            "state=%s position=%d switch=%d "
+            "fault=%d referenced=%d "
+            "session=%u configured=%d",
+            h.state.c_str(),
+            static_cast<int>(h.position),
+            static_cast<int>(h.switch_active),
+            h.fault,
+            static_cast<int>(h.referenced),
+            h.session,
+            static_cast<int>(h.configured));
+
+
+    return heightValid(h) && h.state == "HOME" && h.position == 0 &&
+        h.switch_active && h.referenced && !h.tracking;
+}
+
+bool CutProfileServer::requestHeightCommand(
+    const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr& client,
+    const std::function<bool()>& canceled, uint32_t& command_id)
+{
+    command_id = 0;
+    if (!rclcpp::ok() || (canceled && canceled()) ||
+        !client || !client->wait_for_service(500ms)) return false;
+    auto pending = client->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+    const auto deadline = HeightClock::now() + 3s;
+    while (rclcpp::ok() && HeightClock::now() < deadline) {
+        if (canceled && canceled()) break;
+        if (pending.wait_for(20ms) != std::future_status::ready) continue;
+        try {
+            const auto reply = pending.get();
+            if (!reply->success) {
+                RCLCPP_ERROR(get_logger(), "Height rejected: %s", reply->message.c_str());
+                return false;
+            }
+            std::istringstream input(reply->message);
+            std::string token;
+            input >> token;
+            if (token.rfind("id=", 0) != 0) return false;
+            const auto text = token.substr(3);
+            size_t end = 0;
+            const auto id = std::stoull(text, &end);
+            if (end != text.size() || id == 0 || id > UINT32_MAX) return false;
+            command_id = static_cast<uint32_t>(id);
+            return true;
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(get_logger(), "Height ACK error: %s", e.what());
+            return false;
+        }
     }
+    client->remove_pending_request(pending);
+    // Removing a ROS request does NOT cancel a command already accepted downstream.
+    stopHeightAsync();
+    return false;
+}
+
+bool CutProfileServer::waitHeightCompletion(
+    uint32_t session, uint32_t command_id, const std::string& expected_state,
+    std::chrono::milliseconds timeout, const std::function<bool()>& canceled)
+{
+    const auto deadline = HeightClock::now() + timeout;
+    while (rclcpp::ok() && HeightClock::now() < deadline) {
+        if (canceled && canceled()) return false;
+        std::unique_lock<std::mutex> lock(height_mutex_);
+        const auto& h = height_status_;
+        if (!heightValid(h) || h.session != session) return false;
+        if (h.done_id == command_id) {
+            if (h.done_result != 1 || h.state != expected_state || !h.referenced)
+                return false;
+            if (expected_state == "HOME")
+                return h.position == 0 && h.switch_active && !h.tracking;
+            return h.position < 0 && !h.switch_active && !h.tracking;
+        }
+        if (h.done_id > command_id) return false; // Another command superseded ours.
+        height_cv_.wait_for(lock, 20ms);
+    }
+    return false;
+}
+
+bool CutProfileServer::prepareHeightAndWaitReady(
+    const std::function<bool()>& canceled)
+{
+    if (!heightAtHomeAndReady()) return false;
+    const auto session = heightSnapshot().session;
+    uint32_t id = 0;
+    return requestHeightCommand(height_prepare_client_, canceled, id) &&
+        waitHeightCompletion(session, id, "READY",
+            std::chrono::milliseconds(height_prepare_timeout_ms_), canceled);
+}
+
+bool CutProfileServer::searchHeightAndWaitForArc(
+    const std::function<bool()>& canceled)
+{
+    const auto h = heightSnapshot();
+
+    if (!heightValid(h) ||
+        !h.referenced ||
+        h.tracking ||
+        h.state != "READY") {
+        RCLCPP_ERROR(
+            get_logger(),
+            "[HEIGHT SEARCH PREFLIGHT] "
+            "state=%s fault=%d referenced=%d tracking=%d",
+            h.state.c_str(),
+            int(h.fault),
+            int(h.referenced),
+            int(h.tracking));
+        return false;
+    }
+
+    uint32_t id = 0;
+
+    if (!requestHeightCommand(
+            height_search_client_, canceled, id)) {
+        return false;
+    }
+
+    if (!waitHeightCompletion(
+            h.session,
+            id,
+            "HOLD",
+            std::chrono::milliseconds(height_search_timeout_ms_),
+            canceled)) {
+        return false;
+    }
+
+    // Preserve the TorchController IGNITING -> ESTABLISHED transition.
+    return torch_controller_ &&
+        torch_controller_->waitForArcTransfer(250ms, canceled) ==
+            TorchController::WaitResult::CONFIRMED;
+}
+
+
+bool CutProfileServer::setHeightTrackingAndWait(bool enabled)
+{
+    try {
+    if (!height_tracking_client_ ||
+        !height_tracking_client_->wait_for_service(500ms)) return false;
+    const auto before = heightSnapshot();
+    if (!heightValid(before)) return false;
+    if (enabled && (!before.referenced || before.state != "HOLD" ||
+        !torch_controller_ || !torch_controller_->hasFreshIO() ||
+        torch_controller_->hasFault())) return false;
+    auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+    request->data = enabled;
+    auto pending = height_tracking_client_->async_send_request(request);
+    if (pending.wait_for(1500ms) != std::future_status::ready) {
+        height_tracking_client_->remove_pending_request(pending);
+        return false;
+    }
+    if (!pending.get()->success) return false;
+    const auto acknowledged = HeightClock::now();
+    const auto deadline = acknowledged + 1500ms;
+    while (rclcpp::ok() && HeightClock::now() < deadline) {
+        std::unique_lock<std::mutex> lock(height_mutex_);
+        const auto& h = height_status_;
+        if (!heightValid(h) || h.session != before.session) return false;
+        // Require a later actual Nano snapshot, not the service's local flag.
+        if (h.received > acknowledged && h.tracking == enabled &&
+            (enabled ? (h.state == "HOLD" || h.state == "TRACK") : h.state != "TRACK"))
+            return true;
+        height_cv_.wait_for(lock, 20ms);
+    }
+    return false;
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Height tracking error: %s", e.what());
+        return false;
+    }
+}
+
+bool CutProfileServer::enableHeightTracking()
+{
+    if (!height_use_tracking_) return true;
+    const bool ok = setHeightTrackingAndWait(true);
+    height_tracking_expected_.store(ok);
+    return ok;
+}
+
+bool CutProfileServer::disableHeightTracking()
+{
+    height_tracking_expected_.store(false);
+    return setHeightTrackingAndWait(false);
+}
+
+bool CutProfileServer::returnHeightHomeAndWait(
+    const std::function<bool()>& canceled)
+{
+    if ((canceled && canceled()) ||
+        !torch_controller_ ||
+        !torch_controller_->hasFreshIO() ||
+        torch_controller_->hasFault()) {
+        return false;
+    }
+
+    const auto torch = torch_controller_->snapshot();
+
+    if (torch.command_on ||
+        torch.output_on != std::optional<bool>(false) ||
+        torch.transfer_detected != std::optional<bool>(false)) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "HOME denied: torch OFF is not confirmed");
+        return false;
+    }
+
+    const auto h = heightSnapshot();
+
+    if (!heightValid(h))
+        return false;
+
+    // Already safely retracted and tracking is off.
+    // No service round trip is needed.
+    if (h.state == "HOME" &&
+        h.position == 0 &&
+        h.switch_active &&
+        h.referenced &&
+        !h.tracking) {
+        height_tracking_expected_.store(false);
+        return true;
+    }
+
+    // Otherwise disable tracking before any HOME motion.
+    if (!disableHeightTracking())
+        return false;
+
+        const auto after_disable = heightSnapshot();
+
+    if (!heightValid(after_disable) ||
+        after_disable.tracking ||
+        after_disable.session != h.session) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "HOME denied: height status invalid or session changed");
+        return false;
+    }
+
+    const bool permitted_state =
+        after_disable.state == "UNKNOWN" ||
+        after_disable.state == "HOME" ||
+        after_disable.state == "READY" ||
+        after_disable.state == "HOLD";
+
+    if (!permitted_state) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "HOME denied from state %s",
+            after_disable.state.c_str());
+        return false;
+    }
+
+    uint32_t command_id = 0;
+
+    if (!requestHeightCommand(
+            height_home_client_,
+            canceled,
+            command_id)) {
+        return false;
+    }
+
+    const bool completed = waitHeightCompletion(
+        after_disable.session,
+        command_id,
+        "HOME",
+        std::chrono::milliseconds(height_home_timeout_ms_),
+        canceled);
+
+    if (!completed) {
+        // A completion timeout/cancellation must not leave a
+        // previously accepted seek running without this caller.
+        stopHeightAsync();
+        return false;
+    }
+
+    return heightAtHomeAndReady();
+}
+
+void CutProfileServer::stopHeightAsync()
+{
+    height_tracking_expected_.store(false);
+
+    if (!height_stop_client_ ||
+        !height_stop_client_->service_is_ready()) {
+        // Leave the flag clear so a later supervision tick can retry.
+        return;
+    }
+
+    if (height_stop_sent_.exchange(true))
+        return;
+
+    const auto h = heightSnapshot();
+
+    RCLCPP_ERROR(
+        get_logger(),
+        "[HEIGHT STOP REQUEST] "
+        "phase=%d state=%s fault=%d referenced=%d "
+        "session=%u cut_stop=%d",
+        static_cast<int>(height_phase_.load()),
+        h.state.c_str(),
+        h.fault,
+        static_cast<int>(h.referenced),
+        h.session,
+        static_cast<int>(cut_stop_requested_.load()));
+        try {
+        height_stop_client_->async_send_request(
+            std::make_shared<std_srvs::srv::Trigger::Request>(),
+            [this](
+                rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture future) {
+                try {
+                    const auto response = future.get();
+
+                    if (!response || !response->success) {
+                        height_stop_sent_.store(false);
+
+                        RCLCPP_ERROR(
+                            get_logger(),
+                            "[HEIGHT STOP REJECTED] %s",
+                            response
+                                ? response->message.c_str()
+                                : "empty response");
+                    }
+                } catch (const std::exception& e) {
+                    height_stop_sent_.store(false);
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "[HEIGHT STOP RESPONSE ERROR] %s",
+                        e.what());
+                }
+            });
+    } catch (const std::exception& e) {
+        height_stop_sent_.store(false);
+        RCLCPP_ERROR(
+            get_logger(),
+            "[HEIGHT STOP SEND ERROR] %s",
+            e.what());
+    }
+
+}
+void CutProfileServer::superviseHeight()
+{
+    const auto phase = height_phase_.load();
+    if (phase == HeightPhase::IDLE)
+        return;
+
+    const auto h = heightSnapshot();
+
+    const double age_ms =
+        h.received == HeightClock::time_point{}
+            ? -1.0
+            : std::chrono::duration<double, std::milli>(
+                  HeightClock::now() - h.received).count();
+
+    const bool stale =
+        age_ms < 0.0 || age_ms > height_status_timeout_ms_;
+
+    const bool invalid = !heightValid(h);
+    const bool unreferenced = !h.referenced;
+    const bool session_changed =
+        h.session != height_cycle_session_.load();
+
+    const bool wrong_cut_state =
+        phase == HeightPhase::CUT &&
+        h.state != "HOLD" && h.state != "TRACK";
+
+    const bool tracking_lost =
+        phase == HeightPhase::CUT &&
+        height_tracking_expected_.load() &&
+        !h.tracking;
+
+    // An existing stop requires containment, but is not itself
+    // evidence of a newly occurring height fault.
+    if (cut_stop_requested_.load()) {
+        stopHeightAsync();
+        return;
+    }
+
+    const bool bad =
+        invalid || unreferenced || session_changed ||
+        wrong_cut_state || tracking_lost;
+
+    if (!bad)
+        return;
+
+    // Atomic with respect to explicit stop requests/recovery arming.
+    const bool first =
+        latchObservedMotionStop("height_fault_or_stale");
+
+    if (first) {
+        if (torch_controller_)
+            torch_controller_->requestOutputOff();
+
+        uint64_t rx_count;
+        double max_gap_ms;
+
+        {
+            std::lock_guard<std::mutex> lock(height_mutex_);
+            rx_count = height_status_rx_count_;
+            max_gap_ms = height_status_max_gap_ms_;
+        }
+
+        RCLCPP_ERROR(
+            get_logger(),
+            "[HEIGHT FIRST FAILURE] "
+            "phase=%d state=%s age_ms=%.1f limit_ms=%d "
+            "stale=%d invalid=%d referenced=%d fault=%d "
+            "configured=%d session=%u expected_session=%u "
+            "wrong_cut_state=%d tracking_lost=%d "
+            "rx_count=%llu max_rx_gap_ms=%.1f",
+            static_cast<int>(phase),
+            h.state.c_str(),
+            age_ms,
+            height_status_timeout_ms_,
+            int(stale),
+            int(invalid),
+            int(h.referenced),
+            h.fault,
+            int(h.configured),
+            h.session,
+            height_cycle_session_.load(),
+            int(wrong_cut_state),
+            int(tracking_lost),
+            static_cast<unsigned long long>(rx_count),
+            max_gap_ms);
+    }
+
+    stopHeightAsync();
+
+    if (first && move_group_)
+        move_group_->stop();
+}
+
+CutProfileServer::MotionOutcome CutProfileServer::executeCut(
+    const motion::ExecutableCut& cut,
+    const std::shared_ptr<GoalHandleCutProfile> goal_handle)
+{
+    if (!torch_controller_) return MotionOutcome::FAILED;
+    auto& torch = *torch_controller_;
+    const auto canceled = [&]() {
+        return !rclcpp::ok() || goal_handle->is_canceling() ||
+            cut_stop_requested_.load();
+    };
+    if (canceled() || torch.hasFault() || !torch.hasFreshIO())
+        return MotionOutcome::FAILED;
+    const auto before = torch.snapshot();
+    if (before.command_on || before.output_on != std::optional<bool>(false) ||
+        before.transfer_detected != std::optional<bool>(false)) return MotionOutcome::FAILED;
+
+    height_stop_sent_.store(false);
+    height_tracking_expected_.store(false);
+    MotionOutcome outcome = MotionOutcome::FAILED;
+    bool normal = false;
+    torch.setActiveSegment(cut.name);
+    try {
+        do {
+            if (!returnHeightHomeAndWait(canceled)) {
+                RCLCPP_ERROR(get_logger(), "[CUT] Initial height HOME check failed");
+                break;
+            }
+
+            if (canceled()) break;
+
+            if (!setFlapClosed(true)) {
+                RCLCPP_ERROR(get_logger(), "[CUT] Flap close failed");
+                break;
+            }
+            height_cycle_session_.store(heightSnapshot().session);
+            height_phase_.store(HeightPhase::PREP);
+            if (!prepareHeightAndWaitReady(canceled)) break;
+
+            height_phase_.store(HeightPhase::IGNITION);
+            publishFeedback(goal_handle, cut.name + ": ignition");
+            if (torch.requestIgnition(1500ms, canceled) != TorchCommandResult::CONFIRMED)
+                break;
+            height_phase_.store(HeightPhase::SEARCH);
+            if (!searchHeightAndWaitForArc(canceled) || canceled()) break;
+            if (!torch.markCutting()) break;
+            height_phase_.store(HeightPhase::CUT);
+
+            const auto pierce_until = HeightClock::now() +
+                std::chrono::milliseconds(height_pierce_dwell_ms_);
+            while (HeightClock::now() < pierce_until && !canceled() && !torch.hasFault())
+                std::this_thread::sleep_for(10ms);
+            if (canceled() || torch.hasFault() || !enableHeightTracking()) break;
+
+            outcome = executeMotion(cut.process.cut, goal_handle, cut.name + ": cut");
+            normal = outcome == MotionOutcome::SUCCESS && !canceled() && !torch.hasFault();
+        } while (false);
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Cut exception: %s", e.what());
+    }
+
+    bool tracking_off = false;
+    if (normal) {
+        // Normal completion: stop corrections before removing the arc.
+        tracking_off = disableHeightTracking();
+        normal = tracking_off && !canceled() && !torch.hasFault();
+    }
+    if (!normal) {
+        // Interrupted cut: OFF precedes every potentially blocking height wait.
+        torch.requestOutputOff();
+        stopHeightAsync();
+    }
+    const bool off = torch.requestShutdown(1500ms) == TorchCommandResult::CONFIRMED;
+    const bool idle = off && torch.finishCut();
+    bool homed = false;
+    if (normal && tracking_off && idle && !canceled()) {
+        height_phase_.store(HeightPhase::RETURN);
+        homed = returnHeightHomeAndWait(canceled);
+    }
+    if (!homed) {
+        torch.requestOutputOff();
+        stopHeightAsync();
+    }
+    height_phase_.store(HeightPhase::IDLE);
+    torch.setActiveSegment("");
+    if (goal_handle->is_canceling()) return MotionOutcome::CANCELED;
+    if (!homed || !idle || canceled()) return MotionOutcome::FAILED;
+    if (!setFlapClosed(false)) return MotionOutcome::FAILED;
+    return outcome;
+}
+
 
     CutProfileServer::MotionOutcome CutProfileServer::executeCuttingPlan(const motion::ExecutablePlan& executable_plan_,
                 const std::shared_ptr<GoalHandleCutProfile>goal_handle){
@@ -1597,9 +2224,20 @@ CutProfileServer::waitForPlanApproval(
                 return outcome;
             }
             outcome = run(cut.process.approach,"approach");
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT SEQUENCE] Approach finished: "
+                "feature=%s outcome=%d stop=%d",
+                cut.name.c_str(),
+                static_cast<int>(outcome),
+                static_cast<int>(cut_stop_requested_.load()));
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
             }
+            RCLCPP_INFO(
+                get_logger(),
+                "[CUT SEQUENCE] Entering height/torch sequence: %s",
+                cut.name.c_str());
             outcome = process_enabled_ ? executeCut(cut,goal_handle) : run(cut.process.cut,"cut (torch disabled)");
             if(outcome != MotionOutcome::SUCCESS){
                 return outcome;
@@ -4269,7 +4907,30 @@ void CutProfileServer::finishRecoveryMotion()
             goal->succeed(result);
 
             }
+            bool CutProfileServer::latchObservedMotionStop(const char* reason)
+{
+    std::lock_guard<std::mutex> lock(stop_mutex_);
 
+    // A timer seeing an already-latched stop is not a new stop event.
+    if (cut_stop_requested_.load())
+        return false;
+
+    ++stop_generation_;
+    cut_stop_requested_.store(true);
+
+    RCLCPP_ERROR(
+        get_logger(),
+        "[CUT STOP FIRST] reason=%s "
+        "generation=%llu motion_active=%d "
+        "recovery_active=%d retreat_active=%d",
+        reason,
+        static_cast<unsigned long long>(stop_generation_.load()),
+        int(motion_active_.load()),
+        int(recovery_motion_active_.load()),
+        int(retreat_active_.load()));
+
+    return true;
+}
     bool CutProfileServer::latchMotionStop(const char* reason)
 {
     std::lock_guard<std::mutex> lock(stop_mutex_);

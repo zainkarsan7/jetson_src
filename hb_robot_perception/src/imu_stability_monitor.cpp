@@ -78,15 +78,19 @@ void ImuStabilityMonitor::onImu(
   s.received_at = Clock::now();
 
   s.gyro = {
-      msg->angular_velocity.x,
-      msg->angular_velocity.y,
-      msg->angular_velocity.z};
+    msg->angular_velocity.x,
+    msg->angular_velocity.y,
+    msg->angular_velocity.z
+  };
 
-  if (secondary) {
-    for (int i = 0; i < 3; ++i) {
-        s.gyro[i] -= config_.mpu6050_gyro_bias[i];
-    }
-}
+  const auto& bias = secondary
+      ? config_.mpu6050_2_gyro_bias
+      : config_.mpu6050_gyro_bias;
+
+  for (std::size_t i = 0; i < 3; ++i) {
+      s.gyro[i] -= bias[i];
+  }
+
 
   s.accel = {
       msg->linear_acceleration.x,
@@ -105,7 +109,7 @@ void ImuStabilityMonitor::onImu(
     std::lock_guard<std::mutex> lock(mutex_);
 
     Channel& channel =
-        secondary ? mpu6050_ : unilidar_;
+        secondary ? mpu6050_2_ : mpu6050_;
 
     if (!channel.samples.empty() &&
         s.received_at -
@@ -180,7 +184,7 @@ ImuChannelMetrics ImuStabilityMonitor::evaluateWindow(
   const auto span =
       latest.received_at - first->received_at;
 
-  if (span < config_.window * 9 / 10) {
+  if (span < config_.window * 7 / 10) {
     return out;
   }
 
@@ -290,23 +294,23 @@ ImuStabilityMetrics ImuStabilityMonitor::evaluateLocked(
 
   ImuStabilityMetrics out;
 
-  out.unilidar = evaluateWindow(now, unilidar_);
+  out.mpu6050_2 = evaluateWindow(now, mpu6050_2_);
 
   if (accel_sub_) {
     out.mpu6050 = evaluateWindow(now, mpu6050_);
 
     out.valid =
-        out.unilidar.valid &&
+        out.mpu6050_2.valid &&
         out.mpu6050.valid;
 
     out.stable =
         out.valid &&
-        out.unilidar.stable &&
+        out.mpu6050_2.stable &&
         out.mpu6050.stable;
   } else {
     // Supports single-channel users of this monitor.
-    out.valid = out.unilidar.valid;
-    out.stable = out.unilidar.stable;
+    out.valid = out.mpu6050_2.valid;
+    out.stable = out.mpu6050_2.stable;
   }
 
   return out;
@@ -406,7 +410,7 @@ ImuStabilityMetrics ImuStabilityMonitor::metrics() const {
 void ImuStabilityMonitor::reset() {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  unilidar_.samples.clear();
+  mpu6050_2_.samples.clear();
   mpu6050_.samples.clear();
   evidence_.clear();
 

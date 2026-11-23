@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ProfileEstimate.msg"
   "msg/PlatformImuMetrics.msg"
   "msg/PlatformSupervision.msg"
+  "srv/Jog.srv"
   "srv/GenerateExplorePath.srv"
   "srv/ClearTorchFault.srv"
   "srv/CommitWorkpiece.srv"

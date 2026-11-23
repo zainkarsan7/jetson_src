@@ -24,15 +24,22 @@ struct ImuStabilityConfig {
 
   std::size_t min_samples = 20;
 
-  std::chrono::milliseconds window{500};
-  std::chrono::milliseconds max_sample_age{200};
+  std::chrono::milliseconds window{750};
+  std::chrono::milliseconds max_sample_age{300};
   std::chrono::milliseconds confidence_window{2000};
 
   // Kept for compatibility with existing task_state_server.
   // This is now a complete secondary six-axis IMU.
   std::string auxiliary_accel_topic;
   std::array<double, 3> mpu6050_gyro_bias{
-      0.0, 0.0, 0.0
+      -0.04716386,
+    -0.00346401,
+     0.05875498
+  };
+  std::array<double, 3> mpu6050_2_gyro_bias{
+      -0.07190013,
+     0.02460354,
+    -0.01190212
   };
 
 };
@@ -70,8 +77,8 @@ struct ImuChannelMetrics {
 };
 
 struct ImuStabilityMetrics {
-  ImuChannelMetrics unilidar;
   ImuChannelMetrics mpu6050;
+  ImuChannelMetrics mpu6050_2;
 
   bool valid = false;
   bool stable = false;
@@ -157,8 +164,8 @@ private:
   mutable std::mutex mutex_;
   std::condition_variable cv_;
 
-  Channel unilidar_;
   Channel mpu6050_;
+  Channel mpu6050_2_;
 
   mutable std::deque<Evidence> evidence_;
 };

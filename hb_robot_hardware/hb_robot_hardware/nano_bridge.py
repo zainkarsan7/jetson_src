@@ -1,210 +1,1491 @@
-"""ROS 2 Humble serial bridge. Protocol documented in README.md."""
+#!/usr/bin/env python3
+"""
+ROS 2 Humble / Nano Every protocol v2.
+
+Replace firmware AND bridge together.
+
+Positive steps RETRACT; negative steps ADVANCE.
+Measured calibration: 400 pulses / 10mm = 40 steps/mm.
+
+Calibration permits bounded JOG without TorchStatus. HOME requires production mode.
+Physically inhibit the torch in this mode.
+PREP, SEARCH and voltage tracking are disabled by the Nano.
+
+Services acknowledge acceptance.
+Observe /torch_height/motion_event for motion completion.
+
+All parameters are startup-only.
+No movement command is replayed across serial sessions.
+
+Existing Jog.srv:
+    int32 steps
+    ---
+    bool success
+    string message
+"""
+
+import json
 import math
+import secrets
 import threading
 import time
+from collections import deque
+
 import serial
 import rclpy
+
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import (
+    qos_profile_sensor_data,
+    QoSProfile,
+    ReliabilityPolicy,
+)
+
+from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, Float32, UInt32
-from std_srvs.srv import SetBool
+from std_msgs.msg import Bool, Float32, UInt32, String
+from std_srvs.srv import Trigger, SetBool
+
+from hb_robot_interfaces.msg import TorchStatus
+from hb_robot_interfaces.srv import Jog
 
 
-def xor_checksum(payload):
+def frame(*fields):
+    body = ','.join(map(str, fields)).encode('ascii')
+    check = 0
+
+    for byte in body:
+        check ^= byte
+
+    return b'$' + body + f'*{check:02X}\n'.encode()
+
+
+def decode(raw):
+    body, check = raw.strip().rsplit(b'*', 1)
+
+    if not body.startswith(b'$') or len(check) != 2:
+        raise ValueError('framing')
+
     value = 0
-    for byte in payload.encode('ascii'):
+    for byte in body[1:]:
         value ^= byte
-    return f'{value:02X}'
+
+    if value != int(check, 16):
+        raise ValueError('checksum')
+
+    return body[1:].decode('ascii').split(',')
 
 
 class NanoBridge(Node):
     def __init__(self):
         super().__init__('nano_bridge')
-        self.port = self.declare_parameter('port', '/dev/ttyACM1').value
-        self.baud = int(self.declare_parameter('baud', 230400).value)
-        self.frame = self.declare_parameter('frame_id', 'awp_mpu6050').value
-        self.max_age = float(self.declare_parameter('max_sample_age_s', 0.25).value)
-        self.timeout = float(self.declare_parameter('command_timeout_s', 1.0).value)
-        self.open_deg = int(self.declare_parameter('flap_open_deg', 30).value)
-        self.closed_deg = int(self.declare_parameter('flap_closed_deg', 0).value)
-        self.accel_var = float(self.declare_parameter('accel_variance_m2_s4', 0.04).value)
-        self.pub = self.create_publisher(Imu, 'mpu6050/imu', qos_profile_sensor_data)
-        self.rate_pub = self.create_publisher(Float32, 'mpu6050/sample_rate_hz', 10)
-        self.seq_pub = self.create_publisher(UInt32, 'mpu6050/sequence', 10)
-        self.online_pub = self.create_publisher(Bool, 'hardware/online', 10)
-        self.flap_pub = self.create_publisher(Bool, 'camera_flap/closed', 10)
-        self.ser = None
+
+        defaults = {
+            'port': '/dev/ttyACM0',
+            'baud': 230400,
+
+            'frame_id': 'awp_mpu6050',
+            'imu2_frame_id': 'awp_mpu6050_2',
+            'accel_variance_m2_s4': 0.04,
+            'imu2_accel_variance_m2_s4': 0.04,
+            'max_sample_age_s': 0.25,
+            'status_timeout_s': 0.75,
+
+            'flap_open_deg': 45,
+            'flap_closed_deg': 5,
+
+            'command_timeout_s': 2.0,
+            'command_retry_s': 0.25,
+            'heartbeat_period_s': 0.05,
+            'link_timeout_ms': 500,
+            'torch_status_timeout_s': 0.75,
+
+            # Retained from your calibration exercise.
+            # Production mode requires a verified home-seek bound
+            # covering the complete search envelope.
+            'calibration_mode': False,
+            'steps_per_mm': 40.0,
+            'initial_home_direction': 1,
+            'positive_direction_high': True,
+
+            'prep_distance_mm': 10.0,
+            'search_distance_mm': 15.0,
+
+            'home_max_travel_mm': 27.0,
+
+            'search_duration_s': 4.0,
+            'prep_speed_mm_s': 15.0,
+            'home_speed_mm_s': 10.0,
+
+            'jog_max_steps': 500,
+            'jog_rate_steps_s': 400,
+
+            # Signed calibration range relative to boot/HOME origin.
+            # RESET_FAULT does not reset this counter.
+            # A new serial session does reset the estimated origin.
+            'jog_window_steps': 1000,
+
+            'arc_established_wait_ms': 300,
+            'arc_establish_timeout_ms': 2000,
+
+            'voltage_tracking_enabled': False,
+            'voltage_source': 'analog_input_value',
+            'voltage_analog_domain': 1,
+            'voltage_target_v': 3.5,
+            'voltage_lower_margin_v': 0.5,
+            'voltage_upper_margin_v': 0.5,
+            'voltage_min_valid_v': 0.1,
+            'voltage_max_valid_v': 10.0,
+
+            # Your calibrated sign convention:
+            # +1 = RETRACT when voltage is too high.
+            # -1 = ADVANCE when voltage is too high.
+            #  0 = unconfigured; tracking cannot be enabled.
+            'voltage_high_direction': -1,
+
+            'voltage_correction_dwell_ms': 100,
+            'tracking_speed_mm_s': 0.5,
+            'tracking_max_offset_mm': 2.0,
+
+            # Leave False when the cut-profile server owns return-home.
+            'auto_home_after_cut': False,
+        }
+
+        descriptor = ParameterDescriptor(read_only=True)
+
+        self.p = {
+            name: self.declare_parameter(
+                name, value, descriptor
+            ).value
+            for name, value in defaults.items()
+        }
+
+        self.config = self.make_config()
+
+        # This lock protects short cache updates only.
+        # Never hold it during serial writes or ROS publication.
         self.lock = threading.Lock()
-        self.ack_cv = threading.Condition()
-        self.acks = {}
-        self.command_id = 0
-        self.last_rx = 0.0
-        self.last_seq = None
-        self.last_device_us = None
-        self.rate_ema = None
-        self.running = True
-        self.reader = threading.Thread(target=self.read_loop, daemon=True)
-        self.reader.start()
-        self.create_service(SetBool, 'camera_flap/set_closed', self.set_flap)
-        self.create_timer(0.5, self.publish_health)
+        self.stop_event = threading.Event()
+        self.wake = threading.Event()
+        self.tracking_authorized = False
+        self.session = 0
+        self.configured = False
+        self.pending = None
+        self.urgent = None
+        self.next_id = 0
 
-    def publish_health(self):
-        msg = Bool()
-        msg.data = (time.monotonic() - self.last_rx) < self.max_age
-        self.online_pub.publish(msg)
+        self.torch = None
+        self.torch_at = 0.0
+        self._last_permission = None
+        self.arc_since = None
+        self.correction_since = None
+        self.correction_direction = 0
 
-    def send(self, fields):
-        payload = ','.join(map(str, fields))
-        wire = f'${payload}*{xor_checksum(payload)}\n'.encode('ascii')
+        self.h = None
+        self.h_at = 0.0
+        self.height_revision = 0
+        self.published_height = None
+        self.last_frame_at = 0.0
+
+        self.imu = {
+            tag: deque(maxlen=8)
+            for tag in ('M', 'M2')
+        }
+        self.imu_at = {'M': 0.0, 'M2': 0.0}
+
+        self.stats = dict(
+            bad_frames=0,
+            imu_queue_drops=0,
+            config_sends=0,
+            max_write_ms=0.0,
+            max_heartbeat_gap_ms=0.0,
+            last_ack_ms=0.0,
+            reconnects=0,
+            error='',
+        )
+
+        self.last_done = None
+        self.last_diagnostic = 0.0
+        self.auto_armed = False
+        self.auto_sent = False
+
+        self.pub = {}
+
+        for name, message_type in (
+            ('torch_height/status', String),
+            ('torch_height/at_home', Bool),
+            ('torch_height/arc_established', Bool),
+            ('torch_height/voltage_in_band', Bool),
+            ('torch_height/motion_event', String),
+            ('hardware/diagnostics', String),
+            ('hardware/online', Bool),
+            ('hardware/serial_online', Bool),
+            ('camera_flap/closed', Bool),
+            ('torch_height/status_full', String),
+        ):
+            self.pub[name] = self.create_publisher(
+                message_type, name, 10
+            )
+
+        self.channels = {}
+
+        definitions = (
+            (
+                'M',
+                'mpu6050',
+                'frame_id',
+                'accel_variance_m2_s4',
+            ),
+            (
+                'M2',
+                'mpu6050_2',
+                'imu2_frame_id',
+                'imu2_accel_variance_m2_s4',
+            ),
+        )
+
+        for tag, prefix, frame_key, variance_key in definitions:
+            self.channels[tag] = dict(
+                frame=self.p[frame_key],
+                variance=self.p[variance_key],
+                us=None,
+                pub=self.create_publisher(
+                    Imu, prefix + '/imu', qos_profile_sensor_data
+                ),
+                seq=self.create_publisher(
+                    UInt32, prefix + '/sequence', 10
+                ),
+                rate=self.create_publisher(
+                    Float32, prefix + '/sample_rate_hz', 10
+                ),
+                online=self.create_publisher(
+                    Bool, prefix + '/online', 10
+                ),
+            )
+
+        self.create_subscription(
+            TorchStatus,
+            '/cut_profile/torch_status',
+            self.on_torch,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+            ),
+        )
+
+        # STOP can preempt a different service waiting for an ACK.
+        self.services_group = ReentrantCallbackGroup()
+
+        operations = {
+            'home': ('HOME', ()),
+            'prepare': ('PREP', ()),
+            'arc_search': ('SEARCH', ()),
+            'stop': ('STOP', ()),
+            'reset_fault': ('RESET_FAULT', ()),
+        }
+
+        for name, (operation, args) in operations.items():
+            self.create_service(
+                Trigger,
+                'torch_height/' + name,
+                self.callback(operation, args),
+                callback_group=self.services_group,
+            )
+
+        self.create_service(
+            Jog,
+            'torch_height/jog',
+            self.jog,
+            callback_group=self.services_group,
+        )
+
+        self.create_service(
+            SetBool,
+            'camera_flap/set_closed',
+            self.flap,
+            callback_group=self.services_group,
+        )
+        self.create_service(
+            SetBool,
+            '/torch_height/set_tracking_enabled',
+            self.set_tracking,
+            callback_group=self.services_group,
+        )
+
+        # ROS publication is separate from serial parsing/heartbeat.
+        self.create_timer(0.02, self.publish_cached)
+
+        if self.p['calibration_mode']:
+            self.get_logger().warn(
+                'CALIBRATION MODE: physically inhibit torch; '
+                'cutting disabled'
+            )
+
+        self.worker = threading.Thread(
+            target=self.io_loop,
+            name='nano-serial',
+            daemon=True,
+        )
+        self.worker.start()
+
+    def make_config(self):
+        p = self.p
+        if p['auto_home_after_cut']:
+            raise ValueError('Set auto_home_after_cut=False; cut server owns HOME')
+
+        for name, value in p.items():
+            if isinstance(value, float):
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(
+                        f'{name}: require finite nonnegative value'
+                    )
+
+        for name in (
+            'steps_per_mm',
+            'max_sample_age_s',
+            'status_timeout_s',
+            'torch_status_timeout_s',
+            'command_timeout_s',
+            'command_retry_s',
+        ):
+            if p[name] <= 0:
+                raise ValueError(f'{name} must be positive')
+
+        if not 0.02 <= p['heartbeat_period_s'] <= 0.1:
+            raise ValueError('heartbeat_period_s: 0.02..0.1')
+
+        if not 100 <= p['link_timeout_ms'] <= 2000:
+            raise ValueError('link_timeout_ms: 100..2000')
+
+        if (
+            1000 * p['heartbeat_period_s'] * 3
+            > p['link_timeout_ms']
+        ):
+            raise ValueError('Link timeout too short')
+
+        if not (
+            0 < p['command_retry_s'] < p['command_timeout_s']
+        ):
+            raise ValueError('Invalid command retry')
+
+        if p['initial_home_direction'] != 1:
+            raise ValueError('Invalid home direction')
+        total_travel_mm = (
+            p['prep_distance_mm'] +
+            p['search_distance_mm']
+        )
+        if any(
+            not 0 <= p[name] <= 180
+            for name in ('flap_open_deg', 'flap_closed_deg')
+        ):
+            raise ValueError('Servo angle')
+
+        if not (
+            0 <= p['arc_established_wait_ms']
+            < p['arc_establish_timeout_ms']
+            <= 30000
+        ):
+            raise ValueError('Arc dwell')
+
+        if not 0 <= p['voltage_correction_dwell_ms'] <= 5000:
+            raise ValueError('Voltage dwell')
+
+        if p['voltage_source'] not in (
+            'analog_input_value',
+            'arc_voltage_v',
+        ):
+            raise ValueError('Voltage source')
+
+        self.low = (
+            p['voltage_target_v']
+            - p['voltage_lower_margin_v']
+        )
+        self.high = (
+            p['voltage_target_v']
+            + p['voltage_upper_margin_v']
+        )
+
+        if not (
+            p['voltage_min_valid_v']
+            <= self.low
+            < self.high
+            <= p['voltage_max_valid_v']
+        ):
+            raise ValueError('Voltage band')
+
+        if (
+            p['calibration_mode']
+            and p['voltage_tracking_enabled']
+        ):
+            raise ValueError('Tracking disabled in calibration')
+
+        if (
+            p['voltage_tracking_enabled']
+            and p['voltage_high_direction'] not in (-1, 1)
+        ):
+            raise ValueError('Set voltage polarity')
+
+        if not 0.5 <= p['search_duration_s'] <= 30:
+            raise ValueError('Search duration: 0.5..30s')
+
+        if (
+            not p['calibration_mode']
+            and p['home_max_travel_mm'] < total_travel_mm
+        ):
+            raise ValueError(
+                'Home travel budget must cover '
+                'the negative cutting envelope'
+            )
+
+        scale = p['steps_per_mm']
+
+        prep_steps = round(p['prep_distance_mm'] * scale)
+        search_steps = round(p['search_distance_mm'] * scale)
+        home_steps = round(p['home_max_travel_mm'] * scale)
+
+        prep_rate = round(
+            p['prep_speed_mm_s'] * scale
+        )
+        home_rate = round(
+            p['home_speed_mm_s'] * scale
+        )
+
+        # Allow for the 200ms acceleration ramp.
+        search_rate = math.ceil(
+            search_steps /
+            (p['search_duration_s'] - 0.1)
+        )
+
+        tracking_rate = (
+            round(p['tracking_speed_mm_s'] * scale)
+            if p['voltage_tracking_enabled']
+            else 0
+        )
+
+        tracking_offset = (
+            round(p['tracking_max_offset_mm'] * scale)
+            if tracking_rate
+            else 0
+        )
+
+        if not all(
+            1 <= value <= 100000
+            for value in (prep_steps, search_steps, home_steps)
+        ):
+            raise ValueError('Travel: 1..100000 steps')
+
+        if not all(
+            1 <= value <= 2000
+            for value in (prep_rate, home_rate, search_rate)
+        ):
+            raise ValueError('Speed: 1..2000 steps/s')
+
+        if p['voltage_tracking_enabled'] and not (
+            1 <= tracking_rate <= 2000
+            and 1 <= tracking_offset <= 100000
+        ):
+            raise ValueError('Tracking limits')
+
+        if (
+            not 1 <= p['jog_max_steps'] <= 500
+            or not 1 <= p['jog_rate_steps_s'] <= 1000
+        ):
+            raise ValueError('Jog limits')
+
+        if not (
+            p['jog_max_steps']
+            <= p['jog_window_steps']
+            <= 100000
+        ):
+            raise ValueError('Jog window')
+
+        return [
+            int(p['calibration_mode']),
+            prep_steps,
+            search_steps,
+            home_steps,
+            prep_rate,
+            home_rate,
+            search_rate,
+            round(p['search_duration_s'] * 1000),
+            int(p['positive_direction_high']),
+            1,
+            p['arc_establish_timeout_ms'],
+            tracking_rate,
+            tracking_offset,
+            p['link_timeout_ms'],
+            p['jog_max_steps'],
+            p['jog_rate_steps_s'],
+            p['jog_window_steps'],
+        ]
+
+    def permission(self, now):
+        t = self.torch
+
+        if (
+            t is None
+            or now - self.torch_at
+            > self.p['torch_status_timeout_s']
+            or not t.io_connected
+            or t.fault
+        ):
+            return 3
+
+        if not t.command_on:
+            return 4 if t.output_on or t.transfer_detected else 0
+
+        if t.output_on:
+            return 2 if t.transfer_detected else 1
+
+        return 3 if t.transfer_detected else 5
+
+    def voltage(self):
+        t = self.torch
+
+        if t is None:
+            return None
+
+        if self.p['voltage_source'] == 'analog_input_value':
+            if (
+                not t.analog_valid
+                or t.analog_domain
+                != self.p['voltage_analog_domain']
+            ):
+                return None
+
+            value = t.analog_input_value
+        else:
+            if not t.arc_voltage_valid:
+                return None
+
+            value = t.arc_voltage_v
+
+        if (
+            math.isfinite(value)
+            and self.p['voltage_min_valid_v']
+            <= value
+            <= self.p['voltage_max_valid_v']
+        ):
+            return value
+
+        return None
+
+    def control(self, now):
+        # Caller holds self.lock.
+        if self.p['calibration_mode']:
+            return 0, 0, 0, 0
+
+        mode = self.permission(now)
+
+        qualified = (
+            mode == 2
+            and self.arc_since is not None
+            and (now - self.arc_since) * 1000
+                >= self.p['arc_established_wait_ms']
+        )
+
+        # Revoke tracking when the arc is no longer qualified.
+        height_ok = (self.configured and self.h is not None
+            and now - self.h_at < self.p['status_timeout_s']
+            and self.h[3] == 0 and self.h[11] == 1
+            and self.h[0] in ('HOLD', 'TRACK'))
+        if not qualified or not height_ok:
+            self.tracking_authorized = False
+
+        enabled = (
+            self.tracking_authorized
+            and self.p['voltage_tracking_enabled']
+            and qualified
+        )
+
+        correction = 0
+
+        if enabled:
+            if self.voltage() is None:
+                self.tracking_authorized = False
+                return 3, 0, 0, 0
+
+            if (
+                self.correction_since is not None
+                and (now - self.correction_since) * 1000
+                    >= self.p['voltage_correction_dwell_ms']
+            ):
+                correction = self.correction_direction
+
+        return mode, int(qualified), correction, int(enabled)
+
+    def set_tracking(self, request, response):
+        now = time.monotonic()
+
         with self.lock:
-            if self.ser is None:
-                return False
-            try:
-                self.ser.write(wire)
-                return True
-            except (serial.SerialException, OSError):
-                return False
+            if request.data:
+                fresh = (
+                    self.configured
+                    and self.h is not None
+                    and now - self.h_at
+                        < self.p['status_timeout_s']
+                )
 
-    def set_flap(self, request, response):
-        # This service confirms firmware acknowledgement, NOT physical flap position.
-        angle = self.closed_deg if request.data else self.open_deg
-        if not (0 <= angle <= 180):
-            response.success = False
-            response.message = 'Invalid configured servo angle'
-            return response
-        with self.ack_cv:
-            self.command_id += 1
-            cid = self.command_id
-        if not self.send(['FLAP', cid, angle]):
-            response.success = False
-            response.message = 'Serial offline'
-            return response
-        deadline = time.monotonic() + self.timeout
-        with self.ack_cv:
-            while cid not in self.acks:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                self.ack_cv.wait(timeout=remaining)
-            accepted = self.acks.pop(cid, None)
-        response.success = accepted == angle
-        response.message = ('Command acknowledged (position not verified)' if response.success
-                            else 'No matching firmware acknowledgement')
+                valid = (
+                    not self.p['calibration_mode']
+                    and self.p['voltage_tracking_enabled']
+                    and fresh
+                    and self.h[0] in ('HOLD', 'TRACK')
+                    and self.h[3] == 0
+                    and self.h[11] == 1
+                    and self.h[4] <= self.p['link_timeout_ms']
+                    and self.permission(now) == 2
+                    and self.arc_since is not None
+                    and (
+                        now - self.arc_since
+                    ) * 1000 >=
+                        self.p['arc_established_wait_ms']
+                    and self.voltage() is not None
+                )
+
+                if not valid:
+                    response.success = False
+                    response.message = (
+                        'Tracking prerequisites not satisfied'
+                    )
+                    return response
+
+            self.tracking_authorized = bool(request.data)
+
+        self.wake.set()
+
+        response.success = True
+        response.message = (
+            'Tracking enabled'
+            if request.data
+            else 'Tracking disabled'
+        )
         return response
 
-    def handle_line(self, raw):
-        if not raw.startswith('$') or '*' not in raw:
-            return
-        payload, check = raw[1:].rsplit('*', 1)
-        if xor_checksum(payload) != check.upper():
-            return
-        f = payload.split(',')
-        if f[0] == 'ACK' and len(f) == 3:
-            try:
-                cid, angle = int(f[1]), int(f[2])
-            except ValueError:
-                return
-            with self.ack_cv:
-                self.acks[cid] = angle
-                self.ack_cv.notify_all()
-            closed = Bool()
-            closed.data = (angle == self.closed_deg)
-            self.flap_pub.publish(closed)
-            return
-        if f[0] == 'ERROR' and len(f) == 2:
-            self.get_logger().error(f'Nano reports {f[1]}')
-            return
-        if f[0] != 'M' or len(f) != 9:
-            return
-        try:
-            seq, us, x, y, z, gx, gy, gz = map(int, f[1:])
-        except ValueError:
-            return
-        if not (0 <= seq <= 0xffffffff and 0 <= us <= 0xffffffff):
-            return
-        if any(v < -32768 or v > 32767 for v in (x, y, z, gx, gy, gz)):
-            return
-        if self.last_seq is not None and ((seq - self.last_seq) & 0xFFFFFFFF) != 1:
-            self.get_logger().warn('MPU6050 sample sequence gap', throttle_duration_sec=5.0)
-        self.last_seq = seq
-        self.last_rx = time.monotonic()
-        # Host receipt time is approximate; device micros is used for rate measurement.
-        if self.last_device_us is not None:
-            dt_us = (us - self.last_device_us) & 0xFFFFFFFF
-            if 100 < dt_us < 1_000_000:
-                hz = 1_000_000.0 / dt_us
-                self.rate_ema = hz if self.rate_ema is None else 0.95 * self.rate_ema + 0.05 * hz
-        self.last_device_us = us
-        msg = Imu()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.frame
-        msg.orientation_covariance[0] = -1.0
-        # With no measured gyro covariance, ROS Imu uses the default zero array.
-        gyro_scale = math.radians(1.0 / 131.0)
-        msg.angular_velocity.x = gx * gyro_scale
-        msg.angular_velocity.y = gy * gyro_scale
-        msg.angular_velocity.z = gz * gyro_scale
-        scale = 9.80665 / 16384.0
-        msg.linear_acceleration.x = x * scale
-        msg.linear_acceleration.y = y * scale
-        msg.linear_acceleration.z = z * scale
-        msg.linear_acceleration_covariance = [self.accel_var, 0.0, 0.0,
-                                               0.0, self.accel_var, 0.0,
-                                               0.0, 0.0, self.accel_var]
-        self.pub.publish(msg)
-        q = UInt32()
-        q.data = seq
-        self.seq_pub.publish(q)
-        if self.rate_ema is not None:
-            r = Float32()
-            r.data = float(self.rate_ema)
-            self.rate_pub.publish(r)
 
-    def read_loop(self):
-        while self.running and rclpy.ok():
+    def on_torch(self, msg):
+        now = time.monotonic()
+
+        with self.lock:
+            gap = (
+                now - self.torch_at
+                > self.p['torch_status_timeout_s']
+            )
+
+            self.torch = msg
+            self.torch_at = now
+
+            if gap or self.permission(now) != 2:
+                self.tracking_authorized = False
+                self.arc_since = None
+                self.correction_since = None
+                self.correction_direction = 0
+
+            if self.permission(now) == 2:
+                if self.arc_since is None:
+                    self.arc_since = now
+
+                value = self.voltage()
+                correction = 0
+
+                if (
+                    value is not None
+                    and self.p['voltage_tracking_enabled']
+                ):
+                    if value > self.high:
+                        correction = self.p['voltage_high_direction']
+                    elif value < self.low:
+                        correction = -self.p['voltage_high_direction']
+
+                if correction != self.correction_direction:
+                    self.correction_direction = correction
+                    self.correction_since = (
+                        now if correction else None
+                    )
+
+        self.wake.set()
+
+    def submit(self, operation, args=()):
+        with self.lock:
+            if not self.configured:
+                return None, 'Serial session not configured'
+
+            if self.pending is not None and operation != 'STOP':
+                return None, 'Another command is awaiting ACK'
+
+            self.next_id += 1
+
+            command = dict(
+                id=self.next_id,
+                op=operation,
+                args=args,
+                event=threading.Event(),
+                answer=None,
+                first=0.0,
+                last=0.0,
+            )
+
+            if operation == 'STOP':
+                self.tracking_authorized = False
+
+                if self.pending is not None:
+                    self.complete(
+                        self.pending, False, 'Preempted by STOP'
+                    )
+
+                if self.urgent is not None:
+                    self.complete(
+                        self.urgent, False, 'Superseded by STOP'
+                    )
+
+                self.pending = None
+                self.urgent = command
+            else:
+                if self.urgent is not None:
+                    return None, 'STOP is pending'
+
+                self.pending = command
+
+        self.wake.set()
+        return command, ''
+
+    @staticmethod
+    def complete(command, ok, message):
+        command['answer'] = (
+            ok,
+            f"id={command['id']} {message}",
+        )
+        command['event'].set()
+
+    def request(self, operation, args=()):
+        command, error = self.submit(operation, args)
+
+        if command is None:
+            return False, error
+
+        if not command['event'].wait(
+            self.p['command_timeout_s'] + 0.5
+        ):
+            # Remove an unsent command too, so it cannot remain queued.
+            with self.lock:
+                if self.pending is command:
+                    self.pending = None
+                if self.urgent is command:
+                    self.urgent = None
+
+            self.submit('STOP')
+
+            return (
+                False,
+                'Worker deadline exceeded; STOP requested; '
+                'inspect status',
+            )
+
+        return command['answer']
+
+    def callback(self, operation, args):
+        def call(request, response):
+            response.success, response.message = self.request(
+                operation, args
+            )
+            return response
+
+        return call
+
+    def jog(self, request, response):
+        if (
+            not self.p['calibration_mode']
+            or not 1 <= abs(request.steps) <= self.p['jog_max_steps']
+        ):
+            response.success = False
+            response.message = 'Calibration-only bounded jog'
+            return response
+
+        response.success, response.message = self.request(
+            'JOG', (int(request.steps),)
+        )
+        return response
+
+    def flap(self, request, response):
+        angle = (
+            self.p['flap_closed_deg']
+            if request.data
+            else self.p['flap_open_deg']
+        )
+
+        response.success, response.message = self.request(
+            'FLAP', (angle,)
+        )
+
+        if response.success:
+            # This acknowledges the command, not measured servo position.
+            self.pub['camera_flap/closed'].publish(
+                Bool(data=request.data)
+            )
+
+        return response
+
+    def receive(self, fields, now):
+        # Serial worker: parsing/cache updates only.
+        # ROS message construction and publication happen elsewhere.
+        tag = fields[0]
+
+        with self.lock:
+            self.last_frame_at = now
+
+            if (
+                tag == 'ACK'
+                and len(fields) == 5
+                and int(fields[1]) == self.session
+            ):
+                key = int(fields[2])
+                ok = fields[3] == '1'
+
+                if key == 0:
+                    self.configured = ok
+
+                    if not ok:
+                        self.stats['error'] = 'CONFIG: ' + fields[4]
+
+                    if not ok and fields[4] == 'BUSY_STOP_FIRST':
+                        self.takeover_stop = True
+
+                for slot in ('urgent', 'pending'):
+                    command = getattr(self, slot)
+
+                    if command is not None and command['id'] == key:
+                        self.stats['last_ack_ms'] = (
+                            now - command['first']
+                        ) * 1000
+
+                        self.complete(command, ok, fields[4])
+                        setattr(self, slot, None)
+
+                return
+
+            if tag == 'H' and len(fields) == 15:
+                sid = int(fields[1])
+
+                if sid == 0 and self.configured:
+                    raise serial.SerialException('Nano rebooted')
+
+                if sid != self.session:
+                    return
+
+                self.h = (
+                    [fields[2]]
+                    + list(map(int, fields[3:]))
+                )
+                self.h_at = now
+                self.height_revision += 1
+                return
+
+            if tag in self.imu and len(fields) == 9:
+                data = tuple(map(int, fields[1:]))
+
+                if (
+                    not all(
+                        0 <= value <= 0xffffffff
+                        for value in data[:2]
+                    )
+                    or not all(
+                        -32768 <= value <= 32767
+                        for value in data[2:]
+                    )
+                ):
+                    raise ValueError('IMU bounds')
+
+                queue = self.imu[tag]
+
+                if len(queue) == queue.maxlen:
+                    self.stats['imu_queue_drops'] += 1
+
+                queue.append((now, data))
+                self.imu_at[tag] = now
+
+    def write(self, port, wire):
+        started = time.monotonic()
+
+        if port.write(wire) != len(wire):
+            raise serial.SerialException('Short write')
+
+        elapsed = (time.monotonic() - started) * 1000
+
+        with self.lock:
+            self.stats['max_write_ms'] = max(
+                self.stats['max_write_ms'], elapsed
+            )
+
+    def io_loop(self):
+        # One worker owns ALL serial reads and writes.
+        while not self.stop_event.is_set():
             try:
-                with serial.Serial(self.port, self.baud, timeout=0.15, write_timeout=0.5) as ser:
+                with serial.Serial(
+                    self.p['port'],
+                    self.p['baud'],
+                    timeout=0,
+                    write_timeout=0.1,
+                    exclusive=True,
+                ) as port:
                     with self.lock:
-                        self.ser = ser
-                    self.get_logger().info(f'Connected to {self.port}')
-                    # Nano Every can reset when serial opens; allow bootloader time.
-                    time.sleep(2.0)
-                    while self.running and rclpy.ok():
-                        line = ser.readline()
-                        if line and len(line) <= 160:
+                        self.session = (
+                            secrets.randbelow(0x7ffffffe) + 1
+                        )
+                        sid = self.session
+
+                        self.next_id = 0
+                        self.configured = False
+                        self.h = None
+                        self.h_at = 0
+                        self.tracking_authorized = False
+                        self.arc_since = None
+                        self.correction_since = None
+                        self.correction_direction = 0
+                        self.stats['reconnects'] += 1
+                        self._last_permission = None
+
+                    buffer = bytearray()
+                    seen = False
+                    config_at = 0.0
+                    heartbeat_at = 0.0
+                    self.takeover_stop = False
+
+                    while not self.stop_event.is_set():
+                        data = port.read(
+                            min(port.in_waiting, 2048)
+                        )
+                        buffer.extend(data)
+
+                        # Preserve incomplete lines across read cycles.
+                        while b'\n' in buffer:
+                            raw, _, rest = buffer.partition(b'\n')
+                            buffer = bytearray(rest)
+
                             try:
-                                self.handle_line(line.decode('ascii').strip())
-                            except UnicodeDecodeError:
-                                pass
-            except (serial.SerialException, OSError) as exc:
-                self.get_logger().warn(f'Serial unavailable: {exc}', throttle_duration_sec=5.0)
+                                fields = decode(raw)
+
+                                if fields[0] == 'H':
+                                    seen = True
+
+                                self.receive(
+                                    fields, time.monotonic()
+                                )
+                            except (ValueError, UnicodeError):
+                                with self.lock:
+                                    self.stats['bad_frames'] += 1
+
+                        if len(buffer) > 512:
+                            buffer.clear()
+
+                            with self.lock:
+                                self.stats['bad_frames'] += 1
+
+                        now = time.monotonic()
+
+                        with self.lock:
+                            ready = self.configured
+                            control = self.control(now)
+                            # if ready:
+                            #     self.log_permission_transition(control[0], now)
+
+                        # Retry CONFIG on the SAME connection/session.
+                        # Do not reset/reopen USB merely because ACK was lost.
+                        if (
+                            seen
+                            and not ready
+                            and now - config_at >= 0.5
+                        ):
+                            if self.takeover_stop:
+                                self.write(
+                                    port,
+                                    frame('C', sid, 1, 'STOP'),
+                                )
+                                self.takeover_stop = False
+
+                            self.write(
+                                port,
+                                frame(
+                                    'C', sid, 0, 'CONFIG',
+                                    *self.config,
+                                ),
+                            )
+
+                            config_at = now
+
+                            with self.lock:
+                                self.stats['config_sends'] += 1
+
+                        if (
+                            ready
+                            and now - heartbeat_at
+                            >= self.p['heartbeat_period_s']
+                        ):
+                            self.write(
+                                port, frame('P', sid, *control)
+                            )
+
+                            with self.lock:
+                                if heartbeat_at:
+                                    self.stats[
+                                        'max_heartbeat_gap_ms'
+                                    ] = max(
+                                        self.stats[
+                                            'max_heartbeat_gap_ms'
+                                        ],
+                                        (now - heartbeat_at) * 1000,
+                                    )
+
+                            heartbeat_at = now
+
+                        send = None
+                        permission_wire = None
+                        timed_out = None
+
+                        with self.lock:
+                            command = self.urgent or self.pending
+
+                            if ready and command is not None:
+                                # Re-evaluate permission here, after any
+                                # preceding serial I/O. Do not reuse the
+                                # earlier periodic-heartbeat snapshot.
+                                command_now = time.monotonic()
+                                command_control = self.control(command_now)
+
+                                # This deadline includes any ignition
+                                # handoff wait, so the overall command
+                                # cannot wait indefinitely.
+                                if not command['first']:
+                                    command['first'] = command_now
+
+                                
+
+                                waiting_for_ignition = (
+                                    command['op'] == 'SEARCH'
+                                    and command['last'] == 0.0
+                                    and command_control[0] not in (1, 2)
+                                )
+
+                                timeout = self.p['command_timeout_s']
+
+                                if waiting_for_ignition:
+                                    timeout = min(timeout, 0.75)
+
+                                expired = (
+                                    command_now - command['first']
+                                    >= timeout
+                                )
+
+                                if expired:
+                                    timed_out = command
+
+                                    if waiting_for_ignition:
+                                        message = (
+                                            'SEARCH ignition handoff timed out: '
+                                            f'permission={command_control[0]}; '
+                                            'SEARCH was not transmitted'
+                                        )
+                                    else:
+                                        message = (
+                                            'ACK timeout; execution uncertain; '
+                                            'inspect status'
+                                        )
+
+                                    self.complete(
+                                        command,
+                                        False,
+                                        message,
+                                    )
+
+                                    if self.urgent is command:
+                                        self.urgent = None
+
+                                    if self.pending is command:
+                                        self.pending = None
+
+                                elif (
+                                    not waiting_for_ignition
+                                    and command_now - command['last']
+                                    >= self.p['command_retry_s']
+                                ):
+                                    command['last'] = command_now
+                                    # self.log_permission_transition(
+                                    #     command_control[0], command_now
+                                    # )
+                                    if command['op'] == 'SEARCH':
+                                        self.get_logger().warn(
+                                            '[NANO SEARCH TX] '
+                                            f'id={command["id"]} '
+                                            f'permission={command_control[0]} '
+                                            f'qualified={command_control[1]} '
+                                            f'torch_age_ms={(command_now - self.torch_at) * 1000:.1f} '
+                                            f'height_state={self.h[0] if self.h else "NONE"}'
+                                        )
+
+                                    # Freeze the permission and command
+                                    # together under the cache lock.
+                                    permission_wire = frame(
+                                        'P',
+                                        sid,
+                                        *command_control,
+                                    )
+
+                                    send = frame(
+                                        'C',
+                                        sid,
+                                        command['id'],
+                                        command['op'],
+                                        *command['args'],
+                                    )
+
+                        if (
+                            timed_out is not None
+                            and timed_out['op'] != 'STOP'
+                        ):
+                            self.submit('STOP')
+
+                        if send is not None:
+                            # This worker is the sole serial writer:
+                            # the Nano receives P immediately before C.
+                            self.write(port, permission_wire)
+                            self.write(port, send)
+
+                        self.wake.wait(0.003)
+                        self.wake.clear()
+
+                    # Best-effort shutdown STOP.
+                    # The independent Nano watchdog remains active.
+                    with self.lock:
+                        self.next_id += 1
+                        stop_id = self.next_id
+
+                    self.write(
+                        port, frame('C', sid, stop_id, 'STOP')
+                    )
+
+            except (serial.SerialException, OSError) as error:
+                with self.lock:
+                    self.stats['error'] = str(error)
+
             finally:
                 with self.lock:
-                    self.ser = None
-                self.last_rx = 0.0
-            time.sleep(1.0)
+                    self.configured = False
+                    self.h_at = 0
+                    self.h = None
+                    self.tracking_authorized = False
+                    for slot in ('pending', 'urgent'):
+                        command = getattr(self, slot)
+
+                        if command is not None:
+                            self.complete(
+                                command,
+                                False,
+                                'Disconnected; completion unknown; re-home',
+                            )
+
+                        setattr(self, slot, None)
+
+                    for tag in self.imu:
+                        self.imu[tag].clear()
+                        self.imu_at[tag] = 0
+
+                self.stop_event.wait(0.5)
+    def log_permission_transition(self, mode, now):
+        # Caller holds self.lock.
+        previous = getattr(self, '_last_permission', None)
+
+        if previous == mode:
+            return
+
+        self._last_permission = mode
+        t = self.torch
+
+        self.get_logger().warn(
+            '[NANO PERMISSION] '
+            f'{previous}->{mode} '
+            f'torch_age_ms={(now - self.torch_at) * 1000:.1f} '
+            f'connected={getattr(t, "io_connected", None)} '
+            f'fault={getattr(t, "fault", None)} '
+            f'command_on={getattr(t, "command_on", None)} '
+            f'output_on={getattr(t, "output_on", None)} '
+            f'transfer={getattr(t, "transfer_detected", None)}'
+        )
+    def publish_cached(self):
+        now = time.monotonic()
+
+        with self.lock:
+            height = list(self.h) if self.h is not None else None
+            session = self.session
+            configured = self.configured
+            revision = self.height_revision
+
+            fresh = (
+                self.configured
+                and height is not None
+                and now - self.h_at < self.p['status_timeout_s']
+            )
+
+            mode, qualified, _, _ = self.control(now)
+            voltage = self.voltage()
+
+            queues = {
+                tag: list(queue)
+                for tag, queue in self.imu.items()
+            }
+
+            for queue in self.imu.values():
+                queue.clear()
+
+            ages = {
+                tag: now - received
+                for tag, received in self.imu_at.items()
+            }
+
+            stats = dict(
+                self.stats,
+                rx_age_s=(
+                    now - self.last_frame_at
+                    if self.last_frame_at
+                    else None
+                ),
+                configured=self.configured,
+                calibration=self.p['calibration_mode'],
+            )
+
+        # Height cache:
+        # 0 state
+        # 1 estimated position steps
+        # 2 debounced home switch
+        # 3 fault
+        # 4 Nano heartbeat age ms
+        # 5 active motion ID
+        # 6 completed/aborted motion ID
+        # 7 completion result
+        # 8 Nano IMU drops
+        # 9 Nano I2C errors
+        # 10 Nano RX errors
+        # 11 referenced
+
+        control_fresh = (
+            fresh
+            and height[4] <= self.p['link_timeout_ms']
+        )
+        if control_fresh:
+            full_status = ','.join(map(str, (
+                height[0],
+                height[1],
+                height[2],
+                height[3],
+                height[11],
+                session,
+                height[5],
+                height[6],
+                height[7],
+                int(self.p['calibration_mode']),
+                int(configured),
+                height[12],
+            )))
+        else:
+            full_status = 'OFFLINE,0,0,2,0,0,0,0,0,1,0,0'
+
+        # Publish each actual Nano snapshot once. Republishing a cached frame
+        # must not refresh the cut server's receive-age clock.
+        key = (session, revision)
+        if not control_fresh or key != self.published_height:
+            self.published_height = key
+            self.pub['torch_height/status_full'].publish(String(data=full_status))
+
+
+
+        established = bool(
+            control_fresh
+            and qualified
+            and height[0] in ('HOLD', 'TRACK')
+            and height[3] == 0
+        )
+
+        self.pub['hardware/serial_online'].publish(
+            Bool(data=bool(fresh))
+        )
+
+        self.pub['torch_height/status'].publish(
+            String(
+                data=(
+                    ','.join(map(str, height[:4]))
+                    if fresh
+                    else 'OFFLINE,0,0,2'
+                )
+            )
+        )
+
+        self.pub['torch_height/at_home'].publish(
+            Bool(
+                data=bool(
+                    control_fresh
+                    and height[0] == 'HOME'
+                    and height[2]
+                    and height[11] == 1
+                    and height[1] == 0
+                    and not height[3]
+                )
+            )
+        )
+
+        self.pub['torch_height/arc_established'].publish(
+            Bool(data=established)
+        )
+
+        self.pub['torch_height/voltage_in_band'].publish(
+            Bool(
+                data=bool(
+                    established
+                    and voltage is not None
+                    and self.low <= voltage <= self.high
+                )
+            )
+        )
+
+        if fresh:
+            stats.update(
+                nano_heartbeat_age_ms=height[4],
+                active_id=height[5],
+                nano_imu_drops=height[8],
+                nano_i2c_errors=height[9],
+                nano_rx_errors=height[10],
+            )
+
+            done = (
+                session,
+                height[6],
+                height[7],
+            )
+
+            if height[6] and done != self.last_done:
+                self.last_done = done
+
+                event = dict(
+                    session=done[0],
+                    id=height[6],
+                    result=(
+                        'completed'
+                        if height[7] == 1
+                        else 'aborted'
+                    ),
+                    position_steps=height[1],
+                    fault=height[3],
+                )
+
+                self.pub['torch_height/motion_event'].publish(
+                    String(data=json.dumps(event))
+                )
+
+            if height[0] in ('HOLD', 'TRACK'):
+                self.auto_armed = True
+
+            if height[0] == 'HOME':
+                self.auto_armed = False
+                self.auto_sent = False
+
+            # if (
+            #     self.p['auto_home_after_cut']
+            #     and not self.p['calibration_mode']
+            #     and self.auto_armed
+            #     and not self.auto_sent
+            #     and mode == 0
+            #     and height[0] == 'HOLD'
+            # ):
+            #     command, _ = self.submit('HOME')
+            #     self.auto_sent = command is not None
+
+        for tag, items in queues.items():
+            channel = self.channels[tag]
+            online = ages[tag] < self.p['max_sample_age_s']
+
+            channel['online'].publish(Bool(data=online))
+
+            if tag == 'M':
+                # Preserves the original primary-IMU freshness meaning.
+                self.pub['hardware/online'].publish(
+                    Bool(data=online)
+                )
+
+            for received, data in items:
+                if now - received > self.p['max_sample_age_s']:
+                    continue
+
+                sequence, device_us, *raw = data
+
+                msg = Imu()
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = channel['frame']
+                msg.orientation_covariance[0] = -1.0
+
+                for axis, acceleration, angular_velocity in zip(
+                    'xyz', raw[:3], raw[3:]
+                ):
+                    setattr(
+                        msg.linear_acceleration,
+                        axis,
+                        acceleration * 9.80665 / 16384.0,
+                    )
+                    setattr(
+                        msg.angular_velocity,
+                        axis,
+                        math.radians(angular_velocity / 131.0),
+                    )
+
+                for index in (0, 4, 8):
+                    msg.linear_acceleration_covariance[index] = (
+                        channel['variance']
+                    )
+
+                channel['pub'].publish(msg)
+                channel['seq'].publish(
+                    UInt32(data=sequence)
+                )
+
+                if channel['us'] is not None:
+                    delta = (
+                        device_us - channel['us']
+                    ) & 0xffffffff
+
+                    if 100 < delta < 1000000:
+                        channel['rate'].publish(
+                            Float32(data=1e6 / delta)
+                        )
+
+                channel['us'] = device_us
+
+        if now - self.last_diagnostic >= 1:
+            self.last_diagnostic = now
+
+            self.pub['hardware/diagnostics'].publish(
+                String(data=json.dumps(stats))
+            )
 
     def destroy_node(self):
-        self.running = False
-        with self.lock:
-            if self.ser:
-                self.ser.close()
-                self.ser = None
-        self.reader.join(timeout=2.0)
+        self.stop_event.set()
+        self.wake.set()
+        self.worker.join(timeout=3)
         return super().destroy_node()
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = NanoBridge()
-    # MultiThreadedExecutor allows service to await acknowledgement from reader thread.
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
+        executor.shutdown()
+
         if rclpy.ok():
             rclpy.shutdown()
 

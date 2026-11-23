@@ -1,7 +1,7 @@
 
 std_msgs/Header header
 
-hb_robot_interfaces/PlatformImuMetrics unilidar
+hb_robot_interfaces/PlatformImuMetrics mpu6050_2
 hb_robot_interfaces/PlatformImuMetrics mpu6050
 
 float64 combined_confidence
