@@ -879,17 +879,7 @@ namespace hb_robot_skills{
         return latest_estimate_;
     }
 
-    void CutProfileServer::publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
-            const std::string& stage){
-                auto feedback = std::make_shared<CutProfile::Feedback>();
-                feedback->stage = stage;
-                goal_handle->publish_feedback(feedback);
-            }
-
-
-    namespace {
-
-        bool prepareCuttingScene(
+    bool CutProfileServer::prepareCuttingScene(
             const planning_scene::PlanningScenePtr& scene)
         {
             if (!scene)
@@ -905,7 +895,12 @@ namespace hb_robot_skills{
                 world->hasObject("wk_workpiece_collision");
         }
 
-    } // anonymous namespace
+    void CutProfileServer::publishFeedback(const std::shared_ptr<GoalHandleCutProfile>& goal_handle,
+            const std::string& stage){
+                auto feedback = std::make_shared<CutProfile::Feedback>();
+                feedback->stage = stage;
+                goal_handle->publish_feedback(feedback);
+            }
 
 
 

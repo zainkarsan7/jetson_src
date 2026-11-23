@@ -120,7 +120,8 @@ namespace hb_robot_skills{
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
-            
+            bool prepareCuttingScene(
+            const planning_scene::PlanningScenePtr& scene);
             void handleTorchFault(
                 const std::shared_ptr<
                     hb_robot_interfaces::srv::ClearTorchFault::Request> request,
