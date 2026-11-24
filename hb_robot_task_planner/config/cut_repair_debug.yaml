@@ -1,0 +1,26 @@
+cut_repair_debug:
+  ros__parameters:
+    # Copy provenance from the SAME original cut's plan/result and TaskState.
+    # Empty/invalid defaults deliberately prevent binding.
+    cut_id: ""
+    parent_plan_id: ""
+    geometry_version: 0
+    execution_version: -1
+    required_segments: [""]
+
+    interval_source: evidence
+    # For a deliberate manual interval test, set interval_source: manual and
+    # supply equally sized arrays, e.g. [left_web], [0.25], [0.40].
+    # residual_segments: [left_web]
+    # residual_starts: [0.25]
+    # residual_ends: [0.40]
+
+    allow_inspection_motion: false
+    allow_recut_execution: false
+    allow_live_cutting: false
+    camera_standoff: 0.30
+    sample_spacing: 0.025
+    samples_per_viewpoint: 3
+    standoff: 0.01
+    pos_tol: 0.01
+    ang_tol: 0.3

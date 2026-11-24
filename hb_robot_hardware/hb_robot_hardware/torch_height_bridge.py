@@ -161,7 +161,8 @@ class TorchHeightBridge(Node):
 
         self.create_subscription(
             TorchStatus,
-            '/cut_profile/torch_status',
+            '/cut_profile/torch_status_debug',
+            
             self.on_torch,
             QoSProfile(
                 depth=1,

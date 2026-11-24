@@ -48,7 +48,10 @@ def generate_launch_description():
         "exploration_weight_": 100.0,
         "motion_weight_": 0.001,
         "inspection_pos_tol": .03,
-        "inspection_ang_tol": 0.1     
+        "inspection_ang_tol": 0.1,
+        "rms_target": 0.01,
+        "inlier_fraction_target": 0.4,
+        "coverage_target": 0.4
         
          },
         ],

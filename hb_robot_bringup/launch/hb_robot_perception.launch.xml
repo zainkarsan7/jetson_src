@@ -38,7 +38,7 @@
     <param name="range_min" value="0.0"/>
     <param name="range_max" value="100.0"/>
     <param name="cloud_scan_num" value="18"/>
-    <param name="serial_port" value="/dev/ttyACM1"/>
+    <param name="serial_port" value="/dev/ttyACM2"/>
     <param name="baudrate" value="4000000"/>
     <param name="lidar_port" value="6101"/>
     <param name="lidar_ip" value="192.168.1.62"/>
@@ -55,8 +55,8 @@
     </node>
 
     <include file="$(find-pkg-share hb_robot_hardware)/launch/hardware.launch.py">
-  <arg name="platform_port" value="/dev/ttyACM0"/>
-  <arg name="torch_height_port" value="/dev/ttyACM2"/>
+  <arg name="platform_port" value="/dev/ttyACM1"/>
+  <arg name="torch_height_port" value="/dev/ttyACM0"/>
 </include>
 
     <!-- <node  pkg="hb_robot_perception"

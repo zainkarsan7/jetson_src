@@ -11,6 +11,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(behaviortree_cpp_v3 REQUIRED)
 find_package(hb_robot_interfaces REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 include_directories()
 
@@ -24,10 +26,11 @@ ament_target_dependencies(bt_executor
 
 )
 
+
 install(TARGETS bt_executor
 DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY behavior_trees
+install(DIRECTORY config behavior_trees
 DESTINATION share/${PROJECT_NAME})
 
 
