@@ -6,7 +6,6 @@
 #include "hb_robot_skills/motion/transit_planner.hpp"
 #include "hb_robot_interfaces/action/inspect_cut.hpp"
 #include "hb_robot_interfaces/msg/kerf_observation.hpp"
-#include "hb_robot_interfaces/msg/torch_status.hpp"
 #include "hb_robot_interfaces/msg/kerf_ray_sample.hpp"
 #include "hb_robot_interfaces/srv/evaluate_kerf.hpp"
 #include "hb_robot_interfaces/srv/get_cut_definition.hpp"
@@ -27,6 +26,20 @@
 #include <atomic>
 #include <thread>
 #include <map>
+#include <limits>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace hb_robot_skills {
 class InspectCutServer : public rclcpp::Node {
@@ -34,23 +47,25 @@ class InspectCutServer : public rclcpp::Node {
   using Handle = rclcpp_action::ServerGoalHandle<Action>;
   using MoveGroup = moveit::planning_interface::MoveGroupInterface;
   using Plan = MoveGroup::Plan;
- public:
+
+public:
   InspectCutServer() : Node("inspect_cut_server") {
     group_ = declare_parameter<std::string>("planning_group", "manipulator");
     // IK link in the robot model. The calibrated optical frame comes from RGB-D.
     camera_ = declare_parameter<std::string>("camera_link", "camera_visor");
     frame_ = declare_parameter<std::string>("scene_base_frame", "world");
-    infer_evidence_=declare_parameter<bool>("enable_geometric_kerf_evidence",false);
-    ray_config_.allow_sampled_open_verdict=declare_parameter<bool>("allow_sampled_open_verdict",false);
-    ray_config_.depth_uncertainty=positive("kerf_depth_uncertainty",0.002);
-    ray_config_.half_kerf_width=positive("kerf_half_width",0.001);
-    ray_config_.bin_width=positive("kerf_bin_width",0.002);
+    infer_evidence_ = declare_parameter<bool>("enable_geometric_kerf_evidence", false);
+    ray_config_.allow_sampled_open_verdict =
+        declare_parameter<bool>("allow_sampled_open_verdict", false);
+    ray_config_.depth_uncertainty = positive("kerf_depth_uncertainty", 0.002);
+    ray_config_.half_kerf_width = positive("kerf_half_width", 0.001);
+    ray_config_.bin_width = positive("kerf_bin_width", 0.002);
     spacing_ = positive("sample_spacing", 0.025);
     standoff_ = positive("camera_standoff", 0.30);
     band_ = positive("kerf_half_band", 0.015);
     margin_ = positive("profile_margin", 0.02);
     range_ = positive("depth_range", 1.0);
-    timeout_ = positive("acquisition_timeout", 3.0);
+    timeout_ = positive("acquisition_timeout", 5.0);
     stability_timeout_ = positive("stability_timeout", 10.0);
     rgbd_topic_ = declare_parameter<std::string>("perception_rgbd_topic", "/k4a/rgbd");
     view_request_.pos_tol = positive("view_position_tolerance_m", 0.025);
@@ -61,14 +76,21 @@ class InspectCutServer : public rclcpp::Node {
     max_view_solutions_ = boundedCount("view_solutions", 6, 16);
     planning_timeout_ = positive("inspection_planning_timeout_s", 60.0);
     transit_options_.guide_link = camera_;
-    
+    task_state_timeout_ms_ = positive("task_state_timeout_ms", 500.0);
+
     // Preview is deliberately separate from successful acquisition.
     preview_ = declare_parameter<bool>("preview_only", true);
     declare_parameter<std::string>("perception_rgb_topic", "/k4a/rgb/image_raw");
     declare_parameter<std::string>("perception_depth_topic", "/k4a/depth_to_rgb/image_raw");
     declare_parameter<std::string>("perception_camera_info_topic", "/k4a/depth_to_rgb/camera_info");
   }
-  ~InspectCutServer() override { if (worker_.joinable()) worker_.join(); }
+  ~InspectCutServer() override {
+    shutting_down_.store(true);
+    interrupt("server shutdown");
+    if (worker_.joinable())
+      worker_.join();
+    rgbd_acquisition_.reset(); // Join receiver before destroying its TF buffer.
+  }
   void initialize() {
     move_ = std::make_unique<MoveGroup>(shared_from_this(), group_);
     move_->setPlanningTime(5.0);
@@ -80,522 +102,1121 @@ class InspectCutServer : public rclcpp::Node {
     if (move_->getPlanningFrame() != frame_ || !move_->getRobotModel()->hasLinkModel(camera_))
       throw std::runtime_error("Planning frame mismatch or camera IK link absent from robot model");
     scene_monitor_ = std::make_shared<planning_scene_monitor::PlanningSceneMonitor>(
-      shared_from_this(), "robot_description");
-    if (!scene_monitor_->getPlanningScene()) throw std::runtime_error("Planning scene unavailable");
+        shared_from_this(), "robot_description");
+    if (!scene_monitor_->getPlanningScene())
+      throw std::runtime_error("Planning scene unavailable");
     scene_monitor_->startSceneMonitor("/monitored_planning_scene");
+
+    scene_monitor_->startWorldGeometryMonitor();
+
+    scene_monitor_->startStateMonitor();
     tf_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_);
-     
-    stability_ =
-    std::make_unique<hb_robot_skills::PlatformSupervisionClient>(
-        *this);
+    rgbd_acquisition_ = std::make_unique<hb_perception::CroppedRGBDAcquisition>(
+        this, tf_.get(), frame_, hb_perception::CroppedRGBDAcquisition::Mode::CaptureWindow,
+        rgbd_topic_);
+    RCLCPP_INFO(get_logger(),
+                "[KERF RGBD] persistent receiver topic=%s; embedded CameraInfo; "
+                "roll_reference=measured_optical",
+                rgbd_topic_.c_str());
+    stability_ = std::make_unique<hb_robot_skills::PlatformSupervisionClient>(*this);
 
-    cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/kerf_cloud", rclcpp::QoS(1).transient_local());
-    poses_pub_ = create_publisher<geometry_msgs::msg::PoseArray>("~/viewpoints", rclcpp::QoS(1).transient_local());
-    observation_pub_ = create_publisher<hb_robot_interfaces::msg::KerfObservation>("~/observations", 10);
-    rays_pub_ = create_publisher<hb_robot_interfaces::msg::KerfRaySample>("~/ray_samples", rclcpp::QoS(100).best_effort());
+    cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/kerf_cloud",
+                                                                 rclcpp::QoS(1).transient_local());
+    poses_pub_ = create_publisher<geometry_msgs::msg::PoseArray>("~/viewpoints",
+                                                                 rclcpp::QoS(1).transient_local());
+    link_poses_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+        "~/camera_link_viewpoints", rclcpp::QoS(1).transient_local());
+    observation_pub_ =
+        create_publisher<hb_robot_interfaces::msg::KerfObservation>("~/observations", 10);
+    rays_pub_ = create_publisher<hb_robot_interfaces::msg::KerfRaySample>(
+        "~/ray_samples", rclcpp::QoS(100).best_effort());
     using Evaluate = hb_robot_interfaces::srv::EvaluateKerf;
     using Replay = hb_robot_interfaces::srv::ReplayKerf;
-    replay_service_ = create_service<Replay>("~/replay_observation",
-      [this](Replay::Request::SharedPtr request, Replay::Response::SharedPtr response) {
-        if(busy_) {response->message="Live inspection is active";return;}
-        try {
-          const auto model=hb_perception::ProfileLibrary::find(request->profile_name);
-          const auto& record=request->observation;
-          if(!model || record.cut_id.empty() || record.feature_name.empty()) throw std::invalid_argument("Missing replay identity");
-          auto evidence=request->prior.required_segments.empty()?initializeEvidence(*model,{record.feature_name},ray_config_):request->prior;
-          if(!request->prior.required_segments.empty() &&
-             (evidence.required_segments!=std::vector<std::string>{record.feature_name} || evidence.cut_id!=record.cut_id ||
-              evidence.geometry_version!=record.geometry_version || evidence.pose_version!=record.pose_version ||
-              evidence.execution_version!=record.execution_version)) throw std::invalid_argument("Mixed replay feature or epoch");
-          hb_perception::Observation ob;
-          ob.rgb=std::make_shared<sensor_msgs::msg::Image>(record.rgb);
-          ob.depth_to_rgb=std::make_shared<sensor_msgs::msg::Image>(record.depth);
-          ob.rgb_camera_info=std::make_shared<sensor_msgs::msg::CameraInfo>(record.camera_info);
-          ob.camera_pose=record.camera_pose;ob.stamp=rclcpp::Time(record.header.stamp);
-          if(record.header.frame_id!=record.camera_pose.header.frame_id ||
-             record.camera_pose.child_frame_id!=record.camera_info.header.frame_id ||
-             std::abs((rclcpp::Time(record.rgb.header.stamp)-rclcpp::Time(record.depth.header.stamp)).seconds())>0.03)
-            throw std::invalid_argument("Replay frames or RGB-D timestamps disagree");
-          (void)kerfObservationCloud(ob,range_); // Validate encoding, dimensions, intrinsics and buffers.
-          Eigen::Isometry3d world_from_cut;tf2::fromMsg(record.cut_pose,world_from_cut);
-          const auto camera=tf2::transformToEigen(record.camera_pose);
-          if(!world_from_cut.matrix().allFinite() || !camera.matrix().allFinite() ||
-             !world_from_cut.linear().transpose().isApprox(world_from_cut.linear().inverse(),1e-4) ||
-             !camera.linear().transpose().isApprox(camera.linear().inverse(),1e-4))
-            throw std::invalid_argument("Invalid replay transforms");
-          accumulateKerfEvidence(evidence,*model,ob,world_from_cut,ray_config_);
-          evidence.header=record.header;evidence.cut_id=record.cut_id;evidence.geometry_version=record.geometry_version;
-          evidence.pose_version=record.pose_version;evidence.execution_version=record.execution_version;evidence.registration_valid=true;
-          response->evidence=std::move(evidence);response->success=true;response->message="Offline TF-registered inference only";
-        } catch(const std::exception& e) {response->message=e.what();}
-      });
-    using Definition = hb_robot_interfaces::srv::GetCutDefinition;
-    definition_service_ = create_service<Definition>("~/cut_definition",
-      [](Definition::Request::SharedPtr request, Definition::Response::SharedPtr response) {
-        const auto model=hb_perception::ProfileLibrary::find(request->profile_name);
-        if(!model) return;
-        std::ostringstream out;out<<std::setprecision(9)<<model->name<<' '<<model->height<<' '<<model->width;
-        for(const auto& f:model->cut_features)
-          out<<"\nfeature "<<f.name<<' '<<int(f.type)<<' '<<f.start.x()<<' '<<f.start.y()<<' '
-             <<f.end.x()<<' '<<f.end.y()<<' '<<f.outward_normal.x()<<' '<<f.outward_normal.y();
-        for(const auto& primitive:model->boundary) {
-          if(const auto* line=std::get_if<hb_perception::LineSegment2D>(&primitive))
-            out<<"\nline "<<line->a.x()<<' '<<line->a.y()<<' '<<line->b.x()<<' '<<line->b.y();
-          else {
-            const auto& arc=std::get<hb_perception::ArcSegment2D>(primitive);
-            out<<"\narc "<<arc.center.x()<<' '<<arc.center.y()<<' '<<arc.start<<' '<<arc.end<<' '<<arc.radius;
+    replay_service_ = create_service<Replay>(
+        "~/replay_observation",
+        [this](Replay::Request::SharedPtr request, Replay::Response::SharedPtr response) {
+          if (busy_) {
+            response->message = "Live inspection is active";
+            return;
           }
-        }
-        response->found=true;response->definition=out.str();
-      });
-    evaluate_service_ = create_service<Evaluate>("~/evaluate_evidence",
-      [](Evaluate::Request::SharedPtr request, Evaluate::Response::SharedPtr response) {
-        const auto verdict=hb_robot::recovery::evaluateFeature(request->evidence,request->state,
-          request->cut_id,request->feature_id,request->last_motion_epoch);
-        response->status=verdict.status;response->residuals=verdict.residuals;
-      });
-    state_sub_=create_subscription<hb_robot::recovery::State>(
-      "/task_state",rclcpp::QoS(1).transient_local(),
-      [this](hb_robot::recovery::State::ConstSharedPtr state){
-        if(state->header.stamp.sec<0 || state->header.stamp.nanosec>=1000000000u) return;
-        const double age=(now()-rclcpp::Time(state->header.stamp)).seconds();
-        if(age < -0.005 || age > 5.0) return;
-        {std::lock_guard<std::mutex> lock(state_mutex_);state_=*state;
-          received_=std::chrono::steady_clock::now()-std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(std::max(0.0,age)));}
-        if(busy_ && !taskValid()) move_->stop();
-      });
-    torch_sub_=create_subscription<hb_robot_interfaces::msg::TorchStatus>("/cut_profile/torch_status",rclcpp::QoS(1).best_effort(),
-      [this](hb_robot_interfaces::msg::TorchStatus::ConstSharedPtr status) {
-        if(status->stamp.sec<0 || status->stamp.nanosec>=1000000000u) return;
-        const double age=(now()-rclcpp::Time(status->stamp)).seconds();
-        if(age < -0.005 || age > 5.0) return;
-        {std::lock_guard<std::mutex> lock(state_mutex_);
-          torch_off_=status->io_connected && !status->command_on && !status->output_on && !status->transfer_detected;
-          torch_received_=std::chrono::steady_clock::now()-std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(std::max(0.0,age)));}
-        if(busy_ && !taskValid()) move_->stop();
-      });
-    state_timer_=create_wall_timer(std::chrono::milliseconds(50),[this]{
-      if(busy_ && !taskValid()) move_->stop();
+          try {
+            const auto model = hb_perception::ProfileLibrary::find(request->profile_name);
+            const auto &record = request->observation;
+            if (!model || record.cut_id.empty() || record.feature_name.empty())
+              throw std::invalid_argument("Missing replay identity");
+            auto evidence = request->prior.required_segments.empty()
+                                ? initializeEvidence(*model, {record.feature_name}, ray_config_)
+                                : request->prior;
+            if (!request->prior.required_segments.empty() &&
+                (evidence.required_segments != std::vector<std::string>{record.feature_name} ||
+                 evidence.cut_id != record.cut_id ||
+                 evidence.geometry_version != record.geometry_version ||
+                 evidence.pose_version != record.pose_version ||
+                 evidence.execution_version != record.execution_version))
+              throw std::invalid_argument("Mixed replay feature or epoch");
+            hb_perception::Observation ob;
+            ob.rgb = std::make_shared<sensor_msgs::msg::Image>(record.rgb);
+            ob.depth_to_rgb = std::make_shared<sensor_msgs::msg::Image>(record.depth);
+            ob.rgb_camera_info = std::make_shared<sensor_msgs::msg::CameraInfo>(record.camera_info);
+            ob.camera_pose = record.camera_pose;
+            ob.stamp = rclcpp::Time(record.header.stamp);
+            if (record.header.frame_id != record.camera_pose.header.frame_id ||
+                record.camera_pose.child_frame_id != record.camera_info.header.frame_id ||
+                std::abs((rclcpp::Time(record.rgb.header.stamp) -
+                          rclcpp::Time(record.depth.header.stamp))
+                             .seconds()) > 0.03)
+              throw std::invalid_argument("Replay frames or RGB-D timestamps disagree");
+            (void)kerfObservationCloud(
+                ob, range_); // Validate encoding, dimensions, intrinsics and buffers.
+            Eigen::Isometry3d world_from_cut;
+            tf2::fromMsg(record.cut_pose, world_from_cut);
+            const auto camera = tf2::transformToEigen(record.camera_pose);
+            if (!world_from_cut.matrix().allFinite() || !camera.matrix().allFinite() ||
+                !world_from_cut.linear().transpose().isApprox(world_from_cut.linear().inverse(),
+                                                              1e-4) ||
+                !camera.linear().transpose().isApprox(camera.linear().inverse(), 1e-4))
+              throw std::invalid_argument("Invalid replay transforms");
+            accumulateKerfEvidence(evidence, *model, ob, world_from_cut, ray_config_);
+            evidence.header = record.header;
+            evidence.cut_id = record.cut_id;
+            evidence.geometry_version = record.geometry_version;
+            evidence.pose_version = record.pose_version;
+            evidence.execution_version = record.execution_version;
+            evidence.registration_valid = true;
+            response->evidence = std::move(evidence);
+            response->success = true;
+            response->message = "Offline TF-registered inference only";
+          } catch (const std::exception &e) {
+            response->message = e.what();
+          }
+        });
+    using Definition = hb_robot_interfaces::srv::GetCutDefinition;
+    definition_service_ = create_service<Definition>(
+        "~/cut_definition",
+        [](Definition::Request::SharedPtr request, Definition::Response::SharedPtr response) {
+          const auto model = hb_perception::ProfileLibrary::find(request->profile_name);
+          if (!model)
+            return;
+          std::ostringstream out;
+          out << std::setprecision(9) << model->name << ' ' << model->height << ' ' << model->width;
+          for (const auto &f : model->cut_features)
+            out << "\nfeature " << f.name << ' ' << int(f.type) << ' ' << f.start.x() << ' '
+                << f.start.y() << ' ' << f.end.x() << ' ' << f.end.y() << ' '
+                << f.outward_normal.x() << ' ' << f.outward_normal.y();
+          for (const auto &primitive : model->boundary) {
+            if (const auto *line = std::get_if<hb_perception::LineSegment2D>(&primitive))
+              out << "\nline " << line->a.x() << ' ' << line->a.y() << ' ' << line->b.x() << ' '
+                  << line->b.y();
+            else {
+              const auto &arc = std::get<hb_perception::ArcSegment2D>(primitive);
+              out << "\narc " << arc.center.x() << ' ' << arc.center.y() << ' ' << arc.start << ' '
+                  << arc.end << ' ' << arc.radius;
+            }
+          }
+          response->found = true;
+          response->definition = out.str();
+        });
+    evaluate_service_ =
+        create_service<Evaluate>("~/evaluate_evidence", [](Evaluate::Request::SharedPtr request,
+                                                           Evaluate::Response::SharedPtr response) {
+          const auto verdict = hb_robot::recovery::evaluateFeature(
+              request->evidence, request->state, request->cut_id, request->feature_id,
+              request->last_motion_epoch);
+          response->status = verdict.status;
+          response->residuals = verdict.residuals;
+        });
+    state_sub_ = create_subscription<hb_robot::recovery::State>(
+        "/task_state", rclcpp::QoS(1).transient_local(),
+        [this](hb_robot::recovery::State::ConstSharedPtr state) {
+          if (state->header.stamp.sec < 0 || state->header.stamp.nanosec >= 1000000000u) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                                 "[KERF TASK RX] rejected malformed TaskState timestamp");
+            return;
+          }
+          const double source_age = (now() - rclcpp::Time(state->header.stamp)).seconds();
+          if (!std::isfinite(source_age) || source_age < -0.005 || source_age > 5.0) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                                 "[KERF TASK RX] rejected source_age_ms=%.1f", source_age * 1000.0);
+            return;
+          }
+          {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            state_ = *state;
+            received_ = Clock::now();
+            source_age_at_rx_ms_ = std::max(0.0, source_age * 1000.0);
+          }
+          (void)taskValid();
+        });
+    state_timer_ = create_wall_timer(std::chrono::milliseconds(50), [this] {
+      if (busy_.load())
+        (void)taskValid();
     });
-    server_ = rclcpp_action::create_server<Action>(this, "inspect_cut",
-      [this](const auto&, std::shared_ptr<const Action::Goal> goal) {
-        const auto& p = goal->estimate.pose;
-        const Eigen::Quaterniond q(p.orientation.w,p.orientation.x,p.orientation.y,p.orientation.z);
-        if (goal->cut_id.empty() || goal->estimate.header.frame_id != frame_ ||
-            !hb_perception::ProfileLibrary::find(goal->estimate.profile_name) ||
-            !std::isfinite(p.position.x) || !std::isfinite(p.position.y) || !std::isfinite(p.position.z) ||
-            !q.coeffs().allFinite() || std::abs(q.norm()-1.0)>1e-3 ||
-            !std::isfinite(goal->sample_spacing) || goal->sample_spacing<0 ||
-            !std::isfinite(goal->camera_standoff) || goal->camera_standoff<0 ||
-            goal->samples_per_viewpoint>100)
-          return rclcpp_action::GoalResponse::REJECT;
-        const std::set<std::string> scope(goal->required_segments.begin(),goal->required_segments.end());
-        if(scope.empty() || scope.size()!=goal->required_segments.size() || scope.count(""))
-          return rclcpp_action::GoalResponse::REJECT;
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if(std::chrono::steady_clock::now()-received_>=std::chrono::milliseconds(500) ||
-           (!preview_ && (!torch_off_ || std::chrono::steady_clock::now()-torch_received_>=std::chrono::milliseconds(500))) ||
-           !hb_robot::recovery::geometryPermitted(state_) || !stability_->stable() ||
-           goal->geometry_version!=state_.geometry_version || goal->pose_version!=state_.pose_version ||
-           goal->execution_version!=state_.execution_version)
-          return rclcpp_action::GoalResponse::REJECT;
-        bool idle = false;
-        if (!busy_.compare_exchange_strong(idle, true)) return rclcpp_action::GoalResponse::REJECT;
-        expected_=state_;
-        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-      },
-      [this](const auto&) { move_->stop(); return rclcpp_action::CancelResponse::ACCEPT; },
-      [this](const auto& handle) {
-        if (worker_.joinable()) worker_.join();
-        worker_ = std::thread([this, handle] { run(handle); busy_ = false; });
-      });
+    server_ = rclcpp_action::create_server<Action>(
+        this, "inspect_cut",
+        [this](const auto &, std::shared_ptr<const Action::Goal> goal) {
+          const auto &p = goal->estimate.pose;
+          const Eigen::Quaterniond q(p.orientation.w, p.orientation.x, p.orientation.y,
+                                     p.orientation.z);
+          if (goal->cut_id.empty() || goal->estimate.header.frame_id != frame_ ||
+              !hb_perception::ProfileLibrary::find(goal->estimate.profile_name) ||
+              !std::isfinite(p.position.x) || !std::isfinite(p.position.y) ||
+              !std::isfinite(p.position.z) || !q.coeffs().allFinite() ||
+              std::abs(q.norm() - 1.0) > 1e-3 || !std::isfinite(goal->sample_spacing) ||
+              goal->sample_spacing < 0 || !std::isfinite(goal->camera_standoff) ||
+              goal->camera_standoff < 0 || goal->samples_per_viewpoint > 100)
+            return rclcpp_action::GoalResponse::REJECT;
+          const std::set<std::string> scope(goal->required_segments.begin(),
+                                            goal->required_segments.end());
+          if (scope.empty() || scope.size() != goal->required_segments.size() || scope.count(""))
+            return rclcpp_action::GoalResponse::REJECT;
+          // Never take the platform mutex while holding state_mutex_: the
+          // platform wait invokes our cancellation predicate under its own lock.
+          if (!stability_->stable()) {
+            RCLCPP_WARN(get_logger(), "[KERF ADMISSION] platform not stable: %s",
+                        stability_->reason().c_str());
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          if (busy_.load() || shutting_down_.load())
+            return rclcpp_action::GoalResponse::REJECT;
+          const auto check = taskCheckLocked(false);
+          if (!check.valid || goal->geometry_version != state_.geometry_version ||
+              goal->pose_version != state_.pose_version ||
+              goal->execution_version != state_.execution_version) {
+            RCLCPP_WARN(get_logger(), "[KERF ADMISSION] %s goal_versions=%llu/%llu/%llu",
+                        check.detail.c_str(),
+                        static_cast<unsigned long long>(goal->geometry_version),
+                        static_cast<unsigned long long>(goal->pose_version),
+                        static_cast<unsigned long long>(goal->execution_version));
+            return rclcpp_action::GoalResponse::REJECT;
+          }
+          expected_ = state_;
+          interrupted_ = false;
+          interruption_reason_.clear();
+          motion_active_ = false;
+          busy_.store(true);
+          return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        },
+        [this](const auto &) {
+          interrupt("operator canceled inspection");
+          return rclcpp_action::CancelResponse::ACCEPT;
+        },
+        [this](const auto &handle) {
+          if (worker_.joinable())
+            worker_.join();
+          worker_ = std::thread([this, handle] {
+            try {
+              run(handle);
+            } catch (const std::exception &error) {
+              RCLCPP_ERROR(get_logger(), "[KERF WORKER] terminal reporting failed: %s",
+                           error.what());
+              if (rclcpp::ok() && handle->is_active()) {
+                auto failed = std::make_shared<Action::Result>();
+                failed->success = false;
+                failed->result_code = Action::Result::MOTION_FAILED;
+                failed->evidence.registration_valid = false;
+                failed->message = error.what();
+                try {
+                  if (handle->is_canceling())
+                    handle->canceled(failed);
+                  else
+                    handle->abort(failed);
+                } catch (const std::exception &) {
+                }
+              }
+            }
+            std::lock_guard<std::mutex> commands(motion_command_mutex_);
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            busy_.store(false);
+          });
+        });
   }
- private:
+
+private:
   using Clock = std::chrono::steady_clock;
-  std::size_t boundedCount(const std::string& name, int fallback, int maximum) {
+  std::size_t boundedCount(const std::string &name, int fallback, int maximum) {
     const int value = declare_parameter<int>(name, fallback);
-    if (value < 1 || value > maximum) throw std::invalid_argument(name + " out of range");
+    if (value < 1 || value > maximum)
+      throw std::invalid_argument(name + " out of range");
     return static_cast<std::size_t>(value);
   }
-  double positive(const std::string& name, double fallback) {
+  double positive(const std::string &name, double fallback) {
     const double v = declare_parameter<double>(name, fallback);
-    if (!std::isfinite(v) || v<=0) throw std::invalid_argument(name + " must be positive");
+    if (!std::isfinite(v) || v <= 0)
+      throw std::invalid_argument(name + " must be positive");
     return v;
   }
-  std::optional<hb_perception::Observation> acquireFresh(
-      hb_perception::CroppedRGBDAcquisition& capture, const rclcpp::Time& after,
-      Clock::time_point deadline, const std::function<bool()>& canceled) {
-    while (!canceled() && Clock::now() < deadline) {
-      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline-Clock::now());
-      if (remaining.count() <= 0) break;
-      auto ob = capture.acquireAfter(after, std::min(remaining, std::chrono::milliseconds(500)));
-      if (ob) return ob;
+  std::optional<hb_perception::Observation>
+  acquireFresh(hb_perception::CroppedRGBDAcquisition &capture, const rclcpp::Time &after,
+               const std::function<bool()> &canceled) {
+    const auto capture_window = std::chrono::milliseconds(static_cast<int64_t>(timeout_ * 1000.0));
+
+    uint32_t timeouts = 0;
+
+    while (rclcpp::ok() && !canceled()) {
+      auto observation = capture.acquireAfter(after, capture_window);
+
+      // Authorization may have changed while
+      // acquireAfter() was blocking.
+      if (!rclcpp::ok() || canceled())
+        return std::nullopt;
+
+      if (observation)
+        return observation;
+
+      ++timeouts;
+
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                           "[KERF ACQUISITION] Waiting for fresh RGB-D; "
+                           "timeouts=%u window_ms=%lld",
+                           timeouts, static_cast<long long>(capture_window.count()));
+
+      capture.logCaptureFailure(after);
+
+      // Avoid a busy loop if the receiver returns
+      // immediately rather than waiting for its window.
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    capture.logCaptureFailure(after);
+
     return std::nullopt;
   }
-  bool taskValid() {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    return std::chrono::steady_clock::now()-received_<std::chrono::milliseconds(500) &&
-      (preview_ || (torch_off_ && std::chrono::steady_clock::now()-torch_received_<std::chrono::milliseconds(500))) &&
-      hb_robot::recovery::geometryPermitted(state_) &&
-      (!busy_ || (state_.geometry_version==expected_.geometry_version &&
-        state_.pose_version==expected_.pose_version && state_.scene_version==expected_.scene_version &&
-        state_.execution_version==expected_.execution_version));
+  struct TaskCheck {
+    bool valid;
+    std::string detail;
+  };
+
+  TaskCheck taskCheckLocked(bool check_versions) const {
+    const double callback_age_ms =
+        received_ == Clock::time_point{}
+            ? std::numeric_limits<double>::infinity()
+            : std::chrono::duration<double, std::milli>(Clock::now() - received_).count();
+    const double effective_age_ms = callback_age_ms + source_age_at_rx_ms_;
+    const bool fresh = std::isfinite(effective_age_ms) && effective_age_ms >= 0 &&
+                       effective_age_ms < task_state_timeout_ms_;
+    const bool geometry = hb_robot::recovery::geometryPermitted(state_);
+    const bool versions =
+        !check_versions || (state_.geometry_version == expected_.geometry_version &&
+                            state_.pose_version == expected_.pose_version &&
+                            state_.scene_version == expected_.scene_version &&
+                            state_.execution_version == expected_.execution_version &&
+                            state_.cut_environment_id == expected_.cut_environment_id);
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << "task_age_ms=" << effective_age_ms
+        << " limit_ms=" << task_state_timeout_ms_ << " callback_age_ms=" << callback_age_ms
+        << " source_age_at_rx_ms=" << source_age_at_rx_ms_ << " fresh=" << fresh
+        << " geometry_ok=" << geometry << " versions_ok=" << versions
+        << " supervision=" << state_.supervision_valid << " imu=" << state_.imu_stable
+        << " scene_valid=" << state_.scene_valid << " pose_valid=" << state_.workpiece_pose_valid
+        << " motion_fault=" << state_.motion_fault_active
+        << " process_fault=" << state_.process_fault_active
+        << " geometry=" << state_.geometry_version << '/' << expected_.geometry_version
+        << " pose=" << state_.pose_version << '/' << expected_.pose_version
+        << " scene=" << state_.scene_version << '/' << expected_.scene_version
+        << " execution=" << state_.execution_version << '/' << expected_.execution_version;
+    return {fresh && geometry && versions, out.str()};
   }
-  void run(const std::shared_ptr<Handle>& handle) {
+
+  void stopInterruptedMotion() {
+    // Keep STOP active while execute() is outstanding, including late goal
+    // acceptance. A single STOP before goal acceptance can miss that motion.
+    // The existing 50 ms timer retries only during interrupted execution.
+    std::lock_guard<std::mutex> commands(motion_command_mutex_);
+    bool stop = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      stop = busy_.load() && interrupted_ && motion_active_;
+    }
+    if (stop && move_)
+      move_->stop();
+  }
+
+  void interrupt(const std::string &reason) {
+    bool first = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (busy_.load() && !interrupted_) {
+        interrupted_ = true;
+        interruption_reason_ = reason;
+        first = true;
+      }
+    }
+    if (first)
+      RCLCPP_WARN(get_logger(), "[KERF INTERRUPT] %s", reason.c_str());
+    stopInterruptedMotion();
+  }
+
+  bool taskValid() {
+    bool valid = false, first = false;
+    std::string reason;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      const auto check = taskCheckLocked(busy_.load());
+      if (busy_.load() && !check.valid && !interrupted_) {
+        interrupted_ = true;
+        interruption_reason_ = check.detail;
+        first = true;
+      }
+      valid = check.valid && (!busy_.load() || !interrupted_);
+      reason = interruption_reason_;
+    }
+    if (first)
+      RCLCPP_WARN(get_logger(), "[KERF INTERRUPT] %s", reason.c_str());
+    if (!valid)
+      stopInterruptedMotion();
+    return valid;
+  }
+
+  bool executeInspectionMotion(const Plan &plan, const std::function<bool()> &canceled) {
+    if (canceled())
+      return false;
+    {
+      std::lock_guard<std::mutex> commands(motion_command_mutex_);
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (interrupted_ || shutting_down_.load())
+        return false;
+      motion_active_ = true;
+    }
+    const auto clear_motion = [this] {
+      std::lock_guard<std::mutex> commands(motion_command_mutex_);
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      motion_active_ = false;
+    };
+    try {
+      // MoveGroup and its action clients live for the lifetime of this server.
+      const auto result = move_->execute(plan);
+      clear_motion();
+      return result == moveit::core::MoveItErrorCode::SUCCESS && !canceled();
+    } catch (...) {
+      interrupt("MoveGroup execution threw an exception");
+      clear_motion();
+      throw;
+    }
+  }
+
+  static bool validRigidTransform(const Eigen::Isometry3d &pose) {
+    if (!pose.matrix().allFinite())
+      return false;
+    const Eigen::Matrix3d rotation = pose.linear();
+    return std::abs(rotation.determinant() - 1.0) < 1e-6 &&
+           (rotation.transpose() * rotation).isApprox(Eigen::Matrix3d::Identity(), 1e-6);
+  }
+
+  // acquireAfter() applies one lower bound to BOTH image stamps. Keep separate
+  // cursors so a small RGB/depth offset does not make the slower image compare
+  // against the previous faster image. Never reuse either image as evidence.
+  struct ObservationCursor {
+    int64_t settled, observation, rgb, depth;
+    explicit ObservationCursor(int64_t after)
+        : settled(after), observation(after), rgb(after), depth(after) {}
+    int64_t lowerBound() const { return std::max(settled, std::min(rgb, depth)); }
+    bool advance(int64_t obs, int64_t color, int64_t aligned_depth) {
+      const bool fresh = obs > observation && color > rgb && aligned_depth > depth &&
+                         obs > settled && color > settled && aligned_depth > settled;
+      observation = std::max(observation, obs);
+      rgb = std::max(rgb, color);
+      depth = std::max(depth, aligned_depth);
+      return fresh;
+    }
+  };
+
+  void publishCameraPoses(const geometry_msgs::msg::PoseArray &optical,
+                          const Eigen::Isometry3d &link_from_optical) {
+    poses_pub_->publish(optical);
+    geometry_msgs::msg::PoseArray links;
+    links.header = optical.header;
+    for (const auto &pose : optical.poses) {
+      Eigen::Isometry3d world_from_optical;
+      tf2::fromMsg(pose, world_from_optical);
+      const Eigen::Isometry3d world_from_link = world_from_optical * link_from_optical.inverse();
+      links.poses.push_back(tf2::toMsg(world_from_link));
+    }
+    link_poses_pub_->publish(links);
+  }
+
+  void run(const std::shared_ptr<Handle> &handle) {
     auto result = std::make_shared<Action::Result>();
     uint8_t exception_code = Action::Result::PLANNING_FAILED;
     hb_perception::PointCloud cloud;
-    auto finish = [&](uint8_t code, const std::string& message) {
-      if (handle->is_canceling()) code=Action::Result::CANCELLED;
+    auto finish = [&](uint8_t code, std::string message) {
+      if (code == Action::Result::SUCCESS)
+        (void)taskValid();
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (interrupted_) {
+          code = Action::Result::CANCELLED;
+          message += "; interruption: " + interruption_reason_;
+        }
+      }
+      if (handle->is_canceling())
+        code = Action::Result::CANCELLED;
       result->success = code == Action::Result::SUCCESS;
       result->result_code = code;
       result->interpretation = Action::Result::INCONCLUSIVE;
       result->cut_complete = false;
       result->confidence = 0;
       result->message = message;
-      if (result->success) RCLCPP_INFO(get_logger(), "[KERF RESULT] %s", message.c_str());
-      else RCLCPP_ERROR(get_logger(), "[KERF RESULT] code=%u views=%u/%u points=%zu: %s",
-        static_cast<unsigned>(code), result->viewpoints_captured, result->viewpoints_requested,
-        cloud.size(), message.c_str());
-      const auto goal=handle->get_goal();
-      result->evidence.header.stamp=now();
-      result->evidence.header.frame_id="workpiece";
-      result->evidence.cut_id=goal->cut_id;
-      result->evidence.geometry_version=goal->geometry_version;
-      result->evidence.pose_version=goal->pose_version;
-      result->evidence.execution_version=goal->execution_version;
-      result->evidence.registration_valid=result->success;
-      if(!infer_evidence_) result->evidence.unknown_fraction=1.0;
+      const auto goal = handle->get_goal();
+      result->evidence.header.stamp = now();
+      result->evidence.header.frame_id = "workpiece";
+      result->evidence.cut_id = goal->cut_id;
+      result->evidence.geometry_version = goal->geometry_version;
+      result->evidence.pose_version = goal->pose_version;
+      result->evidence.execution_version = goal->execution_version;
+      result->evidence.registration_valid = result->success;
+      if (!infer_evidence_)
+        result->evidence.unknown_fraction = 1.0;
       pcl::toROSMsg(cloud, result->kerf_cloud);
       result->kerf_cloud.header.frame_id = frame_;
       result->kerf_cloud.header.stamp = now();
       cloud_pub_->publish(result->kerf_cloud);
-      if (handle->is_canceling()) { result->success=false; result->result_code=Action::Result::CANCELLED; handle->canceled(result); }
-      else if (result->success) handle->succeed(result);
-      else handle->abort(result);
+      // A late cancellation/supervision loss must invalidate even partially
+      // collected evidence. Partial observations remain available for diagnosis.
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (interrupted_ || handle->is_canceling()) {
+        result->success = false;
+        result->result_code = Action::Result::CANCELLED;
+        result->evidence.registration_valid = false;
+        if (interrupted_ && result->message.find(interruption_reason_) == std::string::npos)
+          result->message += "; interruption: " + interruption_reason_;
+      }
+      if (result->success)
+        RCLCPP_INFO(get_logger(), "[KERF RESULT] %s", result->message.c_str());
+      else
+        RCLCPP_ERROR(get_logger(), "[KERF RESULT] code=%u views=%u/%u points=%zu: %s",
+                     static_cast<unsigned>(result->result_code), result->viewpoints_captured,
+                     result->viewpoints_requested, cloud.size(), result->message.c_str());
+      if (handle->is_canceling())
+        handle->canceled(result);
+      else if (result->success)
+        handle->succeed(result);
+      else
+        handle->abort(result);
     };
-    auto canceled = [&] { return handle->is_canceling() || !rclcpp::ok() || !taskValid(); };
+    auto canceled = [&] {
+      if (handle->is_canceling())
+        interrupt("operator canceled inspection");
+      if (!rclcpp::ok() || shutting_down_.load())
+        interrupt("server shutdown");
+      return handle->is_canceling() || !rclcpp::ok() || shutting_down_.load() || !taskValid();
+    };
     try {
       const auto goal = handle->get_goal();
       auto profile = *hb_perception::ProfileLibrary::find(goal->estimate.profile_name);
-      result->evidence=initializeEvidence(profile,goal->required_segments,ray_config_);
+      result->evidence = initializeEvidence(profile, goal->required_segments, ray_config_);
       // Keep the full boundary for ray intersections, but route only the requested features.
-      profile.cut_features.erase(std::remove_if(profile.cut_features.begin(),profile.cut_features.end(),
-        [&](const auto& f){return std::find(goal->required_segments.begin(),goal->required_segments.end(),f.name)==goal->required_segments.end();}),profile.cut_features.end());
+      profile.cut_features.erase(
+          std::remove_if(profile.cut_features.begin(), profile.cut_features.end(),
+                         [&](const auto &f) {
+                           return std::find(goal->required_segments.begin(),
+                                            goal->required_segments.end(),
+                                            f.name) == goal->required_segments.end();
+                         }),
+          profile.cut_features.end());
       Eigen::Isometry3d world_from_cut;
       tf2::fromMsg(goal->estimate.pose, world_from_cut);
       const auto cut_from_world = world_from_cut.inverse();
-      const auto stations = motion::inspectionStations(profile, world_from_cut,
-        goal->sample_spacing>0 ? goal->sample_spacing : spacing_,
-        goal->camera_standoff>0 ? goal->camera_standoff : standoff_);
-      result->viewpoints_requested = stations.size();
+      // Clear old visualization/evidence before calibration or planning.
       geometry_msgs::msg::PoseArray poses;
-      poses.header.frame_id = frame_; poses.header.stamp = now();
-      for (const auto& station : stations) poses.poses.push_back(tf2::toMsg(station.camera_poses.front()));
+      poses.header.frame_id = frame_;
+      poses.header.stamp = now();
       poses_pub_->publish(poses);
-      // Clear latched evidence from any previous cut before doing work.
-      sensor_msgs::msg::PointCloud2 empty; pcl::toROSMsg(cloud, empty);
-      empty.header = poses.header; cloud_pub_->publish(empty);
-      if (stations.empty()) { finish(Action::Result::PLANNING_FAILED, "No material features"); return; }
-      if (preview_) { finish(Action::Result::PLANNING_FAILED, "Preview only: viewpoints published; no acquisition performed"); return; }
-      auto start = move_->getCurrentState(5.0);
-      if (!start) { finish(Action::Result::PLANNING_FAILED, "No current robot state"); return; }
-
-      // Use the profile-inspection receiver once for the entire action. Its own
-      // executor handles RGB-D/TF while this worker plans or executes motion.
-      hb_perception::CroppedRGBDAcquisition capture(this, tf_.get(), frame_,
-        hb_perception::CroppedRGBDAcquisition::Mode::CaptureWindow, rgbd_topic_);
-      const auto capture_duration = std::chrono::milliseconds(static_cast<int>(timeout_*1000));
-      auto calibration = acquireFresh(capture, now(), Clock::now()+capture_duration, canceled);
-      if (!calibration) {
-        finish(canceled()?Action::Result::CANCELLED:Action::Result::ACQUISITION_FAILED,
-          "No fresh RGB-D calibration/TF on " + rgbd_topic_ + " before planning"); return;
+      link_poses_pub_->publish(poses);
+      sensor_msgs::msg::PointCloud2 empty;
+      pcl::toROSMsg(cloud, empty);
+      empty.header = poses.header;
+      cloud_pub_->publish(empty);
+      if (profile.cut_features.empty()) {
+        finish(Action::Result::PLANNING_FAILED, "No requested material features");
+        return;
       }
-      const std::string optical_frame = calibration->rgb_camera_info->header.frame_id;
-      if (optical_frame.empty() || calibration->camera_pose.child_frame_id!=optical_frame ||
-          calibration->camera_pose.header.frame_id!=frame_) {
-        finish(Action::Result::REGISTRATION_FAILED, "RGB-D calibration and optical TF frames disagree"); return;
+
+      if (!rgbd_acquisition_) {
+        finish(Action::Result::ACQUISITION_FAILED, "RGB-D acquisition receiver not initialized");
+        return;
+      }
+
+      auto &capture = *rgbd_acquisition_;
+
+      exception_code = Action::Result::STABILITY_TIMEOUT;
+
+      if (!stability_->waitForStable(
+              std::chrono::milliseconds(static_cast<int64_t>(stability_timeout_ * 1000.0)),
+              canceled)) {
+        finish(canceled() ? Action::Result::CANCELLED : Action::Result::STABILITY_TIMEOUT,
+               "Platform not stable before RGB-D calibration: " + stability_->reason());
+
+        return;
+      }
+
+      exception_code = Action::Result::ACQUISITION_FAILED;
+
+      auto calibration = acquireFresh(capture, now(), canceled);
+
+      if (!calibration) {
+        finish(canceled() ? Action::Result::CANCELLED : Action::Result::ACQUISITION_FAILED,
+               "Initial RGB-D acquisition interrupted");
+
+        return;
+      }
+
+      if (!calibration->rgb || !calibration->depth_to_rgb || !calibration->rgb_camera_info) {
+        finish(Action::Result::ACQUISITION_FAILED, "Incomplete initial RGB-D observation");
+        return;
+      }
+      const auto &info = *calibration->rgb_camera_info;
+      if (info.width == 0 || info.height == 0 || !std::isfinite(info.k[0]) ||
+          !std::isfinite(info.k[4]) || !std::isfinite(info.k[2]) || !std::isfinite(info.k[5]) ||
+          info.k[0] <= 0 || info.k[4] <= 0) {
+        finish(Action::Result::REGISTRATION_FAILED, "Invalid RGB optical camera intrinsics");
+        return;
+      }
+      if (canceled() || !stability_->stable()) {
+        finish(Action::Result::STABILITY_TIMEOUT,
+               "Calibration interrupted or platform no longer stable");
+        return;
+      }
+      const std::string optical_frame = info.header.frame_id;
+      if (optical_frame.empty() || calibration->camera_pose.child_frame_id != optical_frame ||
+          calibration->camera_pose.header.frame_id != frame_) {
+        finish(Action::Result::REGISTRATION_FAILED,
+               "RGB-D calibration and optical TF frames disagree");
+        return;
       }
       // A body link (+X forward) and its RGB optical child (+Z forward) are not
       // interchangeable. Use the driver's calibrated rotation AND translation.
-      exception_code=Action::Result::REGISTRATION_FAILED;
-      const Eigen::Isometry3d link_from_optical = tf2::transformToEigen(
-        tf_->lookupTransform(camera_, optical_frame, calibration->stamp, rclcpp::Duration::from_seconds(1.0)));
+      exception_code = Action::Result::REGISTRATION_FAILED;
+      const Eigen::Isometry3d link_from_optical = tf2::transformToEigen(tf_->lookupTransform(
+          camera_, optical_frame, calibration->stamp, rclcpp::Duration::from_seconds(1.0)));
+      const Eigen::Isometry3d world_from_optical = tf2::transformToEigen(calibration->camera_pose);
+      if (!validRigidTransform(link_from_optical) || !validRigidTransform(world_from_optical)) {
+        finish(Action::Result::REGISTRATION_FAILED, "Invalid calibrated camera transformation");
+        return;
+      }
+
+      // Use the measured OPTICAL image-plane orientation as the roll reference.
+      // Freeze it once per goal; preview and live planning share these stations.
+      const auto stations = motion::inspectionStations(
+          profile, world_from_cut, goal->sample_spacing > 0 ? goal->sample_spacing : spacing_,
+          goal->camera_standoff > 0 ? goal->camera_standoff : standoff_,
+          world_from_optical.linear());
+      result->viewpoints_requested = static_cast<uint32_t>(stations.size());
+      poses.header.stamp = now();
+      for (const auto &station : stations)
+        poses.poses.push_back(tf2::toMsg(station.camera_poses.front()));
+      publishCameraPoses(poses, link_from_optical);
+      const Eigen::Quaterniond reference_rotation(world_from_optical.linear());
+      RCLCPP_INFO(get_logger(),
+                  "[KERF STATIONS] count=%zu reference=measured_optical frame=%s q_xyzw=[%.6f %.6f "
+                  "%.6f %.6f] preview=%d",
+                  stations.size(), optical_frame.c_str(), reference_rotation.x(),
+                  reference_rotation.y(), reference_rotation.z(), reference_rotation.w(),
+                  int(preview_));
+      if (stations.empty()) {
+        finish(Action::Result::PLANNING_FAILED, "No material features");
+        return;
+      }
+      if (preview_) {
+        finish(Action::Result::PLANNING_FAILED, "Preview only: calibrated optical/body viewpoints "
+                                                "published; no motion or kerf acquisition");
+        return;
+      }
       motion::ExplorationRequest view_request = view_request_;
       view_request.roll_axis = Eigen::Vector3d::UnitZ();
       view_request.link_from_view = link_from_optical;
-      const auto& info = *calibration->rgb_camera_info;
-      const auto seesTarget = [&](const Eigen::Isometry3d& optical_pose, const Eigen::Vector3d& target) {
-        const Eigen::Vector3d p = optical_pose.inverse()*target;
-        if (!p.allFinite() || p.z()<=0.02 || p.z()>range_) return false;
-        const double u=info.k[0]*p.x()/p.z()+info.k[2];
-        const double v=info.k[4]*p.y()/p.z()+info.k[5];
-        return std::isfinite(u) && std::isfinite(v) && u>=2 && v>=2 &&
-          u+2<info.width && v+2<info.height;
+      const auto seesTarget = [&](const Eigen::Isometry3d &optical_pose,
+                                  const Eigen::Vector3d &target) {
+        const Eigen::Vector3d p = optical_pose.inverse() * target;
+        if (!p.allFinite() || p.z() <= 0.02 || p.z() > range_)
+          return false;
+        const double u = info.k[0] * p.x() / p.z() + info.k[2];
+        const double v = info.k[4] * p.y() / p.z() + info.k[5];
+        return std::isfinite(u) && std::isfinite(v) && u >= 2 && v >= 2 && u + 2 < info.width &&
+               v + 2 < info.height;
       };
       RCLCPP_INFO(get_logger(),
-        "[KERF CAMERA] ik_link=%s optical_frame=%s rgbd=%s position_tol=%.3f roll_tol=%.3f samples=%zu solutions=%zu",
-        camera_.c_str(), optical_frame.c_str(), rgbd_topic_.c_str(), view_request.pos_tol,
-        view_request.roll_tol, view_request.num_candidates, max_view_solutions_);
-      exception_code=Action::Result::PLANNING_FAILED;
+                  "[KERF CAMERA] ik_link=%s optical_frame=%s rgbd=%s position_tol=%.3f "
+                  "roll_tol=%.3f samples=%zu solutions=%zu",
+                  camera_.c_str(), optical_frame.c_str(), rgbd_topic_.c_str(), view_request.pos_tol,
+                  view_request.roll_tol, view_request.num_candidates, max_view_solutions_);
+      exception_code = Action::Result::PLANNING_FAILED;
       if (!scene_monitor_->requestPlanningSceneState("/get_planning_scene")) {
-        finish(Action::Result::PLANNING_FAILED, "Could not synchronize the MoveIt planning scene"); return;
+        finish(Action::Result::PLANNING_FAILED, "Could not synchronize the MoveIt planning scene");
+        return;
       }
       planning_scene::PlanningScenePtr scene;
       {
         planning_scene_monitor::LockedPlanningSceneRO locked(scene_monitor_);
-        scene=locked->diff(); scene->decoupleParent();
+        scene = locked->diff();
+        scene->decoupleParent();
       }
-      const auto planning_deadline = Clock::now() +
-        std::chrono::milliseconds(static_cast<int>(planning_timeout_*1000));
-      auto planning_stopped = [&] { return canceled() || Clock::now()>=planning_deadline; };
+      const auto planning_deadline =
+          Clock::now() + std::chrono::milliseconds(static_cast<int>(planning_timeout_ * 1000));
+      auto planning_stopped = [&] { return canceled() || Clock::now() >= planning_deadline; };
       motion::ExplorationPlanner explorer(move_->getRobotModel(), group_, camera_);
 
       // Reuse the cut planner's layered candidate graph and lazy edge validation.
       // Each layer is a REQUIRED observation station, each node an exploration solution.
+      // Calibration can retry indefinitely: obtain the robot state only now.
+      if (canceled()) {
+        finish(Action::Result::CANCELLED, "Interrupted before route planning");
+        return;
+      }
+      auto start = move_->getCurrentState(5.0);
+      if (!start) {
+        finish(Action::Result::PLANNING_FAILED, "No current robot state");
+        return;
+      }
+      start->update();
       motion::CutCandidateGraph graph;
       std::vector<moveit::core::RobotStatePtr> states{start};
       std::vector<std::size_t> station_ids{0};
       const auto root = graph.addNode(0, 0);
       std::vector<motion::NodeId> previous{root};
-      const auto* jmg = start->getJointModelGroup(group_);
-      if (!jmg) throw std::runtime_error("Inspection joint group is absent");
-      const auto& home_names=jmg->getDefaultStateNames();
-      if(std::find(home_names.begin(),home_names.end(),"inspection_home")==home_names.end()) {
-        finish(Action::Result::PLANNING_FAILED,"SRDF inspection_home is missing");return;
+      const auto *jmg = start->getJointModelGroup(group_);
+      if (!jmg)
+        throw std::runtime_error("Inspection joint group is absent");
+      const auto &home_names = jmg->getDefaultStateNames();
+      if (std::find(home_names.begin(), home_names.end(), "inspection_home") == home_names.end()) {
+        finish(Action::Result::PLANNING_FAILED, "SRDF inspection_home is missing");
+        return;
       }
-      auto home=std::make_shared<moveit::core::RobotState>(*start);
-      home->setToDefaultValues(jmg,"inspection_home");home->update();
-      for (std::size_t i=0; i<stations.size(); ++i) {
+      auto home = std::make_shared<moveit::core::RobotState>(*start);
+      home->setToDefaultValues(jmg, "inspection_home");
+      home->update();
+      for (std::size_t i = 0; i < stations.size(); ++i) {
         std::vector<motion::NodeId> layer;
         std::vector<moveit::core::RobotState> seeds;
-        const auto add_seed = [&](const moveit::core::RobotState& candidate) {
-          if (std::none_of(seeds.begin(),seeds.end(),[&](const auto& old) {
-                return old.distance(candidate,jmg)<0.02;
-              })) seeds.push_back(candidate);
+        const auto add_seed = [&](const moveit::core::RobotState &candidate) {
+          if (std::none_of(seeds.begin(), seeds.end(),
+                           [&](const auto &old) { return old.distance(candidate, jmg) < 0.02; }))
+            seeds.push_back(candidate);
         };
-        for (const auto from : previous) add_seed(*states[from]);
-        add_seed(*start); add_seed(*home);
+        for (const auto from : previous)
+          add_seed(*states[from]);
+        add_seed(*start);
+        add_seed(*home);
         // A second deterministic branch even when start == inspection_home.
-        auto defaults=*start; defaults.setToDefaultValues();
-        std::vector<double> default_joints; defaults.copyJointGroupPositions(jmg,default_joints);
-        auto neutral=*start; neutral.setJointGroupPositions(jmg,default_joints); neutral.update(); add_seed(neutral);
-        const auto sampled=explorer.sampleViews(seeds, stations[i].camera_poses.front(), view_request,
-          scene, max_view_solutions_, [&](const auto& pose) { return seesTarget(pose,stations[i].target); },
-          planning_stopped);
+        auto defaults = *start;
+        defaults.setToDefaultValues();
+        std::vector<double> default_joints;
+        defaults.copyJointGroupPositions(jmg, default_joints);
+        auto neutral = *start;
+        neutral.setJointGroupPositions(jmg, default_joints);
+        neutral.update();
+        add_seed(neutral);
+        const auto sampled = explorer.sampleViews(
+            seeds, stations[i].camera_poses.front(), view_request, scene, max_view_solutions_,
+            [&](const auto &pose) { return seesTarget(pose, stations[i].target); },
+            planning_stopped);
         std::ostringstream diagnostics;
-        diagnostics << "feature=" << stations[i].feature << " station=" << i+1 << '/' << stations.size()
-          << " target=[" << stations[i].target.transpose() << "] seeds=" << seeds.size()
-          << " candidates=" << sampled.candidates << " ik_attempts=" << sampled.ik_attempts
-          << " ik_or_bounds_failed=" << sampled.ik_failed << " collision_rejected=" << sampled.collision_rejected
-          << " framing_rejected=" << sampled.view_rejected << " duplicates=" << sampled.duplicates
-          << " accepted=" << sampled.views.size();
-        RCLCPP_INFO(get_logger(),"[KERF IK] %s",diagnostics.str().c_str());
+        diagnostics << "feature=" << stations[i].feature << " station=" << i + 1 << '/'
+                    << stations.size() << " target=[" << stations[i].target.transpose()
+                    << "] seeds=" << seeds.size() << " candidates=" << sampled.candidates
+                    << " ik_attempts=" << sampled.ik_attempts
+                    << " ik_or_bounds_failed=" << sampled.ik_failed
+                    << " collision_rejected=" << sampled.collision_rejected
+                    << " framing_rejected=" << sampled.view_rejected
+                    << " duplicates=" << sampled.duplicates << " accepted=" << sampled.views.size();
+        RCLCPP_INFO(get_logger(), "[KERF IK] %s", diagnostics.str().c_str());
         if (planning_stopped()) {
-          finish(canceled()?Action::Result::CANCELLED:Action::Result::PLANNING_FAILED,
-            "Inspection planning stopped (cancel, supervision or planning deadline): " + diagnostics.str()); return;
+          finish(canceled() ? Action::Result::CANCELLED : Action::Result::PLANNING_FAILED,
+                 "Inspection planning stopped (cancel, supervision or planning deadline): " +
+                     diagnostics.str());
+          return;
         }
         if (sampled.views.empty()) {
-          finish(Action::Result::PLANNING_FAILED, "No usable inspection view: " + diagnostics.str()); return;
+          finish(Action::Result::PLANNING_FAILED,
+                 "No usable inspection view: " + diagnostics.str());
+          return;
         }
-        for (const auto& solution : sampled.views) {
+        for (const auto &solution : sampled.views) {
           auto state = std::make_shared<moveit::core::RobotState>(solution.robot_state);
-          const auto id = graph.addNode(i+1, 0);
-          states.push_back(state); station_ids.push_back(i); layer.push_back(id);
-          for (const auto from : previous) graph.addEdge(from, id, states[from]->distance(*state,jmg));
+          const auto id = graph.addNode(i + 1, 0);
+          states.push_back(state);
+          station_ids.push_back(i);
+          layer.push_back(id);
+          for (const auto from : previous)
+            graph.addEdge(from, id, states[from]->distance(*state, jmg));
         }
         previous = std::move(layer);
       }
       // Independent cutting starts at inspection_home. Include the return leg
       // in the checked route before moving, under the same task supervision.
-      const auto home_id=graph.addNode(stations.size()+1,0);
-      states.push_back(home);station_ids.push_back(stations.size());
-      for(const auto from:previous) graph.addEdge(from,home_id,states[from]->distance(*home,jmg));
-      previous={home_id};
-      const auto sink = graph.addNode(stations.size()+2, 0);
+      const auto home_id = graph.addNode(stations.size() + 1, 0);
+      states.push_back(home);
+      station_ids.push_back(stations.size());
+      for (const auto from : previous)
+        graph.addEdge(from, home_id, states[from]->distance(*home, jmg));
+      previous = {home_id};
+      const auto sink = graph.addNode(stations.size() + 2, 0);
       for (const auto from : previous) {
-        auto id=graph.addEdge(from, sink, 0); graph.edge(id).status=motion::TransitStatus::Valid;
+        auto id = graph.addEdge(from, sink, 0);
+        graph.edge(id).status = motion::TransitStatus::Valid;
       }
       std::map<motion::EdgeId, Plan> plans;
       motion::GraphRoute route;
-      auto transit_options=transit_options_;
-      transit_options.scene=scene;
-      home->copyJointGroupPositions(jmg,transit_options.home_joints);
-      bool route_complete=false;
+      auto transit_options = transit_options_;
+      transit_options.scene = scene;
+      home->copyJointGroupPositions(jmg, transit_options.home_joints);
+      bool route_complete = false;
       while (!planning_stopped()) {
         route = graph.cheapestRoute(root, sink);
-        if (!route.found()) { finish(Action::Result::PLANNING_FAILED, "No collision-checked route through every station"); return; }
+        if (!route.found()) {
+          finish(Action::Result::PLANNING_FAILED,
+                 "No collision-checked route through every station");
+          return;
+        }
         bool complete = true;
         for (const auto edge_id : route.edges) {
-          auto& edge = graph.edge(edge_id);
-          if (edge.status == motion::TransitStatus::Valid) continue;
+          auto &edge = graph.edge(edge_id);
+          if (edge.status == motion::TransitStatus::Valid)
+            continue;
           complete = false;
-          if (planning_stopped()) break;
+          if (planning_stopped())
+            break;
 
-          auto plan = motion::planTransit(
-              *move_, get_logger(),
-              *states[edge.from], *states[edge.to],
-              transit_options);
+          auto plan = motion::planTransit(*move_, get_logger(), *states[edge.from],
+                                          *states[edge.to], transit_options);
 
-          if (planning_stopped()) break;
+          if (planning_stopped())
+            break;
 
-          if (!plan || !scene->isPathValid(plan->start_state_,plan->trajectory_,group_)) {
-            edge.status=motion::TransitStatus::Invalid;
-            RCLCPP_WARN(get_logger(),"[KERF TRANSIT] edge=%zu from=%zu to=%zu failed; trying another candidate route",
-              edge_id,edge.from,edge.to);
+          if (!plan || !scene->isPathValid(plan->start_state_, plan->trajectory_, group_)) {
+            edge.status = motion::TransitStatus::Invalid;
+            RCLCPP_WARN(
+                get_logger(),
+                "[KERF TRANSIT] edge=%zu from=%zu to=%zu failed; trying another candidate route",
+                edge_id, edge.from, edge.to);
           } else {
-            edge.status=motion::TransitStatus::Valid;
-            const auto& points=plan->trajectory_.joint_trajectory.points;
-            double cost=0;
-            for (std::size_t k=1;k<points.size();++k)
-              for (std::size_t j=0;j<points[k].positions.size();++j)
-                cost+=std::abs(points[k].positions[j]-points[k-1].positions[j]);
-            edge.actual_cost=cost; plans.emplace(edge_id,std::move(*plan));
+            edge.status = motion::TransitStatus::Valid;
+            const auto &points = plan->trajectory_.joint_trajectory.points;
+            double cost = 0;
+            for (std::size_t k = 1; k < points.size(); ++k)
+              for (std::size_t j = 0; j < points[k].positions.size(); ++j)
+                cost += std::abs(points[k].positions[j] - points[k - 1].positions[j]);
+            edge.actual_cost = cost;
+            plans.emplace(edge_id, std::move(*plan));
           }
           break;
         }
-        if (complete) {route_complete=true;break;}
+        if (complete) {
+          route_complete = true;
+          break;
+        }
       }
       if (!route_complete || planning_stopped()) {
-        finish(canceled()?Action::Result::CANCELLED:Action::Result::PLANNING_FAILED,
-          "Inspection route incomplete: canceled, supervision lost or planning deadline reached");return;
+        finish(
+            canceled() ? Action::Result::CANCELLED : Action::Result::PLANNING_FAILED,
+            "Inspection route incomplete: canceled, supervision lost or planning deadline reached");
+        return;
       }
-      poses.poses.clear(); poses.header.stamp=now();
+      poses.poses.clear();
+      poses.header.stamp = now();
       for (const auto id : route.nodes) {
-        if(id!=root && id!=sink && station_ids[id]<stations.size())
-          poses.poses.push_back(tf2::toMsg(states[id]->getGlobalLinkTransform(camera_)*link_from_optical));
+        if (id != root && id != sink && station_ids[id] < stations.size())
+          poses.poses.push_back(
+              tf2::toMsg(states[id]->getGlobalLinkTransform(camera_) * link_from_optical));
       }
-      poses_pub_->publish(poses);
-      RCLCPP_INFO(get_logger(),"[KERF ROUTE] stations=%zu validated_transits=%zu; return_home included",
-        stations.size(),route.edges.size()-1);
-      exception_code=Action::Result::MOTION_FAILED;
-      const auto samples=goal->samples_per_viewpoint ? goal->samples_per_viewpoint : 3;
+      publishCameraPoses(poses, link_from_optical);
+      RCLCPP_INFO(get_logger(),
+                  "[KERF ROUTE] stations=%zu validated_transits=%zu; return_home included",
+                  stations.size(), route.edges.size() - 1);
+      exception_code = Action::Result::MOTION_FAILED;
+      const auto samples = goal->samples_per_viewpoint ? goal->samples_per_viewpoint : 3;
       for (const auto edge_id : route.edges) {
-        const auto& edge=graph.edge(edge_id);
-        if (edge.to==sink) continue;
-        if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
+        const auto &edge = graph.edge(edge_id);
+        if (edge.to == sink)
+          continue;
+        if (canceled()) {
+          finish(Action::Result::CANCELLED, "Canceled");
+          return;
+        }
         // Do not execute a stale planned start after external robot movement.
-        auto current=move_->getCurrentState(2.0);
-        if (!current || current->distance(*states[edge.from], jmg)>0.05) {
-          finish(Action::Result::MOTION_FAILED, "Robot moved since route planning"); return;
+        auto current = move_->getCurrentState(2.0);
+        if (!current || current->distance(*states[edge.from], jmg) > 0.05) {
+          finish(Action::Result::MOTION_FAILED, "Robot moved since route planning");
+          return;
         }
         {
           planning_scene_monitor::LockedPlanningSceneRO locked(scene_monitor_);
-          if (!locked->isPathValid(plans.at(edge_id).start_state_,plans.at(edge_id).trajectory_,group_)) {
-            finish(Action::Result::MOTION_FAILED, "Inspection trajectory invalid in latest planning scene"); return;
+          if (!locked->isPathValid(plans.at(edge_id).start_state_, plans.at(edge_id).trajectory_,
+                                   group_)) {
+            finish(Action::Result::MOTION_FAILED,
+                   "Inspection trajectory invalid in latest planning scene");
+            return;
           }
         }
-        if (canceled()) { finish(Action::Result::CANCELLED, "Canceled before inspection motion"); return; }
-        exception_code=Action::Result::MOTION_FAILED;
-        if (move_->execute(plans.at(edge_id)) != moveit::core::MoveItErrorCode::SUCCESS) {
-          finish(Action::Result::MOTION_FAILED, "Inspection motion failed"); return;
+        if (canceled()) {
+          finish(Action::Result::CANCELLED, "Canceled before inspection motion");
+          return;
         }
-        if(station_ids[edge.to]==stations.size()) continue;
-        
+        exception_code = Action::Result::MOTION_FAILED;
+        if (!executeInspectionMotion(plans.at(edge_id), canceled)) {
+          finish(Action::Result::MOTION_FAILED, "Inspection motion failed");
+          return;
+        }
+        if (station_ids[edge.to] == stations.size())
+          continue;
+
         if (!stability_->waitForStable(
-              std::chrono::milliseconds(static_cast<int>(stability_timeout_ * 1000)), canceled)) {
+                std::chrono::milliseconds(static_cast<int>(stability_timeout_ * 1000)), canceled)) {
           if (canceled()) {
-            finish(Action::Result::CANCELLED, "Canceled while waiting for stability"); return;
+            finish(Action::Result::CANCELLED, "Canceled while waiting for stability");
+            return;
           }
-          finish(Action::Result::STABILITY_TIMEOUT, "Platform did not settle: " + stability_->reason());
+          finish(Action::Result::STABILITY_TIMEOUT,
+                 "Platform did not settle: " + stability_->reason());
           return;
         }
 
-        auto stamp=now(); // Strictly post-motion and post-stability observations only.
-        const auto index=station_ids[edge.to];
-        exception_code=Action::Result::ACQUISITION_FAILED;
-        const auto station_points_before=cloud.size();
-        for (uint32_t sample=0;sample<samples;++sample) {
-          if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
-          const auto ob=acquireFresh(capture,stamp,Clock::now()+capture_duration,canceled);
-          
-         if (!ob || !stability_->stable()) {
-          
-            finish(canceled()?Action::Result::CANCELLED:Action::Result::ACQUISITION_FAILED,
-              "Missing fresh RGB-D or stability lost at " + stations[index].feature +
-              " station=" + std::to_string(index+1) + " sample=" + std::to_string(sample+1)); return;
-          }
-          if (rclcpp::Time(ob->depth_to_rgb->header.stamp)<=stamp ||
-              std::abs((rclcpp::Time(ob->depth_to_rgb->header.stamp)-ob->stamp).seconds())>0.03 ||
-              ob->camera_pose.header.frame_id!=frame_ || ob->camera_pose.child_frame_id!=optical_frame ||
-              ob->rgb_camera_info->header.frame_id!=optical_frame ||
-              ob->rgb_camera_info->k!=info.k || ob->rgb_camera_info->width!=info.width ||
-              ob->rgb_camera_info->height!=info.height) {
-            finish(Action::Result::ACQUISITION_FAILED, "RGB-D timing or optical frame mismatch"); return;
-          }
-          stamp=ob->stamp;
-          const auto camera_pose=tf2::transformToEigen(ob->camera_pose);
-          const Eigen::Isometry3d expected=states[edge.to]->getGlobalLinkTransform(camera_)*link_from_optical;
-          const double position_error=(camera_pose.translation()-expected.translation()).norm();
-          const double angle_error=Eigen::AngleAxisd(expected.linear().transpose()*camera_pose.linear()).angle();
-          if (position_error>0.02 || angle_error>0.05 || !seesTarget(camera_pose,stations[index].target)) {
-            finish(Action::Result::REGISTRATION_FAILED, "Measured optical view differs from plan or loses target: position_m=" +
-              std::to_string(position_error) + " angle_rad=" + std::to_string(angle_error)); return;
-          }
-          auto raw=kerfObservationCloud(*ob, range_);
+        ObservationCursor cursor(now().nanoseconds());
+        auto last_sample_stamp = now();
 
-          if (!raw || raw->empty()) { finish(Action::Result::ACQUISITION_FAILED, "Empty valid depth cloud"); return; }
-          for (auto point : raw->points) {
-            const Eigen::Vector3d world=camera_pose*point.getVector3fMap().cast<double>();
-            if (!motion::inKerfBand(cut_from_world*world,profile,band_,margin_)) continue;
-            if (cloud.size()>=5000000) {
-              finish(Action::Result::ACQUISITION_FAILED, "Five million point budget exceeded; reduce samples or band width"); return;
+        const auto index = station_ids[edge.to];
+
+        exception_code = Action::Result::ACQUISITION_FAILED;
+
+        const auto station_points_before = cloud.size();
+
+        uint32_t sample = 0;
+        uint32_t received = 0;
+        uint32_t rejected = 0;
+
+        while (sample < samples && rclcpp::ok() && !canceled()) {
+          // Re-establish stability before accepting a new
+          // observation if the platform is temporarily unsettled.
+          if (!stability_->stable()) {
+            if (!stability_->waitForStable(
+                    std::chrono::milliseconds(static_cast<int64_t>(stability_timeout_ * 1000.0)),
+                    canceled)) {
+              finish(canceled() ? Action::Result::CANCELLED : Action::Result::STABILITY_TIMEOUT,
+                     "Platform did not settle during acquisition: " + stability_->reason());
+
+              return;
             }
-            point.x=world.x(); point.y=world.y(); point.z=world.z(); cloud.push_back(point);
+
+            // Never reuse observations from before settling.
+            cursor = ObservationCursor(now().nanoseconds());
           }
-          if(infer_evidence_)
-            accumulateKerfEvidence(result->evidence,profile,*ob,world_from_cut,ray_config_,
-              [&](const std::string& feature,double s,RayEvidence kind,double measured,double entry,double exit,bool within) {
-                hb_robot_interfaces::msg::KerfRaySample ray;
-                ray.header.frame_id=frame_;ray.header.stamp=ob->stamp;ray.cut_id=goal->cut_id;
-                ray.feature_id=feature;ray.execution_version=goal->execution_version;ray.s=s;
-                ray.classification=static_cast<uint8_t>(kind);ray.measured_distance=measured;
-                ray.material_entry=entry;ray.material_exit=exit;ray.uncertainty=ray_config_.depth_uncertainty;
-                ray.within_kerf=within;rays_pub_->publish(ray);
-              });
+
+          const rclcpp::Time boundary(cursor.lowerBound(), get_clock()->get_clock_type());
+          auto ob = acquireFresh(capture, boundary, canceled);
+          if (!ob)
+            break;
+          ++received;
+          if (canceled())
+            break;
+          if (!ob->rgb || !ob->depth_to_rgb || !ob->rgb_camera_info) {
+            ++rejected;
+            // A malformed cached observation must not be retried forever.
+            (void)cursor.advance(ob->stamp.nanoseconds(), ob->stamp.nanoseconds(),
+                                 ob->stamp.nanoseconds());
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "[KERF RETRY] Incomplete RGB-D observation");
+            continue;
+          }
+          const rclcpp::Time depth_stamp(ob->depth_to_rgb->header.stamp);
+          const rclcpp::Time rgb_stamp(ob->rgb->header.stamp);
+          const bool fresh = cursor.advance(ob->stamp.nanoseconds(), rgb_stamp.nanoseconds(),
+                                            depth_stamp.nanoseconds());
+          const double depth_skew = std::abs((depth_stamp - ob->stamp).seconds());
+          const double rgb_depth_skew = std::abs((rgb_stamp - depth_stamp).seconds());
+          if (!fresh || depth_skew > 0.03 || rgb_depth_skew > 0.03) {
+            ++rejected;
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 2000,
+                "[KERF RETRY] RGB-D timing: new_images=%d depth_skew=%.4f rgb_depth_skew=%.4f",
+                int(fresh), depth_skew, rgb_depth_skew);
+            continue;
+          }
+          if (!stability_->stable()) {
+            ++rejected;
+            cursor = ObservationCursor(now().nanoseconds());
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "[KERF RETRY] Platform unstable at acquisition");
+            continue;
+          }
+
+          // A changed optical frame or calibration is not
+          // simply a dropped camera frame. The planned route
+          // depends on the original camera calibration.
+          if (ob->camera_pose.header.frame_id != frame_ ||
+              ob->camera_pose.child_frame_id != optical_frame ||
+              ob->rgb_camera_info->header.frame_id != optical_frame ||
+              ob->rgb_camera_info->k != info.k || ob->rgb_camera_info->width != info.width ||
+              ob->rgb_camera_info->height != info.height) {
+            finish(Action::Result::REGISTRATION_FAILED,
+                   "Optical frame or camera calibration changed");
+
+            return;
+          }
+
+          const auto camera_pose = tf2::transformToEigen(ob->camera_pose);
+
+          const Eigen::Isometry3d expected =
+              states[edge.to]->getGlobalLinkTransform(camera_) * link_from_optical;
+
+          if (!validRigidTransform(camera_pose)) {
+            finish(Action::Result::REGISTRATION_FAILED, "Invalid measured optical transformation");
+            return;
+          }
+
+          const double position_error = (camera_pose.translation() - expected.translation()).norm();
+
+          const double angle_error =
+              Eigen::AngleAxisd(expected.linear().transpose() * camera_pose.linear()).angle();
+
+          const bool target_visible = seesTarget(camera_pose, stations[index].target);
+          RCLCPP_INFO(get_logger(),
+                      "[KERF REGISTRATION] station=%zu position_error_mm=%.3f angle_error_deg=%.3f "
+                      "target_visible=%d observation_age_ms=%.1f",
+                      index + 1, position_error * 1000.0, angle_error * 180.0 / 3.141592653589793,
+                      int(target_visible), (now() - ob->stamp).seconds() * 1000.0);
+          if (!std::isfinite(position_error) || !std::isfinite(angle_error) ||
+              position_error > 0.02 || angle_error > 0.05 || !target_visible) {
+            finish(Action::Result::REGISTRATION_FAILED,
+                   "Measured optical view differs from plan: "
+                   "position_m=" +
+                       std::to_string(position_error) +
+                       " angle_rad=" + std::to_string(angle_error));
+
+            return;
+          }
+          auto raw = kerfObservationCloud(*ob, range_);
+          if (!raw || raw->empty()) {
+            ++rejected;
+
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "[KERF RETRY] Empty valid depth cloud");
+
+            continue;
+          }
+
+          if (canceled())
+            break;
+
+          for (auto point : raw->points) {
+            const Eigen::Vector3d world = camera_pose * point.getVector3fMap().cast<double>();
+            if (!motion::inKerfBand(cut_from_world * world, profile, band_, margin_))
+              continue;
+            if (cloud.size() >= 5000000) {
+              finish(Action::Result::ACQUISITION_FAILED,
+                     "Five million point budget exceeded; reduce samples or band width");
+              return;
+            }
+            point.x = world.x();
+            point.y = world.y();
+            point.z = world.z();
+            cloud.push_back(point);
+          }
+          if (infer_evidence_)
+            accumulateKerfEvidence(result->evidence, profile, *ob, world_from_cut, ray_config_,
+                                   [&](const std::string &feature, double s, RayEvidence kind,
+                                       double measured, double entry, double exit, bool within) {
+                                     hb_robot_interfaces::msg::KerfRaySample ray;
+                                     ray.header.frame_id = frame_;
+                                     ray.header.stamp = ob->stamp;
+                                     ray.cut_id = goal->cut_id;
+                                     ray.feature_id = feature;
+                                     ray.execution_version = goal->execution_version;
+                                     ray.s = s;
+                                     ray.classification = static_cast<uint8_t>(kind);
+                                     ray.measured_distance = measured;
+                                     ray.material_entry = entry;
+                                     ray.material_exit = exit;
+                                     ray.uncertainty = ray_config_.depth_uncertainty;
+                                     ray.within_kerf = within;
+                                     rays_pub_->publish(ray);
+                                   });
           hb_robot_interfaces::msg::KerfObservation record;
-          record.header.frame_id=frame_; record.header.stamp=ob->stamp;
-          record.geometry_version=goal->geometry_version;
-          record.pose_version=goal->pose_version;
-          record.execution_version=goal->execution_version;
-          record.cut_id=goal->cut_id; record.feature_name=stations[index].feature;
-          record.viewpoint_index=index; record.cut_pose=goal->estimate.pose;
-          record.camera_pose=ob->camera_pose; record.rgb=*ob->rgb;
-          record.depth=*ob->depth_to_rgb; record.camera_info=*ob->rgb_camera_info;
+          record.header.frame_id = frame_;
+          record.header.stamp = ob->stamp;
+          record.geometry_version = goal->geometry_version;
+          record.pose_version = goal->pose_version;
+          record.execution_version = goal->execution_version;
+          record.cut_id = goal->cut_id;
+          record.feature_name = stations[index].feature;
+          record.viewpoint_index = index;
+          record.cut_pose = goal->estimate.pose;
+          record.camera_pose = ob->camera_pose;
+          record.rgb = *ob->rgb;
+          record.depth = *ob->depth_to_rgb;
+          record.camera_info = *ob->rgb_camera_info;
           observation_pub_->publish(record);
-          auto feedback=std::make_shared<Action::Feedback>();
-          feedback->current_viewpoint=index; feedback->total_viewpoints=stations.size();
-          feedback->feature_name=stations[index].feature; feedback->current_pose=tf2::toMsg(camera_pose);
-          feedback->samples_acquired=sample+1; handle->publish_feedback(feedback);
+          auto feedback = std::make_shared<Action::Feedback>();
+          feedback->current_viewpoint = index;
+          feedback->total_viewpoints = stations.size();
+          feedback->feature_name = stations[index].feature;
+          feedback->current_pose = tf2::toMsg(camera_pose);
+          feedback->samples_acquired = sample + 1;
+          handle->publish_feedback(feedback);
+
+          last_sample_stamp = ob->stamp;
+          ++sample;
+
+          RCLCPP_INFO(get_logger(),
+                      "[KERF SAMPLE] feature=%s station=%zu/%zu "
+                      "accepted=%u/%u received=%u rejected=%u",
+                      stations[index].feature.c_str(), index + 1, stations.size(), sample,
+                      static_cast<unsigned>(samples), received, rejected);
         }
+
+        if (canceled() || !rclcpp::ok()) {
+          finish(Action::Result::CANCELLED, "Inspection interrupted during acquisition");
+
+          return;
+        }
+
+        if (sample != samples) {
+          finish(Action::Result::ACQUISITION_FAILED, "Station acquisition incomplete");
+
+          return;
+        }
+
         ++result->viewpoints_captured;
-        RCLCPP_INFO(get_logger(),"[KERF CAPTURE] feature=%s station=%zu/%zu samples=%u added_points=%zu total_points=%zu",
-          stations[index].feature.c_str(),index+1,stations.size(),samples,
-          cloud.size()-station_points_before,cloud.size());
-        sensor_msgs::msg::PointCloud2 msg; pcl::toROSMsg(cloud,msg);
-        msg.header.frame_id=frame_; msg.header.stamp=stamp; cloud_pub_->publish(msg);
+        RCLCPP_INFO(get_logger(),
+                    "[KERF CAPTURE] feature=%s station=%zu/%zu samples=%u added_points=%zu "
+                    "total_points=%zu",
+                    stations[index].feature.c_str(), index + 1, stations.size(), samples,
+                    cloud.size() - station_points_before, cloud.size());
+        sensor_msgs::msg::PointCloud2 msg;
+        pcl::toROSMsg(cloud, msg);
+        msg.header.frame_id = frame_;
+        msg.header.stamp = last_sample_stamp;
+        cloud_pub_->publish(msg);
       }
-      if (canceled()) { finish(Action::Result::CANCELLED, "Canceled"); return; }
-      if (cloud.empty()) { 
-        finish(Action::Result::ACQUISITION_FAILED, "No measured points in kerf band; missing depth is not free space"); 
-        return; 
+      if (canceled()) {
+        finish(Action::Result::CANCELLED, "Canceled");
+        return;
       }
-      finish(Action::Result::SUCCESS, "Post-cut acquisition complete; separation and bridging have not been evaluated");
-    } catch (const std::exception& e) { 
-      finish(exception_code,e.what());
+      if (result->viewpoints_captured != result->viewpoints_requested) {
+        finish(Action::Result::ACQUISITION_FAILED, "Not all required stations were captured");
+        return;
+      }
+      if (cloud.empty()) {
+        finish(Action::Result::ACQUISITION_FAILED,
+               "No measured points in kerf band; missing depth is not free space");
+        return;
+      }
+      finish(Action::Result::SUCCESS,
+             "Post-cut acquisition complete; separation and bridging have not been evaluated");
+    } catch (const std::exception &e) {
+      finish(exception_code, e.what());
     }
   }
+  double task_state_timeout_ms_;
+  double source_age_at_rx_ms_ = 0.0;
   std::mutex state_mutex_;
+  std::mutex motion_command_mutex_;
+  bool interrupted_ = false;   // state_mutex_
+  bool motion_active_ = false; // state_mutex_, including execute() goal-response wait
+  std::string interruption_reason_;
+  std::atomic<bool> shutting_down_{false};
+
   hb_robot::recovery::State state_;
   hb_robot::recovery::State expected_;
-  bool torch_off_=false;
-  std::chrono::steady_clock::time_point torch_received_{};
-  rclcpp::Subscription<hb_robot_interfaces::msg::TorchStatus>::SharedPtr torch_sub_;
+
   rclcpp::Publisher<hb_robot_interfaces::msg::KerfRaySample>::SharedPtr rays_pub_;
   rclcpp::Service<hb_robot_interfaces::srv::EvaluateKerf>::SharedPtr evaluate_service_;
   rclcpp::Service<hb_robot_interfaces::srv::GetCutDefinition>::SharedPtr definition_service_;
@@ -603,37 +1224,45 @@ class InspectCutServer : public rclcpp::Node {
   std::chrono::steady_clock::time_point received_{};
   rclcpp::Subscription<hb_robot::recovery::State>::SharedPtr state_sub_;
   rclcpp::TimerBase::SharedPtr state_timer_;
-  std::string group_,camera_,frame_,rgbd_topic_;
-  double spacing_,standoff_,band_,margin_,range_,timeout_,stability_timeout_,planning_timeout_;
+  std::string group_, camera_, frame_, rgbd_topic_;
+  double spacing_, standoff_, band_, margin_, range_, timeout_, stability_timeout_,
+      planning_timeout_;
   std::size_t max_view_solutions_;
   motion::ExplorationRequest view_request_;
   motion::TransitPlannerOptions transit_options_;
   planning_scene_monitor::PlanningSceneMonitorPtr scene_monitor_;
-  bool preview_,infer_evidence_;
+  bool preview_, infer_evidence_;
   KerfRayConfig ray_config_;
   std::atomic<bool> busy_{false};
   std::thread worker_;
   std::unique_ptr<MoveGroup> move_;
   std::unique_ptr<tf2_ros::Buffer> tf_;
   std::unique_ptr<tf2_ros::TransformListener> listener_;
-  std::unique_ptr<hb_robot_skills::PlatformSupervisionClient>
-    stability_;
+  std::unique_ptr<hb_robot_skills::PlatformSupervisionClient> stability_;
   rclcpp_action::Server<Action>::SharedPtr server_;
+  std::unique_ptr<hb_perception::CroppedRGBDAcquisition> rgbd_acquisition_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr poses_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr link_poses_pub_;
   rclcpp::Publisher<hb_robot_interfaces::msg::KerfObservation>::SharedPtr observation_pub_;
 };
 } // namespace hb_robot_skills
-int main(int argc,char** argv) {
-  rclcpp::init(argc,argv);
-  auto node=std::make_shared<hb_robot_skills::InspectCutServer>();
+int main(int argc, char **argv) {
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<hb_robot_skills::InspectCutServer>();
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 2);
   executor.add_node(node);
   std::thread spin([&] { executor.spin(); });
-  try { node->initialize(); spin.join(); }
-  catch (const std::exception& e) {
-    RCLCPP_ERROR(node->get_logger(),"%s",e.what());
-    rclcpp::shutdown(); if(spin.joinable()) spin.join(); return 1;
+  try {
+    node->initialize();
+    spin.join();
+  } catch (const std::exception &e) {
+    RCLCPP_ERROR(node->get_logger(), "%s", e.what());
+    rclcpp::shutdown();
+    if (spin.joinable())
+      spin.join();
+    return 1;
   }
-  rclcpp::shutdown(); return 0;
+  rclcpp::shutdown();
+  return 0;
 }

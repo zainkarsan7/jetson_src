@@ -391,7 +391,7 @@ std::atomic<HeightPhase> height_phase_{HeightPhase::IDLE};
 std::atomic<uint32_t> height_cycle_session_{0};
 std::atomic<bool> height_stop_sent_{false}, height_tracking_expected_{false};
 bool height_use_tracking_ = false;
-int height_status_timeout_ms_ = 500;
+int height_status_timeout_ms_ = 750;
 int height_prepare_timeout_ms_ = 5000;
 int height_search_timeout_ms_ = 8000;
 int height_home_timeout_ms_ = 20000;

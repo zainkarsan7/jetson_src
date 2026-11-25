@@ -582,6 +582,8 @@ public:
     max_state_age_ = declare_parameter("max_state_age_s", 0.5);
     min_scans_ = declare_parameter("min_voxel_scans", 2);
     scan_lenience_ = declare_parameter("scan_lenience", 2);
+    
+    estimated_hz_ = declare_parameter("estimated_hz", 10.0);
 
     debug_invalid_scene_ =
       declare_parameter("debug_allow_invalid_scene", false);
@@ -903,7 +905,7 @@ private:
 
     // At 12 Hz this permits approximately two missing scans.
     const std::size_t required_count = static_cast<std::size_t>(
-      std::max({5, min_scans_, static_cast<int>(std::floor(duration_ * 12.0)) - scan_lenience_}));
+      std::max({5, min_scans_, static_cast<int>(std::floor(duration_ * estimated_hz_)) - scan_lenience_}));
 
     const double required_span = std::max(0.33, duration_ - 0.20);
 
@@ -1473,6 +1475,7 @@ private:
   double voxel_size_;
   double duration_;
   double max_state_age_;
+  double estimated_hz_;
   int min_scans_;
   int scan_lenience_;
   bool debug_invalid_scene_;

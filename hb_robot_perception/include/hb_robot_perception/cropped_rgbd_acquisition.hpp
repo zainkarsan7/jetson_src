@@ -2,6 +2,7 @@
 #pragma once
 
 #include <chrono>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <memory>
@@ -59,6 +60,16 @@ public:
 
     std::optional<Observation> latest() const;
 
+    struct Diagnostics {
+        std::string topic;
+        std::size_t matched_publishers=0, received=0, invalid=0, resolved=0;
+        std::size_t tf_failures=0, expired=0, superseded=0, executor_ticks=0;
+        std::size_t middleware_arrivals=0;
+        bool middleware_counter_available=false;
+    };
+    // Safe to read from a waiting action worker while the receiver spins.
+    Diagnostics diagnostics() const;
+
     void logCaptureFailure(
         const rclcpp::Time& boundary);
 
@@ -101,12 +112,17 @@ private:
     // Accessed only by the acquisition callback group.
     std::optional<PendingFrame> pending_;
 
-    std::size_t received_count_{0};
-    std::size_t invalid_count_{0};
-    std::size_t resolved_count_{0};
-    std::size_t tf_failure_count_{0};
-    std::size_t expired_count_{0};
-    std::size_t superseded_count_{0};
+    std::atomic<std::size_t> received_count_{0};
+    std::atomic<std::size_t> invalid_count_{0};
+    std::atomic<std::size_t> resolved_count_{0};
+    std::atomic<std::size_t> tf_failure_count_{0};
+    std::atomic<std::size_t> expired_count_{0};
+    std::atomic<std::size_t> superseded_count_{0};
+    std::atomic<std::size_t> executor_ticks_{0};
+    // The middleware callback captures this counter, never this object.
+    std::shared_ptr<std::atomic<std::size_t>> middleware_arrivals_ =
+        std::make_shared<std::atomic<std::size_t>>(0);
+    bool middleware_counter_available_=false;
 
     mutable std::mutex observation_mutex_;
     std::condition_variable observation_cv_;

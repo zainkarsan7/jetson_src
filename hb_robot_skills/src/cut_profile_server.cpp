@@ -1627,7 +1627,7 @@ void CutProfileServer::initializeHeightInterface()
         if (!has_parameter(key)) declare_parameter<int>(key, fallback);
         return static_cast<int>(get_parameter(key).as_int());
     };
-    height_status_timeout_ms_ = integer("height.status_timeout_ms", 500);
+    height_status_timeout_ms_ = integer("height.status_timeout_ms", 750);
     height_prepare_timeout_ms_ = integer("height.prepare_timeout_ms", 5000);
     height_search_timeout_ms_ = integer("height.search_timeout_ms", 8000);
     height_home_timeout_ms_ = integer("height.home_timeout_ms", 20000);

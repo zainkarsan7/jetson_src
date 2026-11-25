@@ -39,17 +39,7 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
 {
     if (!node_ || !tf_buffer_ ||
         target_frame_.empty() || rgbd_topic.empty())
-    {   
-        RCLCPP_INFO(
-        node_->get_logger(),
-        "Cropped RGBD acquisition initialized: "
-        "mode=%s topic=%s target=%s",
-        mode_ == Mode::CaptureWindow
-            ? "capture_window"
-            : "continuous",
-        rgbd_topic.c_str(),
-        target_frame_.c_str());
-
+    {
         throw std::invalid_argument(
             "Invalid cropped RGBD acquisition configuration");
     }
@@ -73,9 +63,6 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
             rclcpp::executors::SingleThreadedExecutor>(
                 executor_options);
 
-        window_executor_->add_callback_group(
-            callback_group_,
-            node_->get_node_base_interface());
     }
 
     // Exactly one image subscription.
@@ -89,6 +76,17 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
         },
         options);
 
+    try {
+        rgbd_sub_->set_on_new_message_callback(
+            [counter=middleware_arrivals_](std::size_t count) {
+                counter->fetch_add(count,std::memory_order_relaxed);
+            });
+        middleware_counter_available_=true;
+    } catch (const std::exception& error) {
+        // Some middleware implementations do not expose this optional event.
+        RCLCPP_WARN(node_->get_logger(),"RGBD middleware arrival counter unavailable: %s",error.what());
+    }
+
     retry_timer_ = node_->create_wall_timer(
         50ms,
         [this]()
@@ -100,9 +98,10 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
     retry_timer_->cancel();
 
     diagnostics_timer_ = node_->create_wall_timer(
-        5000ms,
+        1000ms,
         [this]()
         {
+            ++executor_ticks_;
             logDiagnostics();
         },
         callback_group_);
@@ -111,6 +110,9 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
     // can block on an action worker without starving images.
     if (window_executor_)
     {
+        // Register the group only after all of its entities exist.
+        window_executor_->add_callback_group(
+            callback_group_,node_->get_node_base_interface());
         window_thread_ = std::thread(
             [this]()
             {
@@ -125,7 +127,7 @@ CroppedRGBDAcquisition::CroppedRGBDAcquisition(
         mode_ == Mode::CaptureWindow
             ? "capture_window"
             : "continuous",
-        rgbd_topic.c_str(),
+        rgbd_sub_->get_topic_name(),
         target_frame_.c_str());
 }
 
@@ -162,12 +164,12 @@ CroppedRGBDAcquisition::~CroppedRGBDAcquisition()
         "Cropped RGBD stopped: "
         "received=%zu invalid=%zu resolved=%zu "
         "tf_failures=%zu expired=%zu superseded=%zu",
-        received_count_,
-        invalid_count_,
-        resolved_count_,
-        tf_failure_count_,
-        expired_count_,
-        superseded_count_);
+        received_count_.load(),
+        invalid_count_.load(),
+        resolved_count_.load(),
+        tf_failure_count_.load(),
+        expired_count_.load(),
+        superseded_count_.load());
 }
 
 bool CroppedRGBDAcquisition::validFrame(
@@ -450,6 +452,14 @@ CroppedRGBDAcquisition::latest() const
 void CroppedRGBDAcquisition::logCaptureFailure(
     const rclcpp::Time& boundary)
 {
+    const auto d=diagnostics();
+    RCLCPP_WARN(node_->get_logger(),
+        "[RGBD RECEIVER] topic=%s matched_publishers=%zu middleware_counter=%d "
+        "arrivals=%zu callbacks=%zu invalid=%zu resolved=%zu tf_failures=%zu "
+        "expired=%zu superseded=%zu executor_ticks=%zu",
+        d.topic.c_str(),d.matched_publishers,int(d.middleware_counter_available),
+        d.middleware_arrivals,d.received,d.invalid,d.resolved,d.tf_failures,
+        d.expired,d.superseded,d.executor_ticks);
     const auto observation = latest();
 
     if (!observation)
@@ -494,12 +504,26 @@ void CroppedRGBDAcquisition::logDiagnostics()
         "Cropped RGBD: "
         "received=%zu invalid=%zu resolved=%zu "
         "tf_failures=%zu expired=%zu superseded=%zu",
-        received_count_,
-        invalid_count_,
-        resolved_count_,
-        tf_failure_count_,
-        expired_count_,
-        superseded_count_);
+        received_count_.load(),
+        invalid_count_.load(),
+        resolved_count_.load(),
+        tf_failure_count_.load(),
+        expired_count_.load(),
+        superseded_count_.load());
+}
+
+CroppedRGBDAcquisition::Diagnostics CroppedRGBDAcquisition::diagnostics() const
+{
+    Diagnostics d;
+    d.topic=rgbd_sub_->get_topic_name();
+    d.matched_publishers=rgbd_sub_->get_publisher_count();
+    d.received=received_count_.load();d.invalid=invalid_count_.load();
+    d.resolved=resolved_count_.load();d.tf_failures=tf_failure_count_.load();
+    d.expired=expired_count_.load();d.superseded=superseded_count_.load();
+    d.executor_ticks=executor_ticks_.load();
+    d.middleware_arrivals=middleware_arrivals_->load();
+    d.middleware_counter_available=middleware_counter_available_;
+    return d;
 }
 
 }  // namespace hb_perception
