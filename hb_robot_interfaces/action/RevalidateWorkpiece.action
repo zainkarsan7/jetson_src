@@ -1,4 +1,9 @@
 uint64 expected_pose_version
+# Archived data is registration input only. Fresh RGB-D registration and an
+# INITIAL TaskState commit are required; archived timestamps are not authority.
+bool use_archived_reference
+WorkpieceReference archived_reference
+moveit_msgs/CollisionObject archived_collision
 ---
 bool localized
 ProfileEstimate estimate

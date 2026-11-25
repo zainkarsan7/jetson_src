@@ -1,4 +1,6 @@
 
+#include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -8,12 +10,14 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QString>
 #include <QTextEdit>
 #include <QTimer>
@@ -22,6 +26,8 @@
 
 #include <hb_robot_interfaces/action/return_to_inspection_home.hpp>
 #include <hb_robot_interfaces/msg/task_state.hpp>
+#include <hb_robot_interfaces/msg/task_session_status.hpp>
+#include <zk_gui/task_session_controls.hpp>
 #include <hb_robot_interfaces/msg/torch_status.hpp>
 #include <hb_robot_interfaces/srv/approve_motion.hpp>
 #include <hb_robot_interfaces/srv/clear_torch_fault.hpp>
@@ -1090,6 +1096,130 @@ private:
           "No fault clearance requested")};
 };
 
+// Session commands are asynchronous. ROS callbacks only update the shared
+// snapshot; Qt widgets are touched exclusively by the GUI timer/thread.
+class TaskSessionRow : public QGroupBox {
+  using Status=hb_robot_interfaces::msg::TaskSessionStatus;
+  struct Snapshot {
+    std::mutex mutex;
+    std::optional<Status> status;
+    Clock::time_point received{};
+  };
+  struct Command {
+    std::string name;
+    QString label;
+    QPushButton* button;
+    rclcpp::Client<Trigger>::SharedPtr client;
+    bool height_operation=false;
+    rclcpp::Client<Trigger>::SharedFuture pending;
+    int64_t request_id=0;
+    Clock::time_point deadline{};
+  };
+public:
+  explicit TaskSessionRow(const rclcpp::Node::SharedPtr& node)
+      : QGroupBox("Task containment and re-entry"), snapshot_(std::make_shared<Snapshot>()) {
+    auto* layout=new QVBoxLayout(this);
+    state_=new QLabel("Waiting for task session");state_->setWordWrap(true);layout->addWidget(state_);
+    ledger_=new QTextEdit;ledger_->setReadOnly(true);ledger_->setMinimumHeight(100);layout->addWidget(ledger_);
+    auto* grid=new QGridLayout;layout->addLayout(grid);
+    const auto add=[&](const char* name,const QString& label,const char* endpoint,bool height=false) {
+      auto* button=new QPushButton(label);
+      button->setToolTip(QString::fromUtf8(endpoint));
+      const auto i=commands_.size();
+      Command command;
+      command.name=name;command.label=label;command.button=button;
+      command.client=node->create_client<Trigger>(endpoint);command.height_operation=height;
+      commands_.push_back(std::move(command));
+      grid->addWidget(button,static_cast<int>(i/2),static_cast<int>(i%2));
+      connect(button,&QPushButton::clicked,this,[this,i]{send(i);});
+    };
+    add("resume","Resume checkpoint","/task_session/resume");
+    add("retry_containment","Retry containment","/task_session/retry_containment");
+    add("recover","Recover interrupted cut","/task_session/recover");
+    add("inspect","Retry feature inspection","/task_session/inspect");
+    add("defer_feature","Defer feature and continue","/task_session/defer_feature");
+    add("cancel","Cancel task and contain","/task_session/cancel");
+    add("reset_height","Reset height fault + home","/cut_profile/reset_height_and_home",true);
+    add("readiness","Check recovery readiness","/cut_profile/recovery_ready",true);
+    result_=new QLabel;result_->setWordWrap(true);layout->addWidget(result_);
+    const auto snapshot=snapshot_;
+    sub_=node->create_subscription<Status>("/task_session/status",rclcpp::QoS(1).reliable().transient_local(),
+      [snapshot,node](Status::ConstSharedPtr msg) {
+        const double age=(node->now()-rclcpp::Time(msg->header.stamp)).seconds();
+        if (!std::isfinite(age) || age<-.005 || age>3.0) return;
+        std::lock_guard<std::mutex> lock(snapshot->mutex);
+        snapshot->status=*msg;
+        snapshot->received=Clock::now()-std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(std::max(0.0,age)));
+      });
+    auto* timer=new QTimer(this);
+    connect(timer,&QTimer::timeout,this,[this]{refresh();});timer->start(200);refresh();
+  }
+  ~TaskSessionRow() override {
+    for(auto& command:commands_)
+      if(command.pending.valid()) command.client->remove_pending_request(command.request_id);
+  }
+private:
+  bool enabled(const Command& command) const {
+    if (command.pending.valid() || !command.client->service_is_ready()) return false;
+    // A slow reset/home reply must never disable the operator's cancel button.
+    if(command.name!="cancel" && std::any_of(commands_.begin(),commands_.end(),
+        [](const auto& c){return c.pending.valid();})) return false;
+    // Bench reset/home owns its own fresh-feedback and busy checks server-side.
+    if (command.height_operation) return true;
+    std::lock_guard<std::mutex> lock(snapshot_->mutex);
+    return snapshot_->status && taskCommandAvailable(command.name,snapshot_->status->outcome,
+        Clock::now()-snapshot_->received<3s,snapshot_->status->contained);
+  }
+  void send(std::size_t i) {
+    auto& command=commands_.at(i);
+    if (!enabled(command)) {refresh();return;}
+    try {
+      auto sent=command.client->async_send_request(std::make_shared<Trigger::Request>());
+      command.request_id=sent.request_id;command.pending=sent.share();
+      command.deadline=Clock::now()+(command.name=="reset_height"?60s:5s);
+      result_->setText(command.label+": request sent");
+    } catch (const std::exception& e) {result_->setText(QString("Request failed: ")+e.what());}
+    refresh();
+  }
+  void refresh() {
+    for(auto& command:commands_) {
+      if(!command.pending.valid()) continue;
+      if (command.pending.wait_for(0s)==std::future_status::ready) {
+        try {
+          auto reply=command.pending.get();command.pending={};
+          result_->setText(command.label+(reply && reply->success?": ":": declined: ")+
+              (reply?QString::fromStdString(reply->message):QString("Empty reply")));
+        } catch (const std::exception& e) {command.pending={};result_->setText(QString("Reply failed: ")+e.what());}
+      } else if (Clock::now()>=command.deadline) {
+        command.client->remove_pending_request(command.request_id);command.pending={};
+        result_->setText(command.label+": no reply; request may still be active. Check status before retrying.");
+      }
+    }
+    std::optional<Status> status;bool fresh=false;
+    {std::lock_guard<std::mutex> lock(snapshot_->mutex);status=snapshot_->status;fresh=Clock::now()-snapshot_->received<3s;}
+    if (status) {
+      const auto& s=*status;
+      state_->setText(QString::fromStdString(s.outcome)+(fresh?"":" (status stale)")+
+          "\n"+QString::fromStdString(s.reason));
+      QString ledger;
+      for (std::size_t i=0;i<s.feature_ids.size();++i) {
+        ledger+=QString::fromStdString(s.feature_ids[i])+": "+
+          (i<s.feature_states.size()?QString::fromStdString(s.feature_states[i]):QString("unknown"))+"\n";
+      }
+      ledger_->setPlainText(ledger);
+      const auto feature=QString::fromStdString(s.recovery_feature);
+      for (auto& c:commands_)
+        if(c.name=="defer_feature") c.button->setText(feature.isEmpty()?c.label:"Defer "+feature+" and continue");
+    } else state_->setText("No task session status; task commands unavailable");
+    for(auto& command:commands_) command.button->setEnabled(enabled(command));
+  }
+  std::shared_ptr<Snapshot> snapshot_;
+  rclcpp::Subscription<Status>::SharedPtr sub_;
+  std::vector<Command> commands_;
+  QLabel *state_=nullptr,*result_=nullptr;
+  QTextEdit* ledger_=nullptr;
+};
+
 }  // namespace
 
 
@@ -1115,7 +1245,14 @@ public:
     auto node =
         abstraction->get_raw_node();
 
-    auto* layout = new QVBoxLayout(this);
+    auto* outer = new QVBoxLayout(this);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    auto* content = new QWidget;
+    auto* layout = new QVBoxLayout(content);
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
+    layout->addWidget(new TaskSessionRow(node));
 
     // Return to inspection home.
     layout->addWidget(
@@ -1132,7 +1269,7 @@ public:
     layout->addWidget(
         new ApprovalRow(
             *node,
-            "Cut motion",
+            "Cut / recovery motion",
             "approve_cut_motion"));
 
     // Torch and process fault recovery.

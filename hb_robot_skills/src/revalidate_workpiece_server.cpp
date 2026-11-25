@@ -168,22 +168,11 @@ struct StoredWorkpiece {
         Eigen::Isometry3d::Identity();
 };
 
-std::optional<StoredWorkpiece> lookupWorkpiece(
-    PlanningSceneInterface& scene,
+std::optional<StoredWorkpiece> decodeWorkpiece(
+    const CollisionObject& object,
     const std::string& frame)
 {
-    const auto objects =
-        scene.getObjects({kWorkpieceId});
-
-    const auto it =
-        objects.find(kWorkpieceId);
-
-    if (it == objects.end())
-        return std::nullopt;
-
-    const auto& object = it->second;
-
-    if (object.header.frame_id != frame ||
+    if (object.id != kWorkpieceId || object.header.frame_id != frame ||
         !wp::validMesh(object))
     {
         return std::nullopt;
@@ -211,6 +200,12 @@ std::optional<StoredWorkpiece> lookupWorkpiece(
     }
 
     return stored;
+}
+
+std::optional<StoredWorkpiece> lookupWorkpiece(PlanningSceneInterface& scene,const std::string& frame) {
+    const auto objects=scene.getObjects({kWorkpieceId});
+    const auto it=objects.find(kWorkpieceId);
+    return it==objects.end()?std::nullopt:decodeWorkpiece(it->second,frame);
 }
 
 double maximumMeshDisplacement(
@@ -696,6 +691,11 @@ public:
     }
 
 private:
+    bool liveState(State& state) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state=state_;
+        return state_received_!=Clock::time_point{} && Clock::now()-state_received_<500ms;
+    }
     void publishCloud(
         const Cloud& cloud,
         const rclcpp::Publisher<
@@ -846,9 +846,12 @@ private:
             Reference reference;
             State initial_state;
 
-            if (!getSnapshot(
+            const bool archived=goal->use_archived_reference;
+            if(archived) reference=goal->archived_reference;
+
+            if (!(archived?liveState(initial_state):getSnapshot(
                     reference,
-                    initial_state))
+                    initial_state)))
             {
                 finish(
                     "No fresh TaskState or accepted "
@@ -880,7 +883,26 @@ private:
             const std::string expected_id =
                 wp::referenceId(reference);
 
-            if (!referenceCurrent(
+            const auto snapshot_current=[&](uint64_t pose,const std::string& id,uint64_t geometry,uint64_t scene_version) {
+                if(!archived) return this->referenceCurrent(pose,id,geometry,scene_version);
+                State current;
+                return liveState(current) && hb_robot::recovery::sameVersions(current,initial_state) &&
+                    current.scene_id==initial_state.scene_id && current.pose_version==pose &&
+                    !current.motion_fault_active && !current.process_fault_active;
+            };
+            const auto snapshot_authorized=[&](uint64_t pose,const std::string& id,uint64_t geometry,uint64_t scene_version) {
+                State current;
+                return snapshot_current(pose,id,geometry,scene_version) && liveState(current) &&
+                    current.execution_version==initial_state.execution_version &&
+                    current.supervision_valid && current.imu_stable && supervision_->stable();
+            };
+
+            std::string archive_error;
+            if(archived && !wp::consistent(goal->archived_collision,reference,archive_error)) {
+                finish("Archived mesh/reference mismatch: "+archive_error);return;
+            }
+
+            if (!snapshot_current(
                     expected_pose,
                     expected_id,
                     expected_geometry,
@@ -895,7 +917,7 @@ private:
             PlanningSceneInterface scene;
 
             const auto stored =
-                lookupWorkpiece(scene, frame_);
+                archived?decodeWorkpiece(goal->archived_collision,frame_):lookupWorkpiece(scene, frame_);
 
             if (!stored)
             {
@@ -947,7 +969,7 @@ private:
                    Clock::now() <
                        supervision_deadline)
             {
-                if (!referenceCurrent(
+                if (!snapshot_current(
                         expected_pose,
                         expected_id,
                         expected_geometry,
@@ -959,7 +981,7 @@ private:
                     return;
                 }
 
-                if (authorized(
+                if (snapshot_authorized(
                         expected_pose,
                         expected_id,
                         expected_geometry,
@@ -977,7 +999,7 @@ private:
                 return;
             }
 
-            if (!authorized(
+            if (!snapshot_authorized(
                     expected_pose,
                     expected_id,
                     expected_geometry,
@@ -1008,7 +1030,7 @@ private:
                    Clock::now() <
                        acquisition_deadline)
             {
-                if (!authorized(
+                if (!snapshot_authorized(
                         expected_pose,
                         expected_id,
                         expected_geometry,
@@ -1043,7 +1065,7 @@ private:
                 return;
             }
 
-            if (!authorized(
+            if (!snapshot_authorized(
                     expected_pose,
                     expected_id,
                     expected_geometry,
@@ -1199,7 +1221,7 @@ private:
                  ++i)
             {
                 if (canceled() ||
-                    !authorized(
+                    !snapshot_authorized(
                         expected_pose,
                         expected_id,
                         expected_geometry,
@@ -1433,7 +1455,7 @@ private:
             for (double shift : {-0.015, 0.015})
             {
                 if (canceled() ||
-                    !authorized(
+                    !snapshot_authorized(
                         expected_pose,
                         expected_id,
                         expected_geometry,
@@ -1549,7 +1571,7 @@ private:
                 unchanged_tolerance_m_ * 1000.0);
 
             if (canceled() ||
-                !authorized(
+                !snapshot_authorized(
                     expected_pose,
                     expected_id,
                     expected_geometry,
@@ -1563,7 +1585,7 @@ private:
             // Recheck the physical MoveIt object
             // immediately before proposing a commit.
             const auto current_workpiece =
-                lookupWorkpiece(scene, frame_);
+                archived?stored:lookupWorkpiece(scene, frame_);
 
             if (!current_workpiece ||
                 !wp::sameGeometry(
@@ -1583,13 +1605,14 @@ private:
             Reference latest_reference;
             State before_commit;
 
-            if (!getSnapshot(
+            if (!(archived?liveState(before_commit):getSnapshot(
                     latest_reference,
-                    before_commit) ||
+                    before_commit)) ||
+                !hb_robot::recovery::sameVersions(before_commit,initial_state) ||
+                before_commit.execution_version!=initial_state.execution_version ||
                 before_commit.scene_version !=
                     initial_state.scene_version ||
-                wp::referenceId(latest_reference) !=
-                    expected_id)
+                (!archived && wp::referenceId(latest_reference) != expected_id))
             {
                 finish(
                     "Scene or reference changed "
@@ -1652,7 +1675,7 @@ private:
             reference.cloud.header.stamp =
                 observation->stamp;
 
-            reference.relocalized = true;
+            reference.relocalized = !archived;
 
             reference.expected_pose_version =
                 expected_pose;
@@ -1674,7 +1697,7 @@ private:
                 std::make_shared<Commit::Request>();
 
             request->mode =
-                Commit::Request::RECOVERY;
+                archived?Commit::Request::INITIAL:Commit::Request::RECOVERY;
 
             request->expected_geometry_version =
                 initial_state.geometry_version;
@@ -1873,7 +1896,7 @@ int main(int argc, char** argv)
     auto node =
         std::make_shared<RevalidateServer>();
 
-    rclcpp::executors::MultiThreadedExecutor executor;
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 2);
 
     executor.add_node(node);
     executor.spin();

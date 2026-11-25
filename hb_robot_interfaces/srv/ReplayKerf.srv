@@ -1,0 +1,8 @@
+# Offline inference only. Empty prior initializes one feature's evidence bins.
+string profile_name
+KerfObservation observation
+KerfEvidence prior
+---
+bool success
+string message
+KerfEvidence evidence

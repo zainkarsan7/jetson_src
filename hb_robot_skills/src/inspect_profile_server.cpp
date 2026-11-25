@@ -144,7 +144,7 @@ InspectProfileServer::InspectProfileServer(
             "inspection_pos_tol", 0.03);
     inspection_ang_tol_ =
         declare_parameter<double>(
-            "inspection_anf_tol_", 0.1);
+            "inspection_ang_tol_", 0.1);
 
 
     if (planning_time_ <= 0.0 ||

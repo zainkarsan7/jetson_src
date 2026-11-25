@@ -1,4 +1,6 @@
+#include "hb_robot_skills/motion/planning_budget.hpp"
 #include "hb_robot_skills/motion/cut_planner.hpp"
+#include "hb_robot_skills/motion/named_cut_posture.hpp"
 #include "moveit/kinematic_constraints/kinematic_constraint.h"
 #include "moveit/kinematic_constraints/utils.h"
 #include <Eigen/Geometry>
@@ -7,6 +9,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include "hb_robot_skills/motion/cut_process_trajectory_generator.hpp"
 
@@ -22,7 +25,7 @@ CutPlanner::CutPlanner(
             planning_group_(std::move(planning_group)),
             plasma_link_(std::move(plasma_link)), options_(options)
         {
-           if (!options_.max_pose_samples || !options_.feasible_samples ||
+           if (!options_.max_pose_samples || !options_.direction_seed_pose_samples || !options_.feasible_samples ||
                options_.feasible_samples > options_.max_pose_samples ||
                !options_.refinement_iterations || !options_.waypoint_beam_width ||
                options_.waypoint_beam_width > options_.max_pose_samples ||
@@ -282,6 +285,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
     moveit::core::RobotState current(candidate);
     auto collision = collision_state;
     for (std::size_t iter = 0; iter < options_.refinement_iterations; ++iter) {
+        PlanningBudgetScope::check("geometry collision repair");
         if (!collision.collision && admissible(current)) { candidate = current; return true; }
         auto contacts = extractWorkpieceContacts(collision);
         if (contacts.empty()) return false;
@@ -293,7 +297,7 @@ bool CutPlanner::refineCollision(moveit::core::RobotState& candidate,
             // original Cartesian target, irrespective of accumulated iterations.
             pose.translation() = nominal_tcp_pose.translation();
             const std::vector<double> limits(joint_model_group_->getVariableCount(), 0.2);
-            if (!seed.setFromIK(joint_model_group_, pose, plasma_link_, limits, options_.ik_timeout_s)) return;
+            if (!seed.setFromIK(joint_model_group_, pose, plasma_link_, limits, PlanningBudgetScope::slice(options_.ik_timeout_s, "geometry repair IK"))) return;
             seed.update();
             if (!admissible(seed)) return;
             const auto result = checkCol(seed, p_scene);
@@ -382,6 +386,7 @@ std::vector<moveit::core::RobotStatePtr> CutPlanner::sampleConstraints(
     Eigen::Isometry3d pose = nominal_pose;
 
     for (std::size_t i=0; i<budget; ++i) {
+        PlanningBudgetScope::check("geometry IK sampling");
 
         ////////////////////////////////////////// 
         //try a different sampling strategy here 
@@ -478,8 +483,8 @@ std::vector<moveit::core::RobotStatePtr> CutPlanner::sampleConstraints(
             };
         ++attempted;
         const std::vector<double> limits(joint_model_group_->getVariableCount(),options_.ik_consistency_rad);
-        bool solved=explore ? trial.setFromIK(joint_model_group_,pose,plasma_link_,options_.ik_timeout_s,valid) :
-            trial.setFromIK(joint_model_group_,pose,plasma_link_,limits,options_.ik_timeout_s,valid);
+        bool solved=explore ? trial.setFromIK(joint_model_group_,pose,plasma_link_,PlanningBudgetScope::slice(options_.ik_timeout_s, "geometry IK"),valid) :
+            trial.setFromIK(joint_model_group_,pose,plasma_link_,limits,PlanningBudgetScope::slice(options_.ik_timeout_s, "geometry IK"),valid);
         if (!solved) {
             ++ik_failed;
             // Repair only the shallowest admissible contact, after IK has tried
@@ -564,11 +569,47 @@ bool CutPlanner::solveSegmentConstraints(CutSegment& segment,
     const std::array<const Eigen::Isometry3d*,4> poses={
         &segment.approach_pose,&segment.start_pose,&segment.end_pose,&segment.retract_pose};
     const std::array<const char*,4> names={"approach","start","end","retract"};
-    auto chain=searchConstraintChain(seed_state,joint_model_group_,options_.waypoint_beam_width,
-        options_.max_pose_samples,[&](std::size_t phase,const auto& reference,std::size_t budget) {
+    const auto solve=[&](const moveit::core::RobotState& seed,std::size_t pose_budget) {
+      return searchConstraintChain(seed,joint_model_group_,options_.waypoint_beam_width,
+        pose_budget,[&](std::size_t phase,const auto& reference,std::size_t budget) {
             std::cout << "[CUT GEOMETRY] " << segment.name << '/' << names[phase] << '\n';
             return sampleConstraints(*constraints[phase],*poses[phase],reference,p_scene,budget);
         });
+    };
+    segment.direction_solutions.clear();
+    std::set<std::string> tried;
+    for (const auto& name:options_.direction_seed_states) {
+        PlanningBudgetScope::check("SRDF cut direction sampling");
+        if (name.empty() || !tried.insert(name).second) continue;
+        auto home=namedCutPosture(seed_state,joint_model_group_,name);
+        if (!home) {
+            std::cout << "[CUT SEED] feature=" << segment.name << " seed=" << name
+                      << " skipped: missing/incomplete/out-of-bounds SRDF group state\n";
+            continue;
+        }
+        if (!p_scene || p_scene->isStateColliding(*home,planning_group_)) {
+            std::cout << "[CUT SEED] feature=" << segment.name << " seed=" << name
+                      << " skipped: posture outside bounds or in collision\n";
+            continue;
+        }
+        const auto chain=solve(*home,std::min(options_.max_pose_samples,options_.direction_seed_pose_samples));
+        std::cout << "[CUT SEED] feature=" << segment.name << " seed=" << name
+                  << " geometry=" << bool(chain) << '\n';
+        if (chain) segment.direction_solutions.push_back(CutDirectionSolution{name,home,*chain});
+    }
+    // Every available named posture gets a bounded attempt before selecting
+    // geometry. Preserve successful branches for process and transit planning.
+    std::optional<ConstraintChain> chain;
+    if (!segment.direction_solutions.empty()) {
+        std::stable_sort(segment.direction_solutions.begin(),segment.direction_solutions.end(),[&](const auto& a,const auto& b) {
+            return dq_cost(*a.home,*a.chain.front())+dq_cost(*a.chain.back(),*a.home) <
+                   dq_cost(*b.home,*b.chain.front())+dq_cost(*b.chain.back(),*b.home);
+        });
+        chain=segment.direction_solutions.front().chain;
+    } else {
+        std::cout << "[CUT SEED] feature=" << segment.name << " falling back to original reference sampling\n";
+        chain=solve(seed_state,options_.max_pose_samples);
+    }
     if (!chain) {
         std::cout << "[CUT GEOMETRY] no complete constraint chain for " << segment.name << '\n';
         return false;

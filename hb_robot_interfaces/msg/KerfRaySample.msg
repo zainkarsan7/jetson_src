@@ -1,0 +1,14 @@
+std_msgs/Header header
+string cut_id
+string feature_id
+uint64 execution_version
+float64 s
+uint8 UNKNOWN=0
+uint8 OPEN=1
+uint8 MATERIAL=2
+uint8 classification
+float64 measured_distance
+float64 material_entry
+float64 material_exit
+float64 uncertainty
+bool within_kerf

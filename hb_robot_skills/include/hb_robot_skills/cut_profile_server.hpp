@@ -1,5 +1,10 @@
 #pragma once
+#include "hb_robot_skills/robot_stationary_window.hpp"
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <cstdint>
+#include <thread>
+#include <memory>
+#include <vector>
 #include <future>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
@@ -116,15 +121,10 @@ namespace hb_robot_skills{
             const std::string& stage);
 
             std::optional<WorkpieceReference> latestWorkpieceReference() const;
-
-            ////////////////////////HEIGHT STUFF ./////////////////////////////
-           
-
-            rclcpp::CallbackGroup::SharedPtr
-                heightStatusCallbackGroup() const
-                {
-                    return height_status_callbacks_;
-                }
+            rclcpp::CallbackGroup::SharedPtr heightStatusCallbackGroup() const {
+                return height_status_callbacks_;
+            }
+            
 
             void handleApproval(const std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Request> request,
             std::shared_ptr<hb_robot_interfaces::srv::ApproveMotion::Response>response);
@@ -137,11 +137,6 @@ namespace hb_robot_skills{
                     hb_robot_interfaces::srv::ClearTorchFault::Response> response);
         private:
 
-                rclcpp::CallbackGroup::SharedPtr height_status_callbacks_;
-
-// Protected by height_mutex_.
-uint64_t height_status_rx_count_{0};
-double height_status_max_gap_ms_{0.0};
             std::shared_ptr<robot_trajectory::RobotTrajectory> planToTrajectory(
             const moveit::planning_interface::MoveGroupInterface::Plan& plan
             );
@@ -212,7 +207,6 @@ bool latchObservedMotionStop(const char* reason);
         bool process_enabled_=false;
         rclcpp::Subscription<TaskState>::SharedPtr task_sub_;
         rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr execution_pub_;
-        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr invalidate_pose_pub_;
         rclcpp::TimerBase::SharedPtr supervision_timer_;
         rclcpp_action::Server<hb_robot_interfaces::action::Escape>::SharedPtr escape_server_;
         std::thread worker_, escape_worker_;
@@ -313,6 +307,15 @@ bool latchObservedMotionStop(const char* reason);
         void recoverCut(
             const std::shared_ptr<GoalHandleRecoverCut> goal);
             
+        void initializeRobotStationaryMonitor();
+        bool waitForRobotStationary(std::chrono::milliseconds timeout,
+            std::chrono::milliseconds stable_duration);
+        bool robotStationaryConfirmed(std::chrono::milliseconds stable_duration);
+        std::mutex robot_stationary_mutex_;
+        std::condition_variable robot_stationary_cv_;
+        std::unique_ptr<RobotStationaryWindow> robot_stationary_window_;
+        rclcpp::CallbackGroup::SharedPtr robot_stationary_callbacks_;
+        rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr robot_stationary_sub_;
         bool recoveryRobotStationary(
             const moveit::core::JointModelGroup* jmg);
         MotionOutcome waitForRecoveryApproval(
@@ -362,29 +365,43 @@ enum class HeightPhase { IDLE, PREP, IGNITION, SEARCH, CUT, RETURN };
 mutable std::mutex height_mutex_;
 std::condition_variable height_cv_;
 HeightStatus height_status_;
- bool heightCommunicationValid(
-                 const HeightStatus& h) const;
+// All receive counters and cache timestamps are protected by height_mutex_.
+rclcpp::CallbackGroup::SharedPtr height_status_callbacks_;
+uint64_t height_status_rx_count_{0};
+double height_status_max_gap_ms_{0.0};
+uint64_t height_callback_count_{0}, height_rejected_count_{0};
+HeightClock::time_point height_last_callback_{};
+double height_callback_gap_ms_{0.0}, height_max_callback_gap_ms_{0.0};
+bool heightCommunicationValid(
+    const HeightStatus& h, HeightClock::time_point at = HeightClock::now()) const;
 rclcpp::CallbackGroup::SharedPtr height_callbacks_;
+rclcpp::CallbackGroup::SharedPtr height_recovery_callbacks_;
+rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr height_reset_home_service_;
+// Protected by height_mutex_; STOP replies must drain before RESET/HOME.
+bool height_stop_pending_ = false;
+HeightClock::time_point height_last_stop_request_{};
 rclcpp::Subscription<std_msgs::msg::String>::SharedPtr height_full_status_sub_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_prepare_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_search_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_home_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_stop_client_;
-rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr height_tracking_client_;
 rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr height_reset_client_;
+rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr height_tracking_client_;
 std::atomic<HeightPhase> height_phase_{HeightPhase::IDLE};
 std::atomic<uint32_t> height_cycle_session_{0};
 std::atomic<bool> height_stop_sent_{false}, height_tracking_expected_{false};
 bool height_use_tracking_ = false;
-int height_status_timeout_ms_ = 250;
+int height_status_timeout_ms_ = 500;
 int height_prepare_timeout_ms_ = 5000;
 int height_search_timeout_ms_ = 8000;
 int height_home_timeout_ms_ = 20000;
 int height_pierce_dwell_ms_ = 0;
 void initializeHeightInterface();
 HeightStatus heightSnapshot() const;
-bool heightValid(const HeightStatus& h) const;
-bool heightAtHomeAndReady() const;
+bool heightValid(const HeightStatus& h, HeightClock::time_point at = HeightClock::now()) const;
+bool heightAtHomeAndReady(bool log_status = true) const;
+bool recoveryHardwareReady() const;
+rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr recovery_ready_service_;
 bool requestHeightCommand(
     const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr& client,
     const std::function<bool()>& canceled, uint32_t& command_id);
@@ -397,6 +414,8 @@ bool setHeightTrackingAndWait(bool enabled);
 bool enableHeightTracking();
 bool disableHeightTracking();
 bool returnHeightHomeAndWait(const std::function<bool()>& canceled);
+bool rearmHeightStop();
+void resetHeightAndHome(std_srvs::srv::Trigger::Response& response);
 void stopHeightAsync();
 void superviseHeight();
 

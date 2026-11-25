@@ -74,7 +74,7 @@ def generate_launch_description():
         "skip_cutting_motion": False,
         "enable_cutting_process": True,
         "height.enable_voltage_tracking": True,
-        "height.status_timeout_ms": 500,
+        "height.status_timeout_ms": 750,
         "height.prepare_timeout_ms": 5000,
         "height.search_timeout_ms": 8000,
         "height.home_timeout_ms": 20000,
@@ -94,6 +94,8 @@ def generate_launch_description():
         "cut_geometry.waypoint_beam_width": 3,
         "cut_geometry.explore_ik_branches": True,
         "cut_sampling.max_candidates_per_roll": 3,
+        "cut_geometry.direction_seed_states": [cut_forward, cut_down, cut_up],
+        "cut_geometry.direction_seed_pose_samples": 12,
         # Geometric seed + reference seed + bounded local perturbations;
         # only the final two attempts per roll explore globally.
         "cut_sampling.roll_samples": 8,
@@ -121,7 +123,7 @@ def generate_launch_description():
             description="Force home between cuts; false compares direct and home routes by planned travel cost."),
         DeclareLaunchArgument("return_home_after_last_cut", default_value="true",
             description="Return to the initial robot state after the final retract."),
-        DeclareLaunchArgument("inspect_cut_preview_only", default_value="true",
+        DeclareLaunchArgument("inspect_cut_preview_only", default_value="false",
             description="Preview inspection views; false permits post-cut camera motion."),
         DeclareLaunchArgument("platform_imu_2_topic", default_value="/mpu6050_2/imu",
             description="Additional platform accelerometer. Set empty for lidar-only operation."),
@@ -157,18 +159,6 @@ def generate_launch_description():
                             "platform_imu.hard_peak_gyro_rad_s": 10.20,
                             "platform_imu.hard_peak_accel_m_s2": 10.80,
                         }]),
-        # Node(package="hb_robot_skills", executable="capture_cut_environment", output="screen",
-        #      additional_env={"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
-        #      parameters=[{"jacket_padding_m": 0.075, 
-        #                 "workpiece_margin_m": 0.3,
-        #                   "voxel_size_m": 0.05, 
-        #                   "min_voxel_scans": 3,
-        #                   "capture_duration_s": 4.0,
-        #                   "debug_allow_invalid_scene": True,
-        #                   "max_state_age_s": 1.0,
-        #                   "lidar_max_range_m": 3.0,
-        #                   "robot_description_node": "/robot_state_publisher"
-        #                   }]),
 
         Node(
                 package="hb_robot_perception",
@@ -185,6 +175,7 @@ def generate_launch_description():
                     "publish_debug_markers": True,
                     "max_state_age_s": 1.0,
                     "lidar_max_range_m": 3.0,
+                    "scan_lenience": 10,
                     "robot_description_node": "/robot_state_publisher",
                 }],
             ),
@@ -193,7 +184,11 @@ def generate_launch_description():
         Node(package="hb_robot_skills", executable="revalidate_workpiece_server", output="screen"),
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {
-                 "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool)}]),
+                 "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool),
+                 "enable_geometric_kerf_evidence": True,
+
+                 
+                 }]),
         Node(package="hb_robot_skills", executable="return_to_inspection_home_server",
              output="screen", parameters=[moveit_config.to_dict()]),
         cut_profile_server,

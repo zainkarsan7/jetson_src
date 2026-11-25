@@ -14,13 +14,14 @@ find_package(hb_robot_interfaces REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-include_directories()
+include_directories(include)
 
 add_executable(bt_executor
 src/bt_executor.cpp)
 ament_target_dependencies(bt_executor
   rclcpp
   rclcpp_action
+  std_srvs
   behaviortree_cpp_v3
   hb_robot_interfaces
 
@@ -32,7 +33,7 @@ DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config behavior_trees
 DESTINATION share/${PROJECT_NAME})
-
+install(PROGRAMS scripts/cut_recovery_debug_server DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

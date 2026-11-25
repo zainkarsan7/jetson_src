@@ -81,6 +81,12 @@ static std::vector<RobotWorkpieceContact> extractWorkpieceContacts(
 }
 
 
+struct CutDirectionSolution {
+    std::string name;
+    moveit::core::RobotStatePtr home;
+    std::array<moveit::core::RobotStatePtr,4> chain;
+};
+
 struct CutSegment{
     // this struct is lke the glue to get from 2D profiles to 3D poses to robot states
     std::string name;
@@ -109,6 +115,9 @@ struct CutSegment{
     moveit::core::RobotStatePtr start_state;
     moveit::core::RobotStatePtr end_state;
     moveit::core::RobotStatePtr retract_state;
+    // Independently solved branches from SRDF orientation postures. The nominal
+    // Cartesian geometry and tolerances above remain authoritative.
+    std::vector<CutDirectionSolution> direction_solutions;
 
 
 
@@ -198,6 +207,8 @@ struct CutPlannerOptions {
     double ik_consistency_rad = 2.0;
     double repair_joint_step_rad = 0.03;
     double repair_roll_step_rad = 0.15;
+    std::vector<std::string> direction_seed_states{"cut_forward","cut_down","cut_up"};
+    std::size_t direction_seed_pose_samples = 12;
 };
 
 // Shared by the geometric planner and offline branch/backtracking tests.

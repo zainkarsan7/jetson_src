@@ -1,3 +1,7 @@
+#include <hb_robot_task_planner/for_each_pending.hpp>
+#include <hb_robot_interfaces/msg/task_session_status.hpp>
+#include <hb_robot_interfaces/supervision_policy.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <behaviortree_cpp_v3/bt_factory.h>
 #include <behaviortree_cpp_v3/action_node.h>
@@ -24,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <filesystem>
 #include <future>
 #include <map>
 #include <memory>
@@ -75,7 +80,8 @@ struct Context {
           Interrupted,
           RecoveredPendingInspection,
           ExecutionFailed,
-          Rejected
+          Rejected,
+          Deferred
       };
 
       Status status = Status::Unplannable;
@@ -90,9 +96,13 @@ struct Context {
   std::string interrupted_plan_id;
     std::string interrupted_feature_id;
     bool recovery_home_reached = false;
+    bool recovery_admitted = false; // Set only by the contained session command.
+    bool recovery_goal_sent = false;
 
 
 
+  std::map<std::string, recovery::FeatureRecoveryState> feature_recovery;
+  std::string recovery_feature;
   std::string parent_id;
   std::string inspection_reference_id;
 
@@ -104,6 +114,12 @@ struct Context {
 
   std::optional<recovery::State> captured_scene;
 
+  std::string last_action;
+  std::string last_error;
+  std::string first_action_timeout; // Tick-thread only; retained until explicit resume.
+  double planning_action_timeout_s = 600.0;
+  bool execution_uncertain = false;
+  std::vector<std::function<bool()>> cancellation_waiters;
   bool executed = false;
   bool preparing_candidate = false;
 
@@ -114,7 +130,7 @@ struct Context {
     if (Clock::now() - received > std::chrono::milliseconds(max_age_ms_)) {
       result.supervision_valid = false;
       result.imu_stable = false;
-      result.scene_valid = false;
+      // A transport gap revokes authorization, not the cached geometry.
     }
 
     return result;
@@ -127,11 +143,13 @@ struct Context {
         Clock::now() - supervision_received > std::chrono::milliseconds(max_age_ms_))
       return false;
 
-    return 
-           supervision.supervision_valid &&
-          //  supervision.both_channels_valid &&
-          //  supervision.both_channels_stable &&
-           !supervision.hard_motion_detected;
+    hb_robot::supervision::Evidence e;
+    e.fresh = true;
+    e.authorized = supervision.supervision_valid && supervision.imu_stable;
+    e.uncertain = supervision.state == Supervision::UNCERTAIN;
+    e.hard_motion = supervision.hard_motion_detected;
+    return hb_robot::supervision::decide(e, hb_robot::supervision::Operation::AcquirePose) ==
+        hb_robot::supervision::Decision::Allow;
   }
 
   std::string platformReason() {
@@ -196,8 +214,9 @@ class ActionNode : public BT::StatefulActionNode {
         rclcpp::Node::SharedPtr node,
         const std::string& endpoint,
         GoalBuilder builder,
-        ResultHandler handler)
+        ResultHandler handler, std::shared_ptr<Context> context)
         : BT::StatefulActionNode(name, config),
+          context_(std::move(context)),
           build_(std::move(builder)),
           finish_(std::move(handler)) {
       client_ = rclcpp_action::create_client<Action>(
@@ -211,16 +230,40 @@ class ActionNode : public BT::StatefulActionNode {
     BT::NodeStatus onStart() override {
       cancel_ = std::make_shared<std::atomic<bool>>(false);
       handle_.reset();
+      goal_ = {};
+      result_ = {};
       sent_ = false;
+      cancellation_registered_ = false;
+      result_handled_ = false;
       started_ = Clock::now();
+      context_->last_action = registrationName();
+      context_->last_error.clear();
       return BT::NodeStatus::RUNNING;
     }
 
     BT::NodeStatus onRunning() override {
       const auto elapsed = Clock::now() - started_;
-
-      if (elapsed > 10min ||
-          (!sent_ && elapsed > 10s)) {
+      const bool planning = registrationName() == "PlanCut" || registrationName() == "PlanRecut";
+      const auto deadline = std::chrono::duration<double>(
+          planning ? context_->planning_action_timeout_s : 600.0);
+      const bool acceptance_timeout = !handle_ && elapsed > 10s &&
+          (!sent_ || !goal_.valid() || goal_.wait_for(0s) != std::future_status::ready);
+      // Consume a ready terminal result before applying the local deadline.
+      const bool result_ready = handle_ && result_.valid() &&
+          result_.wait_for(0s) == std::future_status::ready;
+      if (!result_ready && (elapsed > deadline || acceptance_timeout)) {
+        context_->last_error = std::string(acceptance_timeout ?
+            "Action acceptance deadline exceeded: " : "Action result deadline exceeded: ") + registrationName();
+        if (context_->first_action_timeout.empty())
+          context_->first_action_timeout = context_->last_error;
+        RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
+            "[ACTION TIMEOUT] node=%s elapsed_s=%.3f limit_s=%.3f "
+            "sent=%d accepted=%d planning=%d; cancel requested",
+            registrationName().c_str(), std::chrono::duration<double>(elapsed).count(),
+            acceptance_timeout ? 10.0 : deadline.count(), int(sent_), int(bool(handle_)), int(planning));
+        if constexpr (std::is_same_v<Action, Cut>)
+          if (registrationName() == "ExecuteCut" || registrationName() == "ExecuteRecut")
+            context_->execution_uncertain = true;
         onHalted();
         return BT::NodeStatus::FAILURE;
       }
@@ -232,6 +275,7 @@ class ActionNode : public BT::StatefulActionNode {
         typename Action::Goal goal;
 
         if (!build_(goal)){
+          context_->last_error = registrationName() + ": goal preconditions not satisfied";
 
           RCLCPP_ERROR(
           rclcpp::get_logger("bt_executor"),
@@ -265,6 +309,7 @@ class ActionNode : public BT::StatefulActionNode {
         handle_ = goal_.get();
 
         if (!handle_){
+          context_->last_error = registrationName() + ": action server rejected the goal";
 
         RCLCPP_ERROR(
           rclcpp::get_logger("bt_executor"),
@@ -283,8 +328,14 @@ class ActionNode : public BT::StatefulActionNode {
         return BT::NodeStatus::RUNNING;
 
       const auto wrapped = result_.get();
+      result_handled_ = true;
 
       if (!wrapped.result) {
+          if constexpr (std::is_same_v<Action, Cut>)
+            if (registrationName()=="ExecuteCut" || registrationName()=="ExecuteRecut") {
+              context_->execution_uncertain=true;
+              if (context_->independent_batch) context_->batch_interrupted=true;
+            }
           RCLCPP_ERROR(
               rclcpp::get_logger("bt_executor"),
               "Action '%s' returned no result; code=%d",
@@ -296,6 +347,8 @@ class ActionNode : public BT::StatefulActionNode {
       // Let the action-specific handler inspect the payload,
       // including diagnostic fields on an aborted result.
       const bool accepted = finish_(*wrapped.result);
+      if ((!accepted || wrapped.code != rclcpp_action::ResultCode::SUCCEEDED) && context_->last_error.empty())
+        context_->last_error = registrationName() + ": " + wrapped.result->message;
 
       // An operator-rejected cut is a successfully handled
         // task decision, even though the ROS action was aborted.
@@ -325,6 +378,38 @@ class ActionNode : public BT::StatefulActionNode {
     }
 
     void onHalted() override {
+      if (sent_ && !result_handled_ && !cancellation_registered_) {
+        cancellation_registered_ = true;
+        auto client = client_;
+        auto goal_future = goal_;
+        auto result_future = result_;
+        auto handle = handle_;
+        auto finish = finish_;
+        const bool execution = registrationName()=="ExecuteCut" || registrationName()=="ExecuteRecut";
+        if (execution) {
+          context_->execution_uncertain=true;
+          if (context_->independent_batch) context_->batch_interrupted=true;
+        }
+        context_->cancellation_waiters.push_back(
+            [client, goal_future, result_future, handle, finish, execution]() mutable {
+              if (!handle) {
+                if (!goal_future.valid() || goal_future.wait_for(0s) != std::future_status::ready) return false;
+                handle = goal_future.get();
+                if (!handle) return true; // Rejected goal cannot execute.
+              }
+              if (!result_future.valid()) result_future = client->async_get_result(handle);
+              if (result_future.wait_for(0s) != std::future_status::ready) return false;
+              // Tick-thread drain: retain interrupted motion lineage even when
+              // the action was halted before its terminal payload arrived.
+              if constexpr (std::is_same_v<Action, Cut>) {
+                if (execution) {
+                  const auto wrapped = result_future.get();
+                  if (wrapped.result) (void)finish(*wrapped.result);
+                }
+              }
+              return true;
+            });
+      }
       if (cancel_)
         cancel_->store(true);
 
@@ -340,6 +425,7 @@ class ActionNode : public BT::StatefulActionNode {
     }
 
   private:
+    std::shared_ptr<Context> context_;
     GoalBuilder build_;
     ResultHandler finish_;
 
@@ -352,6 +438,8 @@ class ActionNode : public BT::StatefulActionNode {
     std::shared_ptr<std::atomic<bool>> cancel_;
 
     bool sent_ = false;
+    bool cancellation_registered_ = false;
+    bool result_handled_ = false;
     Clock::time_point started_{};
   };
 
@@ -369,6 +457,8 @@ class WaitForStablePlatform : public BT::StatefulActionNode {
       }
 
       BT::NodeStatus onStart() override {
+        context_->last_action = registrationName();
+        context_->last_error.clear();
         started_ = Clock::now();
         stable_since_.reset();
         return onRunning();
@@ -379,6 +469,7 @@ class WaitForStablePlatform : public BT::StatefulActionNode {
 
         if (state.motion_fault_active ||
             state.process_fault_active) {
+          context_->last_error = "Platform wait stopped: active motion/process fault";
           RCLCPP_ERROR(
               rclcpp::get_logger("bt_executor"),
               "Platform wait stopped: motion/process fault");
@@ -399,6 +490,7 @@ class WaitForStablePlatform : public BT::StatefulActionNode {
         }
 
         if (Clock::now() - started_ >= 30s) {
+          context_->last_error = "Platform wait expired: " + context_->platformReason();
           RCLCPP_WARN(
               rclcpp::get_logger("bt_executor"),
               "Platform stability wait timed out: %s",
@@ -441,6 +533,8 @@ class AwaitGeometry : public BT::StatefulActionNode {
     }
 
     BT::NodeStatus onStart() override {
+      context_->last_action = registrationName();
+      context_->last_error.clear();
       start_ = Clock::now();
       return onRunning();
     }
@@ -464,6 +558,8 @@ class AwaitGeometry : public BT::StatefulActionNode {
 
       if (Clock::now() - start_ <= 15s)
         return BT::NodeStatus::RUNNING;
+
+      context_->last_error = registrationName() + ": matching geometry/authorization was not committed before the deadline";
 
       RCLCPP_ERROR(
           rclcpp::get_logger("bt_executor"),
@@ -494,81 +590,115 @@ class AwaitGeometry : public BT::StatefulActionNode {
   };
 
 
-class AwaitTorchFaultClear : public BT::StatefulActionNode {
+class AwaitExecutionReady : public BT::StatefulActionNode {
 public:
-    AwaitTorchFaultClear(
-        const std::string& name,
-        const BT::NodeConfiguration& config,
-        std::shared_ptr<Context> context)
-        : BT::StatefulActionNode(name, config),
-          context_(std::move(context)) {}
-
-    static BT::PortsList providedPorts() {
-        return {};
+  AwaitExecutionReady(const std::string& name, const BT::NodeConfiguration& config,
+                      std::shared_ptr<Context> context)
+      : BT::StatefulActionNode(name, config), context_(std::move(context)) {}
+  static BT::PortsList providedPorts() { return {}; }
+  BT::NodeStatus onStart() override { started_ = Clock::now(); return onRunning(); }
+  BT::NodeStatus onRunning() override {
+    context_->last_action = "AwaitExecutionReady";
+    const auto state = context_->snapshot();
+    if (!context_->planMatches(state) || !context_->captured_scene ||
+        context_->captured_scene->cut_environment_id != state.cut_environment_id ||
+        context_->plan_id.empty()) {
+      context_->last_error = "Candidate geometry/scene changed; replan required";
+      return BT::NodeStatus::FAILURE;
     }
-
-    BT::NodeStatus onStart() override {
-        
-        RCLCPP_INFO(
-            rclcpp::get_logger("bt_executor"),
-            "[CUT RECOVERY] Waiting for operator fault clearance");
-        return check();
+    if (state.motion_fault_active || state.process_fault_active || !state.workpiece_pose_valid) {
+      context_->last_error = "Fault clearance or workpiece revalidation required";
+      return BT::NodeStatus::FAILURE;
     }
-
-    BT::NodeStatus onRunning() override {
-        return check();
+    if (context_->authorized(state))
+      return BT::NodeStatus::SUCCESS;
+    if (Clock::now() - started_ >= 30s) {
+      context_->last_error = "Readiness wait expired; candidate retained";
+      return BT::NodeStatus::FAILURE;
     }
-
-    void onHalted() override {
-        saw_fault_ = false;
-    }
-
+    return BT::NodeStatus::RUNNING;
+  }
+  void onHalted() override {}
 private:
-    BT::NodeStatus check() {
-        const auto state = context_->snapshot();
-
-        if (!state.scene_valid &&
-            !state.supervision_valid) {
-            return BT::NodeStatus::RUNNING;
-        }
-
-        if (state.process_fault_active ||
-            state.motion_fault_active) {
-                if (!saw_fault_) {
-                        RCLCPP_WARN(
-                            rclcpp::get_logger("bt_executor"),
-                            "[CUT RECOVERY] Fault observed; "
-                            "waiting for operator clearance");
-                    }
-            saw_fault_ = true;
-            return BT::NodeStatus::RUNNING;
-        }
-        // RCLCPP_INFO(
-        //    rclcpp::get_logger("bt_executor"),
-        //     "[AWAIT FAULT CLEAR] saw_fault=%d "
-        //     "process_fault=%d motion_fault=%d "
-        //     "authorized=%d scene_valid=%d",
-        //     static_cast<int>(saw_fault_),
-        //     static_cast<int>(state.process_fault_active),
-        //     static_cast<int>(state.motion_fault_active),
-        //     static_cast<int>(context_->authorized(state)),
-        //     static_cast<int>(state.scene_valid));
-
-        if (!saw_fault_)
-            return BT::NodeStatus::RUNNING;
-
-        if (!context_->authorized(state) ||
-            !state.scene_valid)
-            return BT::NodeStatus::RUNNING;
-
-        return BT::NodeStatus::SUCCESS;
-    }
-    bool saw_fault_ = false;
-
-    std::shared_ptr<Context> context_;
+  std::shared_ptr<Context> context_;
+  Clock::time_point started_;
 };
 
-
+class AwaitTorchFaultClear : public BT::StatefulActionNode {
+  using Service = std_srvs::srv::Trigger;
+public:
+  AwaitTorchFaultClear(const std::string& name, const BT::NodeConfiguration& config,
+                      rclcpp::Node::SharedPtr node, std::shared_ptr<Context> context)
+      : BT::StatefulActionNode(name,config), context_(std::move(context)),
+        client_(node->create_client<Service>("/cut_profile/recovery_ready")) {}
+  static BT::PortsList providedPorts() { return {}; }
+  BT::NodeStatus onStart() override {
+    context_->last_action=registrationName();
+    next_poll_=Clock::time_point{};
+    return check();
+  }
+  BT::NodeStatus onRunning() override { return check(); }
+  void onHalted() override {
+    if (pending_.valid()) client_->remove_pending_request(request_id_);
+    pending_={};
+  }
+private:
+  BT::NodeStatus check() {
+    const auto state=context_->snapshot();
+    if (!context_->recovery_admitted || !context_->independent_batch ||
+        !context_->batch_interrupted || context_->interrupted_plan_id.empty() ||
+        context_->interrupted_feature_id.empty()) {
+      context_->last_error="No contained interrupted feature admitted for recovery";
+      onHalted();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (!context_->captured_scene ||
+        !recovery::sameVersions(state,*context_->captured_scene) ||
+        state.cut_environment_id!=context_->captured_scene->cut_environment_id) {
+      context_->last_error="Recovery requires renewed geometry validation";
+      onHalted();
+      return BT::NodeStatus::FAILURE;
+    }
+    if (state.process_fault_active || state.motion_fault_active ||
+        !state.scene_valid || !state.workpiece_pose_valid || !context_->authorized(state)) {
+      onHalted();
+      context_->last_error="Waiting for operator fault clearance and live geometry authorization";
+      return BT::NodeStatus::RUNNING;
+    }
+    // The ledger establishes the interruption. Clearance may predate this node.
+    // Server-side query reads the actual height/torch predicates; no duplicate
+    // height parser or persisted permission is introduced in the BT.
+    if (pending_.valid()) {
+      if (pending_.wait_for(0s)==std::future_status::ready) {
+        const auto reply=pending_.get();
+        pending_={};
+        context_->last_error=reply->success?"":reply->message;
+        next_poll_=Clock::now()+250ms;
+        if (reply->success) return BT::NodeStatus::SUCCESS;
+      } else if (Clock::now()-sent_at_>2s) {
+        onHalted();
+        context_->last_error="Recovery readiness reply timed out";
+        next_poll_=Clock::now()+250ms;
+      }
+    }
+    if (!pending_.valid() && Clock::now()>=next_poll_) {
+      if (!client_->service_is_ready()) {
+        context_->last_error="Waiting for /cut_profile/recovery_ready";
+        return BT::NodeStatus::RUNNING;
+      }
+      sent_at_=Clock::now();
+      auto pending=client_->async_send_request(std::make_shared<Service::Request>());
+      request_id_=pending.request_id;
+      pending_=pending.share();
+    }
+    return BT::NodeStatus::RUNNING;
+  }
+  std::shared_ptr<Context> context_;
+  rclcpp::Client<Service>::SharedPtr client_;
+  rclcpp::Client<Service>::SharedFuture pending_;
+  int64_t request_id_=0;
+  Clock::time_point sent_at_{}, next_poll_{};
+};
 
   class CaptureEnvironment : public BT::StatefulActionNode {
   using Service =
@@ -590,6 +720,8 @@ private:
       }
 
       BT::NodeStatus onStart() override {
+        context_->last_action = registrationName();
+        context_->last_error.clear();
         scene_retries_ = 0;
         context_->captured_scene.reset();
 
@@ -614,9 +746,16 @@ private:
             state.pose_version !=
                 expected_.pose_version ||
             Clock::now() > deadline_) {
-                RCLCPP_ERROR(
-                    rclcpp::get_logger("bt_executor"),
-                    "Environment capture expired or reference changed");
+                context_->last_error = "CaptureCutEnvironment: live state changed or capture transaction timed out";
+                RCLCPP_ERROR(rclcpp::get_logger("bt_executor"),
+                    "[CAPTURE INVALID] transaction_timeout=%d scene_valid=%d motion_fault=%d "
+                    "process_fault=%d geometry=%llu/%llu pose=%llu/%llu active_node=%s",
+                    int(Clock::now() > deadline_), int(state.scene_valid), int(state.motion_fault_active),
+                    int(state.process_fault_active),
+                    static_cast<unsigned long long>(state.geometry_version),
+                    static_cast<unsigned long long>(expected_.geometry_version),
+                    static_cast<unsigned long long>(state.pose_version),
+                    static_cast<unsigned long long>(expected_.pose_version), context_->last_action.c_str());
                 onHalted();
                 return BT::NodeStatus::FAILURE;
               }
@@ -799,13 +938,13 @@ void registerAction(
     rclcpp::Node::SharedPtr node,
     const std::string& endpoint,
     Goal goal,
-    Result result) {
+    Result result, std::shared_ptr<Context> context) {
 
   factory.registerBuilder<ActionNode<Action>>(
       name,
       [=](const auto& n, const auto& c) {
         return std::make_unique<ActionNode<Action>>(
-            n, c, node, endpoint, goal, result);
+            n, c, node, endpoint, goal, result, context);
       });
 }
 
@@ -814,6 +953,8 @@ void registerAction(
 
 
 
+#include <hb_robot_task_planner/independent_recovery.hpp>
+
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
@@ -821,6 +962,13 @@ int main(int argc, char** argv) {
       std::make_shared<rclcpp::Node>("hb_bt_executor");
 
   auto context = std::make_shared<Context>();
+  context->planning_action_timeout_s = node->declare_parameter<double>(
+      "planning_action_timeout_s", 600.0);
+  if (!std::isfinite(context->planning_action_timeout_s) || context->planning_action_timeout_s <= 0.0) {
+    RCLCPP_FATAL(node->get_logger(), "planning_action_timeout_s must be finite and positive");
+    rclcpp::shutdown();
+    return 1;
+  }
 
   context->cut_id =
       node->declare_parameter<std::string>(
@@ -840,29 +988,35 @@ int main(int argc, char** argv) {
       node->create_subscription<recovery::State>(
           "/task_state",
           rclcpp::QoS(1).transient_local(),
-          [context](recovery::State::ConstSharedPtr m) {
+          [context, node](recovery::State::ConstSharedPtr m) {
             std::lock_guard<std::mutex> lock(
                 context->mutex);
+            const double age = (node->now() - rclcpp::Time(m->header.stamp)).seconds();
+            if (age < -0.005 || age > 5.0) return;
             context->state = *m;
-            context->received = Clock::now();
+            context->received = Clock::now() - std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(std::max(0.0, age)));
           });
 
   auto supervision_sub =
       node->create_subscription<Supervision>(
           "/platform_supervision",
-          rclcpp::QoS(10).reliable(),
-          [context](Supervision::ConstSharedPtr m) {
+          rclcpp::QoS(1).reliable(),
+          [context, node](Supervision::ConstSharedPtr m) {
             std::lock_guard<std::mutex> lock(
                 context->mutex);
+            const double age = (node->now() - rclcpp::Time(m->header.stamp)).seconds();
+            if (age < -0.005 || age > 5.0) return;
             context->supervision = *m;
-            context->supervision_received = Clock::now();
+            context->supervision_received = Clock::now() - std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(std::max(0.0, age)));
             context->supervision_received_any = true;
           });
 
   auto reference_sub =
       node->create_subscription<
           hb_robot_interfaces::msg::WorkpieceReference>(
-          "/workpiece_reference",
+          "/workpiece_reference/accepted",
           rclcpp::QoS(1).transient_local(),
           [context](
               hb_robot_interfaces::msg::
@@ -873,6 +1027,19 @@ int main(int argc, char** argv) {
           });
 
   BT::BehaviorTreeFactory factory;
+  factory.registerBuilder<AwaitExecutionReady>("AwaitExecutionReady",
+      [context](const auto& name, const auto& config) {
+        return std::make_unique<AwaitExecutionReady>(name, config, context);
+      });
+  factory.registerBuilder<hb_robot_task_planner::ForEachPending>("ForEachPending",
+      [context](const auto& name, const auto& config) {
+        return std::make_unique<hb_robot_task_planner::ForEachPending>(name, config, [context] {
+          return !context->plan_id.empty() || std::any_of(context->feature_plans.begin(),
+              context->feature_plans.end(), [](const auto& feature) {
+                return feature.status == Context::FeaturePlanEntry::Status::Ready;
+              });
+        });
+      });
 
   
 
@@ -925,6 +1092,7 @@ int main(int argc, char** argv) {
         if (it == context->feature_plans.end())
             return BT::NodeStatus::FAILURE;
 
+        context->recovery_feature = it->feature_id;
         context->plan_id = it->plan_id;
         it->status =
             Context::FeaturePlanEntry::Status::Selected;
@@ -966,13 +1134,18 @@ int main(int argc, char** argv) {
     if (context->feature_plans.empty())
         return false;
 
-    return std::all_of(
+    const bool completed = std::all_of(
         context->feature_plans.begin(),
         context->feature_plans.end(),
         [](const auto& feature) {
             return feature.status ==
                 Context::FeaturePlanEntry::Status::Completed;
         });
+    if (!completed) {
+      context->last_action = "AllCutFeaturesCompleted";
+      context->last_error = "Batch incomplete: review per-feature states; rejected or unplanned features are not completed cuts";
+    }
+    return completed;
   });
 
 
@@ -1094,32 +1267,6 @@ int main(int argc, char** argv) {
             !context->authorized(s));
   });
 
-  condition("KerfVerified", [=] {
-    return context->verdict.status ==
-           recovery::State::VERIFIED;
-  });
-
-  condition("ResidualDetected", [=] {
-    return context->verdict.status ==
-           recovery::State::RESIDUAL_MATERIAL;
-  });
-
-  condition("KerfInconclusive", [=] {
-    return context->verdict.status ==
-           recovery::State::INCONCLUSIVE;
-  });
-
-  condition("ValidateKerf", [=] {
-    const auto s = context->snapshot();
-
-    context->verdict = recovery::evaluate(
-        context->evidence,
-        s,
-        context->cut_id);
-
-    return true;
-  });
-
   factory.registerBuilder<AwaitGeometry>(
       "AwaitGeometry",
       [=](const auto& n, const auto& c) {
@@ -1138,7 +1285,7 @@ int main(int argc, char** argv) {
       factory, "InspectProfile", node,
       "inspect_profile",
       [](auto& goal) {
-        goal.max_views = 10;
+        goal.max_views = 3;
         goal.samples_per_view = 3;
         goal.depth_range = 0.75;
         goal.camera_standoff = 0.4;
@@ -1158,7 +1305,7 @@ int main(int argc, char** argv) {
                result.rms_error < 0.01 &&
                result.inlier_fraction > 0.3 &&
                result.coverage > 0.2;
-      });
+      }, context);
 
   registerAction<Revalidate>(
       factory, "RevalidateWorkpiece", node,
@@ -1180,16 +1327,10 @@ int main(int argc, char** argv) {
                     .nanoseconds());
 
         return true;
-      });
+      }, context);
 
   auto planGoal = [=](auto& goal, bool recut) {
     const auto state = context->snapshot();
-    if (recut && context->independent_batch) {
-        RCLCPP_ERROR(
-            node->get_logger(),
-            "Independent recut lineage is not implemented");
-        return false;
-    }
     if (!state.scene_valid ||
         (recut && !context->authorized(state)))
       return false;
@@ -1222,23 +1363,8 @@ int main(int argc, char** argv) {
 
       goal.parent_plan_id = context->parent_id;
 
-      std::map<std::string, recovery::Interval> merged;
-
-      for (const auto& i : context->verdict.residuals) {
-        auto it = merged.find(i.segment_id);
-
-        if (it == merged.end()) {
-          merged[i.segment_id] = i;
-        } else {
-          it->second.s0 =
-              std::min(it->second.s0, i.s0);
-          it->second.s1 =
-              std::max(it->second.s1, i.s1);
-        }
-      }
-
-      for (const auto& pair : merged)
-        goal.intervals.push_back(pair.second);
+      const auto residuals=recovery::repairIntervals(context->verdict.residuals);
+      if(!residuals.empty()) goal.intervals={residuals.front()};
 
       if (goal.intervals.empty())
         return false;
@@ -1314,8 +1440,21 @@ int main(int argc, char** argv) {
             result.feature_plans.size(),
             result.message.c_str());
 
-        if (!result.success || result.executed)
+        if (!result.success || result.executed) {
+            // Preserve diagnostics for an entirely failed batch too. Failed
+            // planning results never introduce an executable candidate.
+            if (context->feature_plans.empty() && !result.executed) {
+                context->batch_id = result.batch_id;
+                for (const auto& feature : result.feature_plans) {
+                    Context::FeaturePlanEntry entry;
+                    entry.feature_id = feature.feature_id;
+                    entry.message = feature.message;
+                    entry.status = Context::FeaturePlanEntry::Status::Unplannable;
+                    context->feature_plans.push_back(std::move(entry));
+                }
+            }
             return false;
+        }
 
         context->plan_id.clear();
         context->batch_id.clear();
@@ -1373,8 +1512,7 @@ int main(int argc, char** argv) {
                     if (!entry.plan_id.empty())
                         return false;
 
-                    entry.status =
-                        Context::FeaturePlanEntry::Status::Unplannable;
+                    entry.status = Context::FeaturePlanEntry::Status::Unplannable;
                 } else {
                     return false;
                 }
@@ -1389,6 +1527,12 @@ int main(int argc, char** argv) {
             context->independent_batch = true;
             context->batch_id = result.batch_id;
             context->required_segments = result.required_segments;
+            for(auto& entry:context->feature_plans) {
+                auto& recovery=context->feature_recovery[entry.feature_id];
+                if(recovery.original_plan_id.empty()) recovery.original_plan_id=entry.plan_id;
+                if(recovery.original_executed && !recovery.interrupted)
+                    entry.status=Context::FeaturePlanEntry::Status::Completed;
+            }
 
             // // A recut batch needs an original stored plan as parent.
             // // Do not substitute the batch ID.
@@ -1446,16 +1590,8 @@ int main(int argc, char** argv) {
       [=](auto& goal) {
         return planGoal(goal, false);
       },
-      planResult);
+      planResult, context);
 
-  registerAction<Cut>(
-      factory, "PlanRecut", node, "cut_profile",
-      [=](auto& goal) {
-        return planGoal(goal, true);
-      },
-      planResult);
-
-    
     registerAction<RecoverCut>(
         factory,
         "RecoverCut",
@@ -1463,11 +1599,13 @@ int main(int argc, char** argv) {
         "recover_cut",
 
         [=](RecoverCut::Goal& goal) -> bool {
-        if (!context->independent_batch ||
-            !context->batch_interrupted ||
-            context->interrupted_plan_id.empty() ||
-            context->interrupted_feature_id.empty())
+        const auto state=context->snapshot();
+        if (!context->recovery_admitted || !knownInterruptedFeature(context) ||
+            !context->authorized(state) || !context->captured_scene ||
+            !recovery::sameVersions(state,*context->captured_scene) ||
+            state.cut_environment_id!=context->captured_scene->cut_environment_id)
             return false;
+        context->recovery_goal_sent=true;
 
         goal.interrupted_plan_id =
             context->interrupted_plan_id;
@@ -1493,83 +1631,20 @@ int main(int argc, char** argv) {
                 result.message.c_str());
 
             return context->recovery_home_reached;
-    });
+    }, context);
     condition("CutFeatureInterrupted", [=] {
-            using Status = Context::FeaturePlanEntry::Status;
-
-            if (context->interrupted_plan_id.empty() ||
-                context->interrupted_feature_id.empty())
-                return false;
-
-            return std::any_of(
-                context->feature_plans.begin(),
-                context->feature_plans.end(),
-                [&](const auto& feature) {
-                    return feature.plan_id ==
-                            context->interrupted_plan_id &&
-                        feature.feature_id ==
-                            context->interrupted_feature_id &&
-                        feature.status == Status::Interrupted;
-                });
-        });
-
-
-    factory.registerBuilder<AwaitTorchFaultClear>(
-    "AwaitTorchFaultClear",
-    [context](const auto& name, const auto& config) {
-        return std::make_unique<AwaitTorchFaultClear>(
-            name, config, context);
+        return context->recovery_admitted && knownInterruptedFeature(context);
     });
-
-
-
-    factory.registerSimpleAction(
-    "MarkFeatureRecoveryPendingInspection",
-    [=](BT::TreeNode&) {
-        using Status =
-            Context::FeaturePlanEntry::Status;
-
-        if (!context->independent_batch ||
-            !context->batch_interrupted ||
-            !context->recovery_home_reached)
-            return BT::NodeStatus::FAILURE;
-
-        const auto it = std::find_if(
-            context->feature_plans.begin(),
-            context->feature_plans.end(),
-            [&](const auto& feature) {
-                return feature.plan_id ==
-                    context->interrupted_plan_id &&
-                    feature.feature_id ==
-                    context->interrupted_feature_id &&
-                    feature.status == Status::Interrupted;
-            });
-
-        if (it == context->feature_plans.end())
-            return BT::NodeStatus::FAILURE;
-
-        it->status =
-            Status::RecoveredPendingInspection;
-
-        it->message =
-            "Returned home after interrupted cut; "
-            "cut outcome awaits inspection";
-
-        RCLCPP_WARN(
-            node->get_logger(),
-            "[CUT RECOVERY] feature=%s: "
-            "RECOVERED_PENDING_INSPECTION",
-            it->feature_id.c_str());
-
-        context->batch_interrupted = false;
-        context->recovery_home_reached = false;
-        context->interrupted_plan_id.clear();
-        context->interrupted_feature_id.clear();
-        context->plan_id.clear();
-
+    factory.registerBuilder<AwaitTorchFaultClear>("AwaitTorchFaultClear",
+        [node,context](const auto& name,const auto& config) {
+            return std::make_unique<AwaitTorchFaultClear>(name,config,node,context);
+        });
+    factory.registerSimpleAction("MarkFeatureRecoveryPendingInspection",[=](BT::TreeNode&) {
+        if (!markFeatureRecovered(context)) return BT::NodeStatus::FAILURE;
+        RCLCPP_WARN(node->get_logger(),"[CUT RECOVERY] feature=%s: RECOVERED_PENDING_INSPECTION",
+                    context->recovery_feature.c_str());
         return BT::NodeStatus::SUCCESS;
     });
-
 
   // Condition for XML to determine whether the
   // stored candidate remains usable.
@@ -1723,6 +1798,27 @@ int main(int argc, char** argv) {
   //          !result.interrupted;
   // };
   auto executeResult = [=](const auto& result) {
+    if (context->independent_batch &&
+        (result.cut_id!=context->cut_id || result.plan_id!=context->plan_id)) {
+      context->execution_uncertain=true;
+      context->batch_interrupted=true;
+      context->last_error="Cut result identity mismatch; physical outcome unknown";
+      return false;
+    }
+
+    if(context->independent_batch && result.executed) {
+      const auto it=std::find_if(context->feature_plans.begin(),context->feature_plans.end(),
+        [&](const auto& entry){return entry.plan_id==result.plan_id;});
+      if(it!=context->feature_plans.end()) {
+        context->recovery_feature=it->feature_id;
+        auto& feature=context->feature_recovery[it->feature_id];
+        feature.original_executed=true;feature.last_motion_epoch=result.execution_version;
+        feature.interrupted=result.interrupted || !result.success || result.completed_segments!=1;
+        feature.evidence=recovery::Evidence{};feature.verdict={};
+      }
+    }
+    context->execution_uncertain = result.interrupted ||
+        (result.executed && (!result.success || (context->independent_batch && result.completed_segments!=1)));
     context->execution_version =
         result.execution_version;
 
@@ -1762,7 +1858,6 @@ int main(int argc, char** argv) {
         const bool interrupted =
             !completed &&
             !rejected &&
-            result.interrupted &&
             result.executed;
 
         if (completed) {
@@ -1786,6 +1881,11 @@ int main(int argc, char** argv) {
             context->interrupted_feature_id = it->feature_id;
             context->recovery_home_reached = false;
         } 
+        else if (!result.executed && !result.interrupted) {
+            it->message = result.message;
+            context->batch_interrupted = false;
+            return false; // Keep Selected and plan_id for a preflight retry.
+        }
         else {
             it->status =
                 Context::FeaturePlanEntry::Status::ExecutionFailed;
@@ -1826,49 +1926,10 @@ int main(int argc, char** argv) {
 
   registerAction<Cut>(
       factory, "ExecuteCut", node, "cut_profile",
-      executeGoal, executeResult);
+      executeGoal, executeResult, context);
 
-  registerAction<Cut>(
-      factory, "ExecuteRecut", node, "cut_profile",
-      executeGoal, executeResult);
-
-  registerAction<Kerf>(
-      factory, "InspectKerf", node, "inspect_cut",
-      [=](auto& goal) {
-        const auto state = context->snapshot();
-
-        if (!context->authorized(state) ||
-            ++context->inspection_attempts > 3)
-          return false;
-
-        {
-          std::lock_guard<std::mutex> lock(
-              context->mutex);
-          goal.estimate = context->estimate;
-        }
-
-        goal.cut_id = context->cut_id;
-        goal.required_segments =
-            context->required_segments;
-
-        goal.geometry_version =
-            state.geometry_version;
-        goal.pose_version = state.pose_version;
-        goal.execution_version =
-            context->execution_version;
-
-        goal.samples_per_viewpoint = 3;
-        goal.camera_standoff =
-            context->inspection_attempts == 1
-                ? 0.30
-                : 0.35;
-
-        return true;
-      },
-      [=](const auto& result) {
-        context->evidence = result.evidence;
-        return result.success;
-      });
+  installRecovery(factory,node,context,standoff,pos_tol,ang_tol,
+      planGoal,planResult,executeGoal,executeResult);
 
   registerAction<Escape>(
       factory, "Escape", node, "escape",
@@ -1887,62 +1948,344 @@ int main(int argc, char** argv) {
             result.robot_stationary);
 
         return result.torch_confirmed_off &&
-               result.robot_stationary;
-      });
+               result.robot_stationary && result.height_stationary;
+      }, context);
 
-  rclcpp::executors::MultiThreadedExecutor executor;
+  // Commands are queued by ROS callbacks; only the tick thread mutates task state.
+  std::atomic<int> command{0}; // 1 resume, 2 cancel, 3 containment, 4 recover, 5 inspect, 6 defer
+  const auto command_service = [&](const char* endpoint, int value) {
+    return node->create_service<std_srvs::srv::Trigger>(endpoint,
+        [&, value](const std_srvs::srv::Trigger::Request::SharedPtr,
+                   std_srvs::srv::Trigger::Response::SharedPtr response) {
+          int empty = 0;
+          response->success = command.compare_exchange_strong(empty, value);
+          response->message = response->success ? "Command queued; observe /task_session/status" :
+              "Another task command is pending";
+        });
+  };
+  auto resume_service = command_service("/task_session/resume", 1);
+  auto cancel_service = command_service("/task_session/cancel", 2);
+  auto contain_service = command_service("/task_session/retry_containment", 3);
+  auto recover_service = command_service("/task_session/recover", 4);
+  auto inspect_service = command_service("/task_session/inspect", 5);
+  auto defer_service = command_service("/task_session/defer_feature", 6);
+  auto status_pub = node->create_publisher<hb_robot_interfaces::msg::TaskSessionStatus>(
+      "/task_session/status", rclcpp::QoS(1).transient_local());
+  auto contain_client = rclcpp_action::create_client<Escape>(node, "escape");
+  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 2);
   executor.add_node(node);
-
-  std::thread spin([&] {
-    executor.spin();
-  });
-
-  int code = 1;
-
+  std::thread spin([&] { executor.spin(); });
+  int code = 0;
   try {
-    const auto file =
-        node->declare_parameter<std::string>(
-            "tree_file", "");
-    const auto bt_log_path =
-        node->declare_parameter<std::string>(
-            "bt_log_path", "/ssd/data/execution.fbl");
-
+    const auto file = node->declare_parameter<std::string>("tree_file", "");
+    const auto log_path = node->declare_parameter<std::string>("bt_log_path", "");
     auto tree = factory.createTreeFromFile(file);
-    BT::FileLogger bt_logger(tree, bt_log_path.c_str());
-
-    // BT::PublisherZMQ groot_publisher(
-    //     tree, 25, 1666, 1667);
-
-    BT::StdCoutLogger console_logger(tree);
-
-    BT::NodeStatus status =
-        BT::NodeStatus::RUNNING;
-
-    while (rclcpp::ok() &&
-           status == BT::NodeStatus::RUNNING) {
-      status = tree.tickRoot();
+    const auto recovery_file = node->declare_parameter<std::string>("recovery_tree_file",
+        (std::filesystem::path(file).parent_path()/"interrupted_cut_recovery.xml").string());
+    bool recovery_trees_loaded=false;
+    std::unique_ptr<BT::Tree> recovery_tree, inspection_tree;
+    const auto load_recovery_trees = [&] {
+      if (!recovery_trees_loaded) {
+        factory.registerBehaviorTreeFromFile(recovery_file);
+        recovery_trees_loaded=true;
+      }
+    };
+    const auto halt_workflows = [&] {
+      tree.haltTree();
+      if (recovery_tree) recovery_tree->haltTree();
+      if (inspection_tree) inspection_tree->haltTree();
+      context->recovery_admitted=false;
+    };
+    const auto matching_geometry = [&] {
+      const auto current=context->snapshot();
+      return context->authorized(current) && context->captured_scene &&
+          recovery::sameVersions(current,*context->captured_scene) &&
+          current.cut_environment_id==context->captured_scene->cut_environment_id;
+    };
+    const auto inspection_pending = [&] {
+      return context->independent_batch && featureReadyForInspection(context) &&
+          !allFeaturesVerified(context);
+    };
+    const auto start_inspection = [&] {
+      load_recovery_trees();
+      // Reset BT checkpoints, not the execution ledger. The selected interrupted
+      // original remains consumed and is reached through inspection admission.
+      halt_workflows();
+      inspection_tree=std::make_unique<BT::Tree>(factory.createTree("RecoveredFeatureInspection"));
+    };
+    std::unique_ptr<BT::FileLogger> file_logger;
+    if (!log_path.empty()) file_logger = std::make_unique<BT::FileLogger>(tree, log_path.c_str());
+    // Resume is safe only for a tree whose root preserves completed checkpoints.
+    const bool checkpointed = tree.rootNode()->registrationName() == "SequenceStar";
+    RCLCPP_INFO(node->get_logger(),
+        "[TASK CONFIG] tree_file=%s root=%s planning_action_timeout_s=%.3f",
+        file.c_str(), tree.rootNode()->registrationName().c_str(), context->planning_action_timeout_s);
+    std::string outcome = "RUNNING", reason;
+    bool contained = false, cancel_requested = false, containment_pending = false;
+    bool containment_result_done = false, physical_containment = false;
+    bool containment_after_drain = false;
+    bool containment_timeout_logged = false;
+    using EscapeHandle = rclcpp_action::ClientGoalHandle<Escape>;
+    std::shared_future<EscapeHandle::SharedPtr> containment_goal;
+    std::shared_future<EscapeHandle::WrappedResult> containment_result;
+    EscapeHandle::SharedPtr containment_handle;
+    Clock::time_point containment_started{}, published_at{};
+    std::string last_published_outcome;
+    const auto begin_containment = [&] {
+      contained = false;
+      context->recovery_admitted=false;
+      outcome = "CONTAINING";
+      containment_started = Clock::now();
+      containment_timeout_logged = false;
+      containment_pending = true;
+      containment_result_done = false;
+      physical_containment = false;
+      containment_after_drain = context->cancellation_waiters.empty();
+      containment_goal = {};
+      containment_result = {};
+      containment_handle.reset();
+    };
+    while (rclcpp::ok()) {
+      const int requested = command.exchange(0);
+      if (requested == 2 && outcome != "CANCELED_SAFE") {
+        cancel_requested = true;
+        halt_workflows(); // Cancel whichever workflow owns motion, then contain.
+        reason = "Operator canceled the task";
+        if (!containment_pending) begin_containment();
+      } else if (requested == 3 && outcome == "FAULT_UNCONTAINED" && !containment_pending) {
+        begin_containment();
+      } else if (requested == 4) {
+        if (outcome=="RECOVERY_REQUIRED" && contained && !cancel_requested &&
+            !containment_pending && context->cancellation_waiters.empty() && knownInterruptedFeature(context)) {
+          try {
+            load_recovery_trees();
+            halt_workflows();
+            recovery_tree=std::make_unique<BT::Tree>(factory.createTree("InterruptedCutRecovery"));
+            context->recovery_admitted=true;
+            context->recovery_goal_sent=false;
+            context->recovery_home_reached=false;
+            context->last_error.clear();
+            context->first_action_timeout.clear();
+            outcome="AWAITING_RECOVERY";
+            reason="Waiting for fault clearance, live authorization and height HOME";
+          } catch (const std::exception& error) {
+            context->recovery_admitted=false;
+            reason=std::string("Recovery tree could not be loaded: ")+error.what();
+          }
+        } else reason="Recovery denied: first confirm containment of a known interrupted feature";
+      } else if (requested == 5) {
+        if (outcome=="NEEDS_INSPECTION" && contained && !cancel_requested &&
+            context->cancellation_waiters.empty() && !context->batch_interrupted &&
+            inspection_pending() && matching_geometry()) {
+          try {
+            start_inspection();
+            contained=false;
+            outcome="RUNNING";
+            reason="Operator requested renewed feature inspection";
+            context->last_error.clear();
+            context->first_action_timeout.clear();
+          } catch (const std::exception& error) { reason=error.what(); }
+        } else reason="Inspection denied: contain/recover motion and restore matching geometry first";
+      } else if (requested == 6) {
+        if (outcome=="NEEDS_INSPECTION" && contained && !cancel_requested &&
+            !containment_pending && context->cancellation_waiters.empty() &&
+            !context->batch_interrupted && inspection_pending() && matching_geometry()) {
+          try {
+            // Prepare the replacement flow before changing the ledger. Failed
+            // XML loading must leave the operator's inspection target intact.
+            load_recovery_trees();
+            auto continuation=std::make_unique<BT::Tree>(factory.createTree("RecoveredFeatureInspection"));
+            const auto deferred=context->recovery_feature;
+            halt_workflows();
+            if (!deferInspectionFeature(context)) throw std::runtime_error("Feature is not eligible for deferral");
+            inspection_tree=std::move(continuation);
+            contained=allActiveFeaturesVerified(context); // No new motion when nothing remains.
+            outcome="RUNNING";
+            reason="Deferred "+deferred+" as unverified; continuing remaining features";
+            context->last_error.clear();
+            context->first_action_timeout.clear();
+            RCLCPP_WARN(node->get_logger(),"[CUT DEFERRED] feature=%s; original and recut history retained",deferred.c_str());
+          } catch (const std::exception& error) { reason=error.what(); }
+        } else reason="Deferral denied: requires NEEDS_INSPECTION, confirmed containment, recovered feature and matching live geometry";
+      } else if (requested == 1) {
+        if (outcome == "PAUSED" && contained && checkpointed && !context->execution_uncertain &&
+            !context->batch_interrupted && !cancel_requested) {
+          const auto current = context->snapshot();
+          const bool obtaining_geometry = context->plan_id.empty() &&
+              context->feature_plans.empty() && !context->executed;
+          const bool ready = obtaining_geometry ?
+              (context->platformStable() && !current.motion_fault_active && !current.process_fault_active) :
+              context->authorized(current);
+          if (ready &&
+              (context->plan_id.empty() || context->planMatches(current))) {
+            outcome = "RUNNING";
+            contained=false;
+            reason.clear();
+            context->last_error.clear();
+            context->first_action_timeout.clear();
+          } else reason = "Resume denied: restore supervision/pose and matching plan versions first";
+        } else reason = "Resume denied: task is canceled, uncontained, requires inspection, or has no safe checkpoint";
+      }
+      // Publish RECOVERED_PENDING_INSPECTION for a full iteration before
+      // admitting the continuation; fault clearance alone never reaches here.
+      if (outcome=="RECOVERED_PENDING_INSPECTION") {
+        if (matching_geometry() && featureReadyForInspection(context)) {
+          try {
+            start_inspection();
+            contained=false;
+            outcome="RUNNING";
+            reason="Inspecting recovered feature before any remaining original cut";
+            context->last_error.clear();
+            context->first_action_timeout.clear();
+          } catch (const std::exception& error) {
+            reason=error.what();
+            begin_containment();
+          }
+        } else reason="Recovered; waiting for live authorization and unchanged geometry before inspection";
+      }
+      if (outcome=="AWAITING_RECOVERY" || outcome=="RECOVERING") {
+        try {
+          const auto status=recovery_tree->tickRoot();
+          if (context->recovery_goal_sent) { outcome="RECOVERING"; contained=false; }
+          if (status==BT::NodeStatus::SUCCESS) {
+            context->recovery_admitted=false;
+            outcome="RECOVERED_PENDING_INSPECTION";
+            contained=true; // RecoverCut confirmed OFF, height HOME and stationary inspection_home.
+            reason="Recovery confirmed; cut outcome still requires inspection";
+          } else if (status==BT::NodeStatus::FAILURE) {
+            reason=context->last_error.empty()?"Recovery failed; containing again":context->last_error;
+            recovery_tree->haltTree();
+            begin_containment();
+          } else if (!context->last_error.empty()) reason=context->last_error;
+        } catch (const std::exception& error) {
+          reason=error.what();
+          recovery_tree->haltTree();
+          begin_containment();
+        }
+      }
+      if (outcome == "RUNNING") {
+        try {
+          auto& active_tree=inspection_tree?*inspection_tree:tree;
+          const auto status = active_tree.tickRoot();
+          if (status == BT::NodeStatus::SUCCESS) {
+            outcome = hasDeferredFeatures(context) ? "COMPLETED_WITH_DEFERRED" : "COMPLETED";
+            reason = hasDeferredFeatures(context) ?
+                "Remaining features verified; deferred features are unresolved and workpiece separation is not verified" :
+                "Selected workflow completed; separation verification is reported separately";
+          } else if (status == BT::NodeStatus::FAILURE) {
+            reason = !context->first_action_timeout.empty() ? context->first_action_timeout :
+                context->last_error.empty() ? "Workflow step requires attention" : context->last_error;
+            // Deliberately do not halt the checkpoint tree on a terminal child failure.
+            begin_containment();
+          }
+        } catch (const std::exception& error) {
+          reason = error.what();
+          context->execution_uncertain = true;
+          halt_workflows();
+          begin_containment();
+        }
+      }
+      auto& waiters = context->cancellation_waiters;
+      waiters.erase(std::remove_if(waiters.begin(), waiters.end(), [](auto& settled) {
+        try { return settled(); } catch (...) { return false; }
+      }), waiters.end());
+      if (containment_pending) {
+        if (!containment_goal.valid() && contain_client->action_server_is_ready()) {
+          Escape::Goal goal;
+          goal.allow_retreat = false;
+          containment_goal = contain_client->async_send_goal(goal);
+        }
+        if (!containment_handle && containment_goal.valid() &&
+            containment_goal.wait_for(0s) == std::future_status::ready) {
+          containment_handle = containment_goal.get();
+          if (containment_handle) containment_result = contain_client->async_get_result(containment_handle);
+          else { outcome = "FAULT_UNCONTAINED"; containment_pending = false; }
+        }
+        if (!containment_result_done && containment_result.valid() && containment_result.wait_for(0s) == std::future_status::ready) {
+          const auto reply = containment_result.get();
+          physical_containment = reply.code == rclcpp_action::ResultCode::SUCCEEDED && reply.result &&
+              reply.result->torch_confirmed_off && reply.result->robot_stationary && reply.result->height_stationary;
+          containment_result_done = true;
+          RCLCPP_INFO(node->get_logger(),
+              "[CONTAINMENT RESULT] physical_stop_confirmed=%d pending_cancellations=%zu after_drain=%d",
+              int(physical_containment), waiters.size(), int(containment_after_drain));
+        }
+        if (containment_result_done && waiters.empty()) {
+          // A goal may be accepted after the first stop. Confirm containment
+          // again after every canceled action has reached a terminal state.
+          if (!containment_after_drain) {
+            containment_after_drain = true;
+            containment_result_done = false;
+            physical_containment = false;
+            containment_goal = {};
+            containment_result = {};
+            containment_handle.reset();
+            containment_started = Clock::now();
+            containment_timeout_logged = false;
+            continue;
+          }
+          contained = physical_containment;
+          containment_pending = false;
+          outcome = !contained ? "FAULT_UNCONTAINED" : cancel_requested ? "CANCELED_SAFE" :
+              knownInterruptedFeature(context) ? "RECOVERY_REQUIRED" :
+              (context->execution_uncertain || context->batch_interrupted || inspection_pending()) ?
+                  "NEEDS_INSPECTION" : "PAUSED";
+        } else if (Clock::now() - containment_started > 15s) {
+          outcome = "FAULT_UNCONTAINED";
+          if (!containment_timeout_logged) {
+            containment_timeout_logged = true;
+            RCLCPP_ERROR(node->get_logger(),
+                "[CONTAINMENT TIMEOUT] result_received=%d physical_stop_confirmed=%d "
+                "pending_cancellations=%zu; original_reason=%s",
+                int(containment_result_done), int(physical_containment), waiters.size(), reason.c_str());
+          }
+          // A late result is still observed. Do not send overlapping containment goals.
+          if (!containment_goal.valid()) containment_pending = false;
+        }
+      }
+      if (outcome != last_published_outcome || Clock::now() - published_at >= 1s) {
+        hb_robot_interfaces::msg::TaskSessionStatus status;
+        status.header.stamp = node->now();
+        status.task_id = context->cut_id;
+        status.outcome = outcome;
+        status.reason = reason;
+        status.active_node = context->last_action;
+        status.plan_id = context->plan_id;
+        status.batch_id = context->batch_id;
+        status.interrupted_plan_id = context->interrupted_plan_id;
+        status.interrupted_feature_id = context->interrupted_feature_id;
+        status.recovery_feature = context->recovery_feature;
+        status.contained = contained;
+        status.separation_verified = context->independent_batch ? allFeaturesVerified(context) :
+            recovery::evaluate(context->evidence,context->snapshot(),context->cut_id).status==recovery::State::VERIFIED;
+        const char* feature_states[] = {"READY", "UNPLANNABLE", "SELECTED", "COMPLETED", "INTERRUPTED",
+            "RECOVERED_PENDING_INSPECTION", "EXECUTION_FAILED", "REJECTED", "DEFERRED"};
+        for (const auto& feature : context->feature_plans) {
+          status.feature_ids.push_back(feature.feature_id);
+          status.feature_states.push_back(feature_states[static_cast<unsigned>(feature.status)]);
+          const auto& ledger=context->feature_recovery[feature.feature_id];
+          status.feature_execution_epochs.push_back(ledger.last_motion_epoch);
+          status.feature_evidence_epochs.push_back(ledger.evidence.execution_version);
+          status.feature_kerf_status.push_back(recovery::evaluateFeature(ledger.evidence,context->snapshot(),
+            context->cut_id,feature.feature_id,ledger.last_motion_epoch).status);
+          status.feature_original_plan_ids.push_back(ledger.original_plan_id);
+          status.feature_recut_plan_ids.push_back(ledger.recut_plan_id);
+        }
+        status_pub->publish(status);
+        if (outcome != last_published_outcome)
+          RCLCPP_INFO(node->get_logger(), "[TASK SESSION] %s: %s", outcome.c_str(), reason.c_str());
+        last_published_outcome = outcome;
+        published_at = Clock::now();
+      }
       std::this_thread::sleep_for(50ms);
     }
-
-    tree.haltTree();
-
-    code = status == BT::NodeStatus::SUCCESS
-        ? 0
-        : 1;
-
-    RCLCPP_INFO(
-        node->get_logger(),
-        "Tree finished: %s",
-        code == 0 ? "SUCCESS" : "FAILURE");
-
-  } catch (const std::exception& e) {
-    RCLCPP_ERROR(
-        node->get_logger(), "%s", e.what());
+    halt_workflows();
+  } catch (const std::exception& error) {
+    RCLCPP_ERROR(node->get_logger(), "Task session initialization failed: %s", error.what());
+    code = 1;
   }
-
   executor.cancel();
   spin.join();
   rclcpp::shutdown();
-
   return code;
 }

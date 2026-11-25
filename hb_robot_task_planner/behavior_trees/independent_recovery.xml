@@ -1,0 +1,36 @@
+<root main_tree_to_execute="IndependentRecovery">
+  <BehaviorTree ID="IndependentRecovery">
+    <SequenceStar>
+      <InspectProfile/>
+      <AwaitPlanningReference/>
+      <WorkpiecePoseValid/>
+      <CaptureCutEnvironment/>
+      <PlanCut/>
+      <ForEachRecoveryFeature>
+        <SequenceStar>
+          <SelectRecoveryFeature/>
+          <Fallback>
+            <FeatureReadyForInspection/>
+            <SequenceStar><AwaitExecutionReady/><ExecuteCut/></SequenceStar>
+          </Fallback>
+          <FeatureReadyForInspection/>
+          <InspectKerf/>
+          <ValidateKerf/>
+          <Fallback>
+            <KerfVerified/>
+            <SequenceStar>
+              <ResidualDetected/>
+              <PlanRecut/>
+              <AwaitExecutionReady/>
+              <ExecuteRecut/>
+              <InspectKerf/>
+              <ValidateKerf/>
+              <KerfVerified/>
+            </SequenceStar>
+          </Fallback>
+        </SequenceStar>
+      </ForEachRecoveryFeature>
+      <AllActiveFeaturesVerified/>
+    </SequenceStar>
+  </BehaviorTree>
+</root>

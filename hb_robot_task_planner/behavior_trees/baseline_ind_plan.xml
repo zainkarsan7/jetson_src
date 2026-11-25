@@ -1,104 +1,29 @@
-
 <?xml version="1.0"?>
-<root main_tree_to_execute="BehaviorTree"
-      BTCPP_format="3">
-
-  <BehaviorTree ID="BehaviorTree">
-
-    <Sequence name="IndependentCutDryRun">
-
-      <Action ID="InspectProfile"/>
-
-      <Action ID="AwaitPlanningReference"/>
-
-      <Fallback name="ConfirmPose">
-        <Condition ID="WorkpiecePoseValid"/>
-
-        <RetryUntilSuccessful num_attempts="3">
-          <Sequence>
-            <Action ID="WaitForStablePlatform"/>
-            <Action ID="RevalidateWorkpiece"/>
-            <Action ID="AwaitGeometry"/>
-          </Sequence>
-        </RetryUntilSuccessful>
+<root main_tree_to_execute="IndependentCuts" BTCPP_format="3">
+  <BehaviorTree ID="IndependentCuts">
+    <!-- Session runner pauses without halting this checkpoint on failure. -->
+    <SequenceStar name="IndependentCutSession">
+      <InspectProfile/>
+      <AwaitPlanningReference/>
+      <Fallback>
+        <WorkpiecePoseValid/>
+        <SequenceStar>
+          <WaitForStablePlatform/>
+          <RevalidateWorkpiece/>
+          <AwaitGeometry/>
+        </SequenceStar>
       </Fallback>
-
-      <RetryUntilSuccessful num_attempts="3">
-        <Sequence name="PrepareCutBatch">
-
-          <Fallback name="ConfirmPoseBeforePlanning">
-            <Condition ID="WorkpiecePoseValid"/>
-
-            <Sequence>
-              <Action ID="WaitForStablePlatform"/>
-              <Action ID="RevalidateWorkpiece"/>
-              <Action ID="AwaitGeometry"/>
-            </Sequence>
-          </Fallback>
-
-          <Action ID="CaptureCutEnvironment"/>
-
-          <!-- Store three independent home-to-home cuts. -->
-          <Action ID="PlanCut"/>
-
-          <!-- Check the batch before selecting a feature. -->
-          <Condition ID="CandidateVersionsMatch"/>
-          <Condition ID="ValidateTaskState"/>
-
-        </Sequence>
-      </RetryUntilSuccessful>
-
-      <!-- Each iteration selects a different stored plan.
-           ExecuteCut clears the selection on completion. -->
-      <Repeat num_cycles="3">
-        <Sequence name="ExecuteOneFeature">
-
-          <Action ID="SelectNextCutFeature"/>
-
-          <!-- Recheck scene, pose and supervision
-               before each individual motion. -->
-          <Condition ID="CandidateVersionsMatch"/>
-          <Condition ID="ValidateTaskState"/>
-          <Fallback name="ExecuteOrRecover">
-            <Action ID="ExecuteCut"/>
-
-            <Sequence name="RecoverInterruptedFeature">
-              <Condition ID= "CutFeatureInterrupted"/>
-              <Action ID="AwaitTorchFaultClear"/>
-              <Action ID="RecoverCut"/>
-              <Action ID="MarkFeatureRecoveryPendingInspection"/>
-            </Sequence>
-          </Fallback>
-
-        </Sequence>
-      </Repeat>
-
-      <!-- A partially planned batch cannot pass. -->
-      <Condition ID="AllCutFeaturesResolved"/>
-
-    </Sequence>
-
+      <CaptureCutEnvironment/>
+      <PlanCut/>
+      <ForEachPending>
+        <SequenceStar name="ExecuteOneFeature">
+          <SelectNextCutFeature/>
+          <AwaitExecutionReady/>
+          <ExecuteCut/>
+        </SequenceStar>
+      </ForEachPending>
+      <!-- Rejected/unplannable/interrupted features never imply completed cuts. -->
+      <AllCutFeaturesCompleted/>
+    </SequenceStar>
   </BehaviorTree>
-
-  <TreeNodesModel>
-    <Action ID="InspectProfile"/>
-    <Action ID="AwaitPlanningReference"/>
-    <Action ID="RevalidateWorkpiece"/>
-    <Action ID="AwaitGeometry"/>
-    <Action ID="CaptureCutEnvironment"/>
-    <Action ID="WaitForStablePlatform"/>
-    <Action ID="PlanCut"/>
-    <Action ID="SelectNextCutFeature"/>
-    <Action ID="ExecuteCut"/>
-    <Action ID="AwaitTorchFaultClear"/>
-    <Action ID="RecoverCut"/>
-    <Action ID="MarkFeatureRecoveryPendingInspection"/>
-    <Condition ID= "CutFeatureInterrupted"/>
-    <Condition ID="WorkpiecePoseValid"/>
-    <Condition ID="CandidateVersionsMatch"/>
-    <Condition ID="ValidateTaskState"/>
-    <Condition ID="PendingCutFeatures"/>
-    <Condition ID="AllCutFeaturesCompleted"/>
-  </TreeNodesModel>
-
 </root>

@@ -102,6 +102,8 @@ struct ProcessCandidate
     double torch_roll_rad = 0.0;
     std::size_t seed_index = 0;
     bool solved_backward = false;
+    std::string direction_seed_name;
+    moveit::core::RobotStatePtr direction_home;
 
     // Each vector includes its start and end states.
     // Boundaries are deliberately duplicated.

@@ -1,0 +1,691 @@
+#!/usr/bin/env python3
+"""Persistent, manually stepped independent-feature recovery client. No authority publishers."""
+import copy
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import time
+import threading
+import uuid
+import zipfile
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
+from rclpy.qos import QoSProfile, DurabilityPolicy
+from rclpy.serialization import serialize_message, deserialize_message
+from action_msgs.msg import GoalStatus
+from rcl_interfaces.srv import GetParameters
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
+from moveit_msgs.msg import PlanningScene, PlanningSceneComponents, CollisionObject
+from moveit_msgs.srv import GetPlanningScene
+from hb_robot_interfaces.action import CutProfile, InspectCut, RevalidateWorkpiece
+from hb_robot_interfaces.msg import WorkpieceReference, TaskState, PlatformSupervision, CutInterval, KerfEvidence, KerfObservation
+from hb_robot_interfaces.srv import CaptureCutEnvironment, EvaluateKerf, GetCutDefinition, ReplayKerf
+
+
+def write_archive(path, metadata, blobs):
+    """JSON + typed ROS CDR, checksummed and atomically replaced; never pickle."""
+    if sum(map(len, blobs.values())) > 512 * 1024 * 1024:
+        raise ValueError('Baseline exceeds 512 MiB budget; record large RGB-D sessions with rosbag2')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = copy.deepcopy(metadata)
+    manifest['format'] = 'hb-independent-cut-baseline-1'
+    manifest['sha256'] = {name: hashlib.sha256(value).hexdigest() for name, value in blobs.items()}
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with open(temporary, 'wb') as stream:
+            with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('manifest.json', json.dumps(manifest, indent=2, allow_nan=False))
+                for name, value in blobs.items():
+                    archive.writestr(name, value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if os.name != 'nt':
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def read_archive(path):
+    with zipfile.ZipFile(path) as archive:
+        if sum(i.file_size for i in archive.infolist()) > 512 * 1024 * 1024:
+            raise ValueError('Archive exceeds 512 MiB uncompressed budget')
+        metadata = json.loads(archive.read('manifest.json'))
+        if metadata.get('format') != 'hb-independent-cut-baseline-1':
+            raise ValueError('Unsupported baseline format; rebuild all ROS interfaces together')
+        blobs = {name: archive.read(name) for name in metadata['sha256']}
+    for name, value in blobs.items():
+        if hashlib.sha256(value).hexdigest() != metadata['sha256'][name]:
+            raise ValueError('Corrupt baseline entry: ' + name)
+    for required in ('reference.cdr', 'workpiece.cdr', 'scene.cdr', 'state.cdr'):
+        if required not in blobs:
+            raise ValueError('Missing baseline entry: ' + required)
+    return metadata, blobs
+
+
+class RecoveryDebug(Node):
+    def __init__(self):
+        super().__init__('cut_recovery_debug_server')
+        defaults = {'baseline_file': str(Path.home() / '.local/share/hb_robot/ipn180_cut_baseline.zip'), 'feature': 'right_web',
+                    'repair_mode': 'evidence', 'allow_inspection_motion': False,
+                    'allow_recut_execution': False, 'allow_live_cutting': False,
+                    'standoff': 0.01, 'pos_tol': 0.01, 'ang_tol': 0.3}
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
+        self.path = Path(self.param('baseline_file')).expanduser().resolve()
+        self.data = {'baseline_id': uuid.uuid4().hex, 'cut_id': 'debug_' + uuid.uuid4().hex,
+                     'features': {}, 'definition': '', 'history': []}
+        self.blobs, self.parents, self.evidence = {}, {}, {}
+        self.state = self.reference = self.platform = self.bound = None
+        self.state_at = self.platform_at = 0.0
+        self.heartbeat_lock = threading.Lock()
+        self.heartbeats = {key: {'callbacks': 0, 'accepted': 0, 'rejected': 0,
+            'received': None, 'source_age_ms': None, 'rejection': '', 'max_callback_gap_ms': 0.0}
+            for key in ('task', 'platform')}
+        self.loaded = False
+        self.restore_receipt = ''
+        self.candidate = None
+        self.verdict = None
+        self.busy = self.last = ''
+        self.last_success = None
+        # Node.handle belongs to rclpy; keep action ownership in a separate field.
+        self._action_goal_handle = None
+        self.cancel_pending = False
+        self.cancel_reason = ''
+        self.ticket = 0
+        self.started = 0.0
+        self.action_submitted = False
+        self.action_epoch = 0
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        # This small receiver has its own executor, in this process. Archive I/O
+        # and action callbacks remain serialized on the original executor.
+        self.heartbeat_node = Node(self.get_name() + '_heartbeats', context=self.context,
+            use_global_arguments=False, start_parameter_services=False)
+        self.heartbeat_node.create_subscription(TaskState,
+            self.resolve_topic_name('/task_state'), self.on_state, latched)
+        self.heartbeat_node.create_subscription(PlatformSupervision,
+            self.resolve_topic_name('/platform_supervision'), self.on_platform, 1)
+        self.create_subscription(WorkpieceReference, '/workpiece_reference/accepted', self.on_reference, latched)
+        self.create_subscription(KerfObservation, '/inspect_cut_server/observations', self.on_observation, 10)
+        self.status_pub = self.create_publisher(String, '~/status', latched)
+        self.cut = ActionClient(self, CutProfile, '/cut_profile')
+        self.inspect = ActionClient(self, InspectCut, '/inspect_cut')
+        self.restore = ActionClient(self, RevalidateWorkpiece, '/revalidate_workpiece')
+        self.scene = self.create_client(GetPlanningScene, '/get_planning_scene')
+        self.capture = self.create_client(CaptureCutEnvironment, '/capture_cut_environment')
+        self.evaluate = self.create_client(EvaluateKerf, '/inspect_cut_server/evaluate_evidence')
+        self.definition = self.create_client(GetCutDefinition, '/inspect_cut_server/cut_definition')
+        self.replay = self.create_client(ReplayKerf, '/inspect_cut_server/replay_observation')
+        self.cut_params = self.create_client(GetParameters, '/cut_profile_server/get_parameters')
+        self.inspect_params = self.create_client(GetParameters, '/inspect_cut_server/get_parameters')
+        for command in ('status', 'health', 'ledger', 'bind', 'save', 'load', 'restore_reference', 'capture_environment',
+                        'plan_baseline', 'inspect', 'validate', 'replay_evidence', 'plan_recut',
+                        'execute_recut', 'reset_recovery', 'replay_observations', 'cancel'):
+            self.create_service(Trigger, '~/' + command,
+                lambda request, response, name=command: self.command(name, response))
+        self.create_timer(0.1, self.tick)
+
+    def param(self, name):
+        return self.get_parameter(name).value
+
+    def destroy_node(self):
+        self.heartbeat_node.destroy_node()
+        return super().destroy_node()
+
+    @staticmethod
+    def identity(reference):
+        stamp = reference.estimate.header.stamp
+        return str(stamp.sec * 1000000000 + stamp.nanosec)
+
+    def receive_heartbeat(self, key, value):
+        received = time.monotonic()
+        stamp = value.header.stamp
+        age = (self.get_clock().now().nanoseconds - stamp.sec * 1000000000 - stamp.nanosec) / 1e9
+        reason = ('malformed_stamp' if stamp.sec < 0 or not 0 <= stamp.nanosec < 1000000000 else
+                  'future_stamp' if age < -0.005 else 'old_stamp' if age > 5 else '')
+        with self.heartbeat_lock:
+            diagnostic = self.heartbeats[key]
+            if diagnostic['received'] is not None:
+                diagnostic['max_callback_gap_ms'] = max(diagnostic['max_callback_gap_ms'],
+                    1000 * (received - diagnostic['received']))
+            diagnostic.update(callbacks=diagnostic['callbacks'] + 1, received=received,
+                source_age_ms=1000 * age, rejection=reason)
+            diagnostic['rejected' if reason else 'accepted'] += 1
+            if not reason:
+                # Preserve source-age protection: queued old samples must not
+                # become fresh authority merely because their callback runs now.
+                at = received - max(age, 0)
+                if key == 'task':
+                    self.state, self.state_at = value, at
+                else:
+                    self.platform, self.platform_at = value, at
+
+    def heartbeat_snapshot(self):
+        with self.heartbeat_lock:
+            now = time.monotonic()
+            health = {}
+            for key, message, at in (('task', self.state, self.state_at),
+                                     ('platform', self.platform, self.platform_at)):
+                d = self.heartbeats[key]
+                sample_age = 1000 * (now - at) if message is not None else None
+                health[key] = {k: v for k, v in d.items() if k != 'received'}
+                health[key].update(callback_age_ms=None if d['received'] is None else
+                    1000 * (now - d['received']), sample_age_ms=sample_age,
+                    fresh=sample_age is not None and 0 <= sample_age < 500)
+            return self.state, self.platform, health
+
+    def on_state(self, value):
+        self.receive_heartbeat('task', value)
+
+    def on_platform(self, value):
+        self.receive_heartbeat('platform', value)
+
+    def on_reference(self, value):
+        self.reference = value
+
+    def on_observation(self, value):
+        if self.busy == 'inspect' and value.cut_id == self.data['cut_id'] and value.execution_version == self.action_epoch:
+            stamp = value.header.stamp.sec * 1000000000 + value.header.stamp.nanosec
+            encoded = serialize_message(value)
+            if sum(map(len, self.blobs.values())) + len(encoded) < 480 * 1024 * 1024:
+                self.blobs['observation_' + value.feature_name + '_' + str(stamp) + '.cdr'] = encoded
+            else:
+                self.get_logger().warning('Raw observation archive budget reached; use rosbag2 for full recording')
+
+    @staticmethod
+    def versions(state):
+        return (state.geometry_version, state.pose_version, state.scene_version,
+                state.scene_id, state.cut_environment_id)
+
+    def guard(self, bound=True, starting=True, geometry=True):
+        if self.count_publishers('/task_session/status'):
+            raise RuntimeError('Stop the contained BT session before taking command ownership')
+        s, p, health = self.heartbeat_snapshot()
+        if not all(d['fresh'] for d in health.values()):
+            raise RuntimeError('Live task/platform heartbeat missing or older than 500 ms: ' +
+                               json.dumps(health, sort_keys=True))
+        if s.process_fault_active or s.motion_fault_active or not s.supervision_valid or not s.imu_stable or \
+                not p.supervision_valid or not p.imu_stable or p.hard_motion_detected:
+            raise RuntimeError('Live authority denies operation: '
+                f'task_supervision={s.supervision_valid} task_imu={s.imu_stable} '
+                f'process_fault={s.process_fault_active} motion_fault={s.motion_fault_active} '
+                f'platform_supervision={p.supervision_valid} platform_imu={p.imu_stable} '
+                f'hard_motion={p.hard_motion_detected}')
+        if starting and p.state == PlatformSupervision.UNCERTAIN:
+            raise RuntimeError('New operation must wait for stable supervision')
+        if geometry and (not s.scene_valid or not s.workpiece_pose_valid or not self.reference or
+                         self.identity(self.reference) != s.scene_id):
+            raise RuntimeError('Accepted reference/pose is not current')
+        if bound and (self.bound is None or self.versions(self.bound) != self.versions(s)):
+            raise RuntimeError('Bind the live reference and replan after geometry/scene changes')
+
+    def feature(self):
+        name = self.param('feature')
+        if name not in self.data['features']:
+            raise RuntimeError('Selected feature is not in this baseline: ' + name)
+        return name, self.data['features'][name]
+
+    def persist(self):
+        if 'reference.cdr' not in self.blobs:
+            raise RuntimeError('SaveBaseline first; execution needs a persistent attempt journal')
+        write_archive(self.path, self.data, self.blobs)
+
+    def finish(self, message, success=True):
+        if self.cancel_reason:
+            message += '; cancel_reason=' + self.cancel_reason
+        self.last = self.busy + ': ' + message
+        self.last_success = bool(success and not self.cancel_reason)
+        if not success:
+            self.get_logger().error(self.last)
+        elif self.cancel_reason:
+            self.get_logger().warning(self.last)
+        else:
+            self.get_logger().info(self.last)
+        self.busy = ''
+        self._action_goal_handle = None
+        self.action_submitted = False
+
+    def rpc(self, client, request, done):
+        if not client.service_is_ready():
+            raise RuntimeError('Service unavailable: ' + client.srv_name)
+        ticket = self.ticket
+        future = client.call_async(request)
+        def completed(reply):
+            if ticket != self.ticket or not self.busy:
+                return
+            try:
+                done(reply.result())
+            except Exception as error:
+                if self.action_submitted:
+                    self.cancel('Submission outcome uncertain: ' + str(error))
+                else:
+                    self.finish(str(error), success=False)
+        future.add_done_callback(completed)
+
+    def action(self, client, goal, done):
+        if not client.server_is_ready():
+            raise RuntimeError('Action server unavailable')
+        ticket = self.ticket
+        self.action_epoch = self.state.execution_version if self.state else 0
+        self.action_submitted = True
+        def accepted(future):
+            if ticket != self.ticket:
+                return
+            try:
+                self._action_goal_handle = future.result()
+                if not self._action_goal_handle.accepted:
+                    self.finish('Goal rejected; see production server log', success=False)
+                    return
+                if self.cancel_pending:
+                    self._action_goal_handle.cancel_goal_async()
+                self._action_goal_handle.get_result_async().add_done_callback(result)
+            except Exception as error:
+                self.last = 'Action response uncertain: ' + str(error)
+                self.cancel_reason = self.last
+                self.get_logger().warning(self.last)
+                self.cancel_pending = True  # Retain ownership; never start a second action.
+        def result(future):
+            if ticket != self.ticket:
+                return
+            try:
+                wrapped = future.result()
+                done(wrapped.result, wrapped.status == GoalStatus.STATUS_SUCCEEDED and not self.cancel_pending)
+            except Exception as error:
+                self.finish('Terminal-result handling failed: ' + str(error), success=False)
+        client.send_goal_async(goal).add_done_callback(accepted)
+
+    def command(self, name, response):
+        if self.busy and name not in ('status', 'health', 'ledger', 'cancel'):
+            response.success, response.message = False, 'Busy: ' + self.busy
+            return response
+        try:
+            if name == 'status':
+                response.success = True
+                response.message = self.describe()
+                return response
+            if name == 'health':
+                _, _, health = self.heartbeat_snapshot()
+                response.success = all(d['fresh'] for d in health.values())
+                for key, topic in (('task', '/task_state'), ('platform', '/platform_supervision')):
+                    health[key]['publishers'] = self.count_publishers(topic)
+                response.message = json.dumps(health, indent=2)
+                return response
+            if name == 'ledger':
+                response.success = True
+                response.message = json.dumps(self.data, indent=2)
+                return response
+            if name == 'cancel':
+                self.cancel('operator request')
+                response.success, response.message = True, 'Wait for terminal result; cancel is not containment'
+                return response
+            if self.busy:
+                raise RuntimeError('Busy: ' + self.busy)
+            self.ticket += 1
+            self.busy, self.started = name, time.monotonic()
+            self._action_goal_handle, self.cancel_pending, self.action_submitted = None, False, False
+            self.cancel_reason = ''
+            self.dispatch(name)
+            response.success = True if self.busy else self.last_success
+            response.message = 'Queued; inspect ~/status for the result' if self.busy else self.last
+        except Exception as error:
+            if self.action_submitted:
+                self.cancel('Submission outcome uncertain: ' + str(error))
+            else:
+                self.finish(str(error), success=False)
+            response.success, response.message = False, str(error)
+        return response
+
+    def dispatch(self, name):
+        if name == 'load':
+            self.data, self.blobs = read_archive(self.path)
+            self.parents, self.evidence = {}, {}
+            self.bound = self.candidate = self.verdict = None
+            self.loaded, self.restore_receipt = True, ''
+            self.finish('Archive loaded for offline use; no plan IDs or authorization restored')
+        elif name == 'reset_recovery':
+            self.evidence, self.verdict, self.candidate = {}, None, None
+            self.finish('Observations/candidates reset; physical attempt journal and baseline retained')
+        elif name == 'replay_observations':
+            feature, _ = self.feature()
+            records = [deserialize_message(value, KerfObservation) for key, value in sorted(self.blobs.items())
+                       if key.startswith('observation_' + feature + '_')]
+            if not records:
+                raise RuntimeError('No recorded observations for selected feature')
+            # Replay only the latest recorded inspection epoch/pose; older acquisitions remain archived.
+            latest = max(records, key=lambda r: (r.header.stamp.sec, r.header.stamp.nanosec))
+            records = [r for r in records if (r.geometry_version, r.pose_version, r.execution_version) ==
+                       (latest.geometry_version, latest.pose_version, latest.execution_version)]
+            reference = deserialize_message(self.blobs['reference.cdr'], WorkpieceReference)
+            def step(prior):
+                if not records:
+                    self.blobs['evidence_' + feature + '.cdr'] = serialize_message(prior)
+                    self.finish('Recomputed historical evidence; replay_evidence evaluates it offline')
+                    return
+                self.started = time.monotonic()
+                request = ReplayKerf.Request(profile_name=reference.estimate.profile_name,
+                    observation=records.pop(0), prior=prior)
+                def accumulated(result):
+                    if not result.success:
+                        raise RuntimeError(result.message)
+                    step(result.evidence)
+                self.rpc(self.replay, request, accumulated)
+            step(KerfEvidence())
+        elif name == 'restore_reference':
+            self.guard(bound=False, geometry=False)
+            if 'reference.cdr' not in self.blobs:
+                raise RuntimeError('Load a baseline first')
+            self.bound = self.candidate = None
+            self.parents = {}
+            goal = RevalidateWorkpiece.Goal()
+            goal.expected_pose_version = self.state.pose_version
+            goal.use_archived_reference = True
+            goal.archived_reference = deserialize_message(self.blobs['reference.cdr'], WorkpieceReference)
+            goal.archived_collision = deserialize_message(self.blobs['workpiece.cdr'], CollisionObject)
+            def restored(result, ok):
+                if ok and result.localized and not result.poorly_constrained:
+                    stamp = result.estimate.header.stamp
+                    self.restore_receipt = str(stamp.sec * 1000000000 + stamp.nanosec)
+                    self.finish(result.message + '; bind only after accepted reference arrives')
+                else:
+                    self.get_logger().warning('Restore failed: ' + result.message)
+                    self.finish('Restore failed: ' + result.message, success=False)
+            self.action(self.restore, goal, restored)
+        elif name == 'bind':
+            self.guard(bound=False)
+            if self.loaded and self.restore_receipt != self.state.scene_id:
+                raise RuntimeError('Loaded archive requires successful live restore_reference first')
+            expected = copy.deepcopy(self.state)
+            request = GetCutDefinition.Request(profile_name=self.reference.estimate.profile_name)
+            def bound(result):
+                self.guard(bound=False)
+                if not result.found or self.versions(expected) != self.versions(self.state):
+                    raise RuntimeError('Definition unavailable or reference changed during bind')
+                if self.data['definition'] and self.data['definition'] != result.definition:
+                    raise RuntimeError('Installed cut geometry differs from archived definition')
+                self.data['definition'] = result.definition
+                self.bound = copy.deepcopy(self.state)
+                self.candidate = self.verdict = None
+                self.finish('Bound live versions; saved evidence remains historical')
+            self.rpc(self.definition, request, bound)
+        elif name == 'capture_environment':
+            self.guard()
+            s = self.state
+            request = CaptureCutEnvironment.Request(geometry_version=s.geometry_version,
+                pose_version=s.pose_version, scene_version=s.scene_version)
+            def captured(result):
+                self.bound = self.candidate = None
+                self.parents = {}
+                if not result.success:
+                    raise RuntimeError('Environment capture failed: ' + result.message +
+                                       '; bind, then retry capture_environment')
+                self.finish(result.message + '; bind again after scene settles, then plan_baseline')
+            self.rpc(self.capture, request, captured)
+        elif name == 'save':
+            # Persisting an archive cannot authorize motion. Do not put disk I/O
+            # behind the live motion gate, especially when saving a fault record.
+            if self.bound is None and all(key in self.blobs for key in
+                    ('reference.cdr', 'workpiece.cdr', 'scene.cdr', 'state.cdr')):
+                self.persist()
+                self.finish('Saved archived snapshot and ledger: ' + str(self.path))
+                return
+            state, _, _ = self.heartbeat_snapshot()
+            if self.bound is None or state is None or self.reference is None:
+                raise RuntimeError('No baseline snapshot to save after restart: load the existing archive, '
+                                   'or bind the accepted workpiece before creating a new baseline')
+            expected = copy.deepcopy(state)
+            reference = copy.deepcopy(self.reference)
+            if self.versions(self.bound) != self.versions(expected) or self.identity(reference) != expected.scene_id:
+                raise RuntimeError('Reference/scene changed; bind again before saving a new snapshot')
+            request = GetPlanningScene.Request()
+            request.components.components = PlanningSceneComponents.WORLD_OBJECT_GEOMETRY | \
+                PlanningSceneComponents.OCTOMAP | PlanningSceneComponents.TRANSFORMS | \
+                PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
+            def saved(result):
+                current, _, _ = self.heartbeat_snapshot()
+                if current is None or self.versions(current) != self.versions(expected) or \
+                        current.execution_version != expected.execution_version or \
+                        self.reference is None or self.identity(self.reference) != self.identity(reference):
+                    raise RuntimeError('Reference/scene/execution changed during save; retry with a consistent snapshot')
+                mesh = next((o for o in result.scene.world.collision_objects if o.id == 'wk_workpiece_collision'), None)
+                if mesh is None:
+                    raise RuntimeError('Accepted collision mesh missing')
+                self.blobs.update({'reference.cdr': serialize_message(reference),
+                    'workpiece.cdr': serialize_message(mesh), 'scene.cdr': serialize_message(result.scene),
+                    'state.cdr': serialize_message(expected)})
+                self.data['snapshot_versions'] = list(self.versions(expected))
+                self.data['archive_authorizes_motion'] = False
+                self.persist()
+                self.finish('Saved full reference/cloud, mesh, scene, definition, feature ledger and evidence: ' +
+                            str(self.path) + ' (' + str(self.path.stat().st_size) + ' bytes)')
+            self.rpc(self.scene, request, saved)
+        elif name == 'plan_baseline':
+            self.guard()
+            self.candidate = None
+            goal = self.cut_goal()
+            self.data['planning_parameters'] = {n: self.param(n) for n in ('standoff', 'pos_tol', 'ang_tol')}
+            requested = copy.deepcopy(self.state)
+            def planned(result, ok):
+                self.guard()
+                if not ok or not result.success or not result.feature_plans or self.versions(requested) != self.versions(self.state):
+                    raise RuntimeError('Need successful independent planning: ' + result.message)
+                self.parents = {p.feature_id: p.plan_id for p in result.feature_plans if p.status == p.READY and p.plan_id}
+                for p in result.feature_plans:
+                    f = self.data['features'].setdefault(p.feature_id, {'execution_state': 'PLANNED_ONLY', 'attempted': []})
+                    f.update(original_plan_id=p.plan_id, planning_status=p.status, message=p.message)
+                self.finish('Fresh independent parents planned; save baseline before execution')
+            self.action(self.cut, goal, planned)
+        elif name == 'inspect':
+            self.guard()
+            feature, _ = self.feature()
+            self.candidate = self.verdict = None
+            request = GetParameters.Request(names=['preview_only'])
+            def configured(reply):
+                self.guard()
+                if len(reply.values) != 1 or reply.values[0].type != 1:
+                    raise RuntimeError('Missing preview_only parameter')
+                if not reply.values[0].bool_value and not self.param('allow_inspection_motion'):
+                    raise RuntimeError('Set allow_inspection_motion for live acquisition and return-home motion')
+                goal = InspectCut.Goal(estimate=self.reference.estimate, cut_id=self.data['cut_id'],
+                    required_segments=[feature], geometry_version=self.state.geometry_version,
+                    pose_version=self.state.pose_version, execution_version=self.state.execution_version,
+                    samples_per_viewpoint=3, camera_standoff=0.30)
+                observed_state = copy.deepcopy(self.state)
+                def inspected(result, ok):
+                    self.blobs['evidence_' + feature + '.cdr'] = serialize_message(result.evidence)
+                    self.blobs['evidence_state_' + feature + '.cdr'] = serialize_message(observed_state)
+                    self.evidence[feature] = (result.evidence, observed_state, ok and result.success)
+                    if 'reference.cdr' in self.blobs:
+                        self.persist()
+                    self.finish('Acquisition success=' + str(result.success) + ': ' + result.message,
+                                success=ok and result.success)
+                self.action(self.inspect, goal, inspected)
+            self.rpc(self.inspect_params, request, configured)
+        elif name in ('validate', 'replay_evidence'):
+            feature, _ = self.feature()
+            live = name == 'validate'
+            if live:
+                self.guard()
+                evidence, observed_state, valid = self.evidence[feature]
+                if not valid:
+                    raise RuntimeError('No successful live inspection')
+                state = self.state
+            else:
+                evidence = deserialize_message(self.blobs['evidence_' + feature + '.cdr'], KerfEvidence)
+                state = deserialize_message(self.blobs['evidence_state_' + feature + '.cdr'], TaskState)
+            request = EvaluateKerf.Request(evidence=evidence, state=state,
+                cut_id=self.data['cut_id'], feature_id=feature)
+            evaluated = copy.deepcopy(state)
+            def validated(result):
+                self.verdict = (feature, result, evaluated, live)
+                self.finish(('LIVE' if live else 'OFFLINE ONLY') + ' verdict=' + str(result.status) +
+                    ' residuals=' + str([(i.s0, i.s1) for i in result.residuals]))
+            self.rpc(self.evaluate, request, validated)
+        elif name == 'plan_recut':
+            self.guard()
+            feature, ledger = self.feature()
+            if feature not in self.parents:
+                raise RuntimeError('plan_baseline must generate a fresh parent for this feature')
+            if len(ledger['attempted']) >= 4:
+                raise RuntimeError('Feature repair-attempt budget exhausted')
+            mode = self.param('repair_mode')
+            if mode == 'full_feature':
+                intervals = [(0.0, 1.0)]  # Planned-only / wholly uncut material is explicitly supported.
+            elif mode == 'evidence':
+                if not self.verdict:
+                    raise RuntimeError('Validate live evidence first')
+                selected, verdict, epoch, live = self.verdict
+                if not live or selected != feature or verdict.status != TaskState.RESIDUAL_MATERIAL or \
+                        epoch.execution_version != self.state.execution_version or self.versions(epoch) != self.versions(self.state):
+                    raise RuntimeError('Verdict is historical, wrong-feature, or not residual')
+                intervals = []
+                for i in sorted(verdict.residuals, key=lambda item: item.s0):
+                    if intervals and i.s0 <= intervals[-1][1] + 1e-9:
+                        intervals[-1] = (intervals[-1][0], max(i.s1, intervals[-1][1]))
+                    else:
+                        intervals.append((i.s0, i.s1))
+            else:
+                raise RuntimeError('repair_mode must be evidence or full_feature')
+            region = next((i for i in intervals if not any(i[0] < a[1] and a[0] < i[1] for a in ledger['attempted'])), None)
+            if region is None:
+                raise RuntimeError('All remaining intervals overlap attempted regions; no automatic repeat')
+            goal = self.cut_goal()
+            goal.parent_plan_id = self.parents[feature]
+            goal.intervals = [CutInterval(segment_id=feature, s0=region[0], s1=region[1])]
+            requested = copy.deepcopy(self.state)
+            self.candidate = None
+            def planned(result, ok):
+                self.guard()
+                plans = [p for p in result.feature_plans if p.feature_id == feature and p.status == p.READY and p.plan_id]
+                if not ok or not result.success or len(plans) != 1 or len(result.feature_plans) != 1 or \
+                        result.parent_plan_id != goal.parent_plan_id or self.versions(requested) != self.versions(self.state):
+                    raise RuntimeError('Independent repair planning failed: ' + result.message)
+                self.candidate = (feature, plans[0].plan_id, region, requested)
+                self.finish('Review stored recut plan=' + plans[0].plan_id + ' interval=' + str(region))
+            self.action(self.cut, goal, planned)
+        elif name == 'execute_recut':
+            self.guard()
+            if not self.param('allow_recut_execution') or not self.candidate:
+                raise RuntimeError('Need allow_recut_execution and a reviewed candidate')
+            request = GetParameters.Request(names=['cut_planning.mode', 'require_plan_approval', 'enable_cutting_process'])
+            def configured(reply):
+                self.guard()
+                values = reply.values
+                if len(values) != 3 or [v.type for v in values] != [4, 1, 1] or \
+                        values[0].string_value != 'independent' or not values[1].bool_value:
+                    raise RuntimeError('Independent mode and production plan approval are required')
+                if values[2].bool_value and not self.param('allow_live_cutting'):
+                    raise RuntimeError('Plasma enabled on server; allow_live_cutting is false')
+                feature, plan, region, planned_state = self.candidate
+                if self.param('feature') != feature or self.versions(planned_state) != self.versions(self.state) or \
+                        planned_state.execution_version != self.state.execution_version:
+                    raise RuntimeError('Candidate feature, scene or execution epoch changed')
+                self.data['features'][feature]['attempted'].append(list(region))
+                self.data['features'][feature]['execution_state'] = 'OUTCOME_UNKNOWN'
+                self.data['history'].append({'feature': feature, 'plan': plan, 'interval': region, 'event': 'SUBMIT'})
+                self.persist()  # Write-ahead barrier survives client/server/process restart.
+                self.guard()
+                goal = self.cut_goal()
+                goal.execute, goal.plan_id = True, plan
+                self.candidate = self.verdict = None
+                self.evidence = {}
+                def executed(result, ok):
+                    self.data['features'][feature]['execution_state'] = 'INTERRUPTED' if result.interrupted else \
+                        'EXECUTED' if result.success and result.executed else 'OUTCOME_UNKNOWN' if result.executed else 'NOT_EXECUTED'
+                    self.data['history'].append({'feature': feature, 'plan': plan, 'event': 'RESULT',
+                        'executed': result.executed, 'interrupted': result.interrupted, 'epoch': result.execution_version,
+                        'message': result.message})
+                    self.persist()
+                    self.finish(result.message + '; inspect again before another evidence-driven repair',
+                                success=ok and result.success)
+                self.action(self.cut, goal, executed)
+            self.rpc(self.cut_params, request, configured)
+
+    def cut_goal(self):
+        s = self.state
+        values = [float(self.param(n)) for n in ('standoff', 'pos_tol', 'ang_tol')]
+        if not all(math.isfinite(v) and v > 0 for v in values):
+            raise RuntimeError('Cut tolerances must be finite and positive')
+        return CutProfile.Goal(standoff=values[0], pos_tol=values[1], ang_tol=values[2],
+            cut_id=self.data['cut_id'], geometry_version=s.geometry_version,
+            pose_version=s.pose_version, scene_version=s.scene_version)
+
+    def cancel(self, reason):
+        if not self.busy or self.cancel_pending:
+            return
+        self.cancel_pending = True
+        self.cancel_reason = str(reason)
+        self.candidate = None
+        self.last = 'Cancel requested: ' + reason
+        self.get_logger().warning('[DEBUG CANCEL] operation=' + self.busy + ' reason=' + self.cancel_reason)
+        if self._action_goal_handle:
+            try:
+                self._action_goal_handle.cancel_goal_async()
+            except Exception as error:
+                self.last += '; cancellation error: ' + str(error)
+        elif not self.action_submitted:
+            self.ticket += 1
+            self.finish('Canceled before action submission')
+
+    def describe(self):
+        _, _, health = self.heartbeat_snapshot()
+        return json.dumps({'operation': self.busy or 'idle', 'last': self.last,
+            'last_success': self.last_success, 'heartbeats': health,
+            'feature': self.param('feature'), 'bound': self.bound is not None,
+            'candidate': self.candidate[1] if self.candidate else None,
+            'cancel_pending': bool(self.busy and self.cancel_pending), 'baseline': str(self.path),
+            'cancel_reason': self.cancel_reason,
+            'archive_exists': self.path.is_file(), 'history_entries': len(self.data.get('history', [])),
+            'features': self.data['features']})
+
+    def tick(self):
+        if self.busy and self.action_submitted:
+            try:
+                self.guard(bound=self.busy != 'restore_reference', starting=False, geometry=self.busy != 'restore_reference')
+                if self.busy in ('inspect', 'plan_recut', 'plan_baseline') and self.action_epoch != self.state.execution_version:
+                    raise RuntimeError('Execution epoch changed during operation')
+            except Exception as error:
+                self.cancel(str(error))
+        if self.busy and time.monotonic() - self.started > (600 if self.action_submitted else 15):
+            self.cancel('Deadline exceeded')
+        self.status_pub.publish(String(data=self.describe()))
+
+
+def main():
+    rclpy.init()
+    node = RecoveryDebug()
+    heartbeat_executor = SingleThreadedExecutor(context=node.context)
+    heartbeat_executor.add_node(node.heartbeat_node)
+    def receive():
+        try:
+            heartbeat_executor.spin()
+        except ExternalShutdownException:
+            pass
+    receiver = threading.Thread(target=receive, name='debug-heartbeats')
+    receiver.start()
+    node.get_logger().info('[DEBUG HEARTBEAT] dedicated receiver; limit_ms=500; '
+                           'callback and source ages available from ~/health')
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # Use ~/cancel and wait for the terminal result BEFORE exiting.
+    finally:
+        heartbeat_executor.shutdown()
+        receiver.join()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

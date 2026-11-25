@@ -11,6 +11,7 @@
 #include <hb_robot_interfaces/msg/task_state.hpp>
 #include "hb_robot_skills/motion/torch_controller.hpp"
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -31,6 +32,9 @@ using Clock = std::chrono::steady_clock;
 class CutHeightDebugNode final : public rclcpp::Node {
 public:
   CutHeightDebugNode() : Node("cut_height_debug_node") {
+    transfer_test_enabled_ =
+    declare_parameter<bool>(
+        "enable_transfer_test", false);
     group_ = declare_parameter<std::string>("planning_group", "manipulator");
     tcp_ = declare_parameter<std::string>("tcp_link", "ur10e_torch_link");
     axis_ = declare_parameter<std::string>("axis", "x");
@@ -57,16 +61,31 @@ public:
     cfg.transfer_input_pin = declare_parameter<int>("transfer_pin", 0);
     cfg.transfer_active_high = declare_parameter<bool>("transfer_active_high", true);
     cfg.output_timeout_s = declare_parameter<double>("io_timeout_s", 1.0);
+    cfg.voltage_input_pin = declare_parameter<int>("voltage_input_pin", 0);
     cfg.ignition_enabled = ignition_enabled_;
     torch_ = std::make_unique<TorchController>(*this, cfg);
     torch_->setFaultCallback([this](const std::string& why) {
       RCLCPP_ERROR(get_logger(), "Torch fault: %s", why.c_str());
       stop_.store(true);
     });
+    task_sub_ = create_subscription<
+    hb_robot_interfaces::msg::TaskState>(
+    "/task_state",
+    rclcpp::QoS(1).reliable().transient_local(),
+    [this](
+        hb_robot_interfaces::msg::TaskState::ConstSharedPtr msg)
+    {
+        std::lock_guard<std::mutex> lock(task_mu_);
+        task_state_ = *msg;
+        task_received_ = Clock::now();
+    });
     status_pub_ = create_publisher<hb_robot_interfaces::msg::TorchStatus>(torch_topic, 10);
     status_timer_ = create_wall_timer(50ms, [this] { publishTorch(); });
+    height_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    rclcpp::SubscriptionOptions height_options;
+    height_options.callback_group = height_group_;
     height_sub_ = create_subscription<std_msgs::msg::String>(height_topic, rclcpp::QoS(1),
-      [this](std_msgs::msg::String::ConstSharedPtr msg) { receiveHeight(msg->data); });
+      [this](std_msgs::msg::String::ConstSharedPtr msg) { receiveHeight(msg->data); }, height_options);
     home_ = create_client<std_srvs::srv::Trigger>("/torch_height/home");
     prep_ = create_client<std_srvs::srv::Trigger>("/torch_height/prepare");
     search_ = create_client<std_srvs::srv::Trigger>("/torch_height/arc_search");
@@ -74,13 +93,16 @@ public:
     tracking_ = create_client<std_srvs::srv::SetBool>("/torch_height/set_tracking_enabled");
     reset_ = create_client<std_srvs::srv::Trigger>("/torch_height/reset_fault");
     bench_ = declare_parameter<bool>("confirm_bench_clearance", false);
-    if (execute_ || live_ || ignition_enabled_)
-      throw std::runtime_error("This bench debugger does not authorize live cutting");
-    if (status_timeout_ms_ < 100 || home_timeout_ms_ <= 0 || prepare_timeout_ms_ <= 0)
+    dry_ = declare_parameter<bool>("confirm_plasma_inhibited", false);
+    if (status_timeout_ms_ < 100 ||
+    task_timeout_ms_ <= 0 ||
+    home_timeout_ms_ <= 0 ||
+    prepare_timeout_ms_ <= 0 ||
+    search_timeout_ms_ <= 0)
       throw std::runtime_error("Invalid height timeouts");
     ops_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     stop_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    for (const std::string op : {"home", "prepare", "reset_fault", "recover", "plan"}) {
+    for (const std::string op : {"home", "prepare", "reset_fault", "recover", "plan", "dry_search"}) {
       services_.push_back(create_service<std_srvs::srv::Trigger>(
         "~/" + op, [this, op](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                               std::shared_ptr<std_srvs::srv::Trigger::Response> r) {
@@ -96,16 +118,84 @@ public:
         r->success = true;
         r->message = "STOP requested; inspect terminal status (not completion ACK)";
       }, rmw_qos_profile_services_default, stop_group_));
+
+    
+    
     monitor_ = create_wall_timer(20ms, [this] {
-      if (active_.load() && (!offConfirmed() || !communicationValid(height()))) {
+    if (!active_.load())
+        return;
+
+    const bool search = search_active_.load();
+    const auto h = height();
+
+    const bool unsafe =
+    !platformPermitted() ||
+    (search
+        ? searchUnsafe(h)
+        : (!offConfirmed() || !communicationValid(h)));
+
+    // Discard a decision made across a phase transition.
+    if (search != search_active_.load())
+        return;
+
+    if (active_.load() &&
+        (unsafe || stop_.load()) &&
+        !stop_dispatched_.exchange(true))
+    {
+        RCLCPP_ERROR(
+            get_logger(),
+            "[SUPERVISION STOP] search=%d unsafe=%d "
+            "state=%s fault=%d session=%u",
+            int(search),
+            int(unsafe),
+            h.state.c_str(),
+            h.fault,
+            h.session);
+
         stop_.store(true);
         torch_->requestOutputOff();
         requestHeightStop();
-      }
-    });
-    RCLCPP_INFO(get_logger(), "Persistent bench debugger ready; ignition disabled");
+    }
+});
+    RCLCPP_INFO(get_logger(), "Persistent hardware debugger ready; robot execution prohibited");
   }
+  rclcpp::CallbackGroup::SharedPtr heightGroup() const { return height_group_; }
 private:
+  struct Height {
+    std::string state;
+    int32_t position{0};
+    bool sw{false}, referenced{false}, configured{false}, calibration{false}, tracking{false};
+    int fault{0}, result{0};
+    uint32_t session{0}, active_id{0}, done_id{0};
+    Clock::time_point received{};
+  };
+
+  bool platformPermitted() const {
+    std::lock_guard<std::mutex> lock(task_mu_);
+
+    return
+        task_received_ != Clock::time_point{} &&
+        Clock::now() - task_received_ <=
+            std::chrono::milliseconds(task_timeout_ms_) &&
+        task_state_.supervision_valid &&
+        task_state_.imu_stable &&
+        !task_state_.motion_fault_active &&
+        !task_state_.process_fault_active;
+}
+  bool searchUnsafe(const Height& h) const {
+    const auto t = torch_->snapshot();
+
+    return
+        (!valid(h) && !expectedDryEnd(h)) ||
+        !h.referenced ||
+        h.tracking ||
+        h.session != search_session_.load() ||
+        !torch_->hasFreshIO() ||
+        torch_->hasFault() ||
+        !t.output_on.has_value() ||
+        !platformPermitted();
+}
+
   bool offConfirmed() const {
     const auto t = torch_->snapshot();
     return torch_->hasFreshIO() && !torch_->hasFault() && !t.command_on &&
@@ -113,14 +203,18 @@ private:
       t.transfer_detected == std::optional<bool>(false);
   }
   void checkBench() const {
-    if (!bench_ || !offConfirmed() || stop_.load() || !rclcpp::ok())
+    if (!bench_ || !offConfirmed() || stop_.load() || !rclcpp::ok() || !platformPermitted())
       throw std::runtime_error("Bench clearance, confirmed OFF and no STOP required");
   }
   void operate(const std::string& op, std_srvs::srv::Trigger::Response& r) {
     r.success = false;
     // Operations are serialized by ops_group_. STOP is independent.
     try {
-      if (op == "plan") {
+      if (op == "test_search" || op == "dry_search" || op == "live_search") {
+        if ((op == "dry_search" && !dry_) || (op == "live_search" && !live_))
+          throw std::runtime_error("Requested mode not authorized at startup");
+        testSearch();
+      } else if (op == "plan") {
         planOnly();
       } else {
         if (!bench_ || !offConfirmed()) throw std::runtime_error("Bench clearance / fresh OFF required");
@@ -130,9 +224,10 @@ private:
         if (stop_pending_.load()) throw std::runtime_error("STOP acknowledgement pending");
         // Only explicit recovery can rearm after STOP; never resume a cut.
         if (op == "recover" || op == "reset_fault") {
-          if (h.state != "FAULT" && h.state != "UNKNOWN")
+          if (h.state != "FAULT" && h.state != "UNKNOWN" && h.state != "PAUSED")
             throw std::runtime_error("Reset requires FAULT or UNKNOWN");
           stop_.store(false);
+          stop_dispatched_.store(false);
         }
         checkBench();
         active_.store(true);
@@ -147,15 +242,114 @@ private:
         }
         checkBench();
       }
-      r.success = true; r.message = op + " completed";
+      r.success = true; r.message = op + (dry_end_.load() ? " completed: expected SEARCH_END; OFF confirmed; explicit recovery required" : " completed");
     } catch (const std::exception& e) {
       if (active_.load()) {
         stop_.store(true); torch_->requestOutputOff(); requestHeightStop();
+        if (search_active_.load()) {
+           const bool off =
+        torch_->requestShutdown(1500ms) ==
+        TorchCommandResult::CONFIRMED;
+
+        const bool idle = off && torch_->finishCut();
+
+        if (!idle) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "[SHUTDOWN] Failed to restore IDLE: "
+                "off=%d state=%d fault=%d reason=%s",
+                int(off),
+                static_cast<int>(torch_->state()),
+                int(torch_->hasFault()),
+                torch_->faultReason().c_str());
+        } else {
+            RCLCPP_INFO(
+                get_logger(),
+                "[SHUTDOWN] OFF confirmed; IDLE restored");
+        }
+
+        torch_->setActiveSegment("");
+        }
       }
       r.message = e.what();
       RCLCPP_ERROR(get_logger(), "%s: %s", op.c_str(), e.what());
     }
     active_.store(false);
+    search_active_.store(false);
+    dry_end_.store(false);
+    search_id_.store(0);
+  }
+  void checkSearch() const {
+    const auto h = height();
+    if (!bench_ || stop_.load() || !rclcpp::ok() || searchUnsafe(h))
+      throw std::runtime_error("SEARCH supervision failed");
+  }
+  void testSearch() {
+    if ((!dry_ && !live_) || !ignition_enabled_ || !bench_)
+      throw std::runtime_error("SEARCH requires explicit mode authorization and clearance");
+    checkBench();
+    if (torch_->state() != TorchController::State::IDLE) {
+    throw std::runtime_error(
+        "SEARCH denied: TorchController not IDLE, state=" +
+        std::to_string(static_cast<int>(torch_->state())));
+}
+    auto h = height();
+    if (!valid(h) || h.active_id || h.tracking || stop_pending_.load())
+      throw std::runtime_error("Height not idle/healthy");
+    active_.store(true);
+    ensureHome();
+    h = height();
+    const auto session = h.session;
+    RCLCPP_INFO(get_logger(), "[SEARCH TEST] PREP session=%u", session);
+    waitDone(session, command(prep_, "PREP"), "READY", prepare_timeout_ms_);
+    checkBench();
+    search_session_.store(session);
+    search_active_.store(true);
+    checkSearch();
+    torch_->setActiveSegment("bench_search_hardware");
+    RCLCPP_INFO(get_logger(), "[SEARCH TEST] IGNITION");
+    const auto ignition_result = torch_->requestIgnition(
+    1500ms,
+    [this] {
+        return stop_.load() || !rclcpp::ok();
+    });
+    if (ignition_result != TorchCommandResult::CONFIRMED) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "[IGNITION] result=%d state=%d stop=%d fault=%d",
+            static_cast<int>(ignition_result),
+            static_cast<int>(torch_->state()),
+            int(stop_.load()),
+            int(torch_->hasFault()));
+
+        throw std::runtime_error("Ignition not confirmed");
+    }
+
+    checkSearch();
+    if (height().state != "READY") throw std::runtime_error("SEARCH requires READY as in production");
+    RCLCPP_INFO(get_logger(), "[SEARCH TEST] SEARCH");
+    const auto id = command(search_, "SEARCH");
+    search_id_.store(id);
+    
+    const auto deadline = Clock::now() + std::chrono::milliseconds(search_timeout_ms_);
+    while (Clock::now() < deadline) {
+      checkSearch();
+      const auto t = torch_->snapshot();
+      // if (t.transfer_detected != std::optional<bool>(false))
+      //   throw std::runtime_error("Unexpected transfer in inhibited test");
+      if (expectedDryEnd(height())) {
+        dry_end_.store(true);
+        if (torch_->requestShutdown(1500ms) != TorchCommandResult::CONFIRMED || !torch_->finishCut() || !offConfirmed())
+          throw std::runtime_error("Dry search OFF not confirmed");
+        if (!expectedDryEnd(height()) || stop_.load())
+          throw std::runtime_error("Dry search terminal state changed");
+        torch_->setActiveSegment("");
+        RCLCPP_INFO(get_logger(), "Expected SEARCH_END id=%u; OFF confirmed; recover explicitly", id);
+        return;
+      }
+      
+    }
+    
   }
   void resetHeight() {
     checkBench();
@@ -201,14 +395,13 @@ private:
     RCLCPP_INFO(get_logger(), "Plan-only: %zu points; no execution", plan.trajectory_.joint_trajectory.points.size());
   }
 
-  struct Height {
-    std::string state;
-    int32_t position{0};
-    bool sw{false}, referenced{false}, configured{false}, calibration{false}, tracking{false};
-    int fault{0}, result{0};
-    uint32_t session{0}, active_id{0}, done_id{0};
-    Clock::time_point received{};
-  };
+
+  bool expectedDryEnd(const Height& h) const {
+    return dry_ && search_active_.load() && search_id_.load() != 0 &&
+      communicationValid(h) && h.session == search_session_.load() &&
+      h.state == "FAULT" && h.fault == 4 && h.active_id == 0 &&
+      h.done_id == search_id_.load() && h.result == 2 && h.referenced && !h.tracking;
+  }
   void receiveHeight(const std::string& data) {
     std::istringstream in(data);
     std::vector<std::string> f;
@@ -228,7 +421,11 @@ private:
       h.done_id=static_cast<uint32_t>(n(7)); h.result=static_cast<int>(n(8));
       h.calibration=n(9)==1; h.configured=n(10)==1; h.tracking=n(11)==1;
       h.received=Clock::now();
-      std::lock_guard<std::mutex> lk(mu_); height_=std::move(h);
+      std::lock_guard<std::mutex> lk(mu_);
+      if (h.state != height_.state || h.fault != height_.fault || h.session != height_.session)
+        RCLCPP_INFO(get_logger(), "[HEIGHT] %s -> %s fault=%d pos=%d session=%u active=%u done=%u result=%d",
+          height_.state.c_str(), h.state.c_str(), h.fault, h.position, h.session, h.active_id, h.done_id, h.result);
+      height_=std::move(h);
     } catch (...) { /* Invalid frames do not refresh freshness. */ }
   }
   Height height() const { std::lock_guard<std::mutex> lk(mu_); return height_; }
@@ -241,12 +438,14 @@ private:
     return communicationValid(h) && !h.fault && h.state != "FAULT" && h.state != "PAUSED";
   }
   uint32_t command(const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr& client, const char* name) {
-    checkBench();
+    if (search_active_.load()) checkSearch(); else checkBench();
     if (!client->wait_for_service(500ms)) throw std::runtime_error(std::string(name)+" unavailable");
     auto pending=client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
     const auto deadline=Clock::now()+3s;
     while (Clock::now()<deadline && rclcpp::ok() && !stop_.load()) {
-      if (!offConfirmed()) break;
+      if (search_active_.load()) {
+        try { checkSearch(); } catch (...) { client->remove_pending_request(pending); throw; }
+      } else if (!offConfirmed()) break;
       if (pending.wait_for(20ms)!=std::future_status::ready) continue;
       auto reply=pending.get();
       if (!reply->success) throw std::runtime_error(std::string(name)+" rejected: "+reply->message);
@@ -262,7 +461,7 @@ private:
   void waitDone(uint32_t session, uint32_t id, const std::string& state, int timeout_ms) {
     const auto deadline=Clock::now()+std::chrono::milliseconds(timeout_ms);
     while (Clock::now()<deadline && rclcpp::ok() && !stop_.load()) {
-      checkBench();
+      if (search_active_.load()) checkSearch(); else checkBench();
       auto h=height();
       if (!valid(h) || h.session!=session) throw std::runtime_error("height invalid/session changed");
       if (h.done_id==id) {
@@ -322,9 +521,13 @@ private:
   std::atomic<bool> stop_{false},active_{false};
   std::atomic<int> phase_{0};
   std::unique_ptr<TorchController> torch_;
-  bool bench_{false};
+  bool bench_{false}, dry_{false};
+  std::atomic<bool> dry_end_{false}, stop_dispatched_{false};
+  std::atomic<uint32_t> search_id_{0};
+  std::atomic<bool> search_active_{false};
+  std::atomic<uint32_t> search_session_{0};
   std::atomic<bool> stop_pending_{false};
-  rclcpp::CallbackGroup::SharedPtr ops_group_, stop_group_;
+  rclcpp::CallbackGroup::SharedPtr ops_group_, stop_group_, height_group_;
   std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> services_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_;
   rclcpp::Publisher<hb_robot_interfaces::msg::TorchStatus>::SharedPtr status_pub_;
@@ -332,14 +535,32 @@ private:
   rclcpp::TimerBase::SharedPtr status_timer_,monitor_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr home_,prep_,search_,stop_height_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr tracking_;
+  mutable std::mutex task_mu_;
+  bool transfer_test_enabled_{false};
+
+std::atomic<bool> transfer_test_active_{false};
+std::atomic<bool> shutdown_active_{false};
+
+hb_robot_interfaces::msg::TaskState task_state_;
+
+Clock::time_point task_received_{};
+
+rclcpp::Subscription<
+    hb_robot_interfaces::msg::TaskState
+>::SharedPtr task_sub_;
 };
 
 int main(int argc,char** argv) {
   rclcpp::init(argc,argv);
   auto node=std::make_shared<CutHeightDebugNode>();
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions{}, 4);
+  rclcpp::executors::SingleThreadedExecutor height_executor;
+  height_executor.add_callback_group(node->heightGroup(), node->get_node_base_interface());
   executor.add_node(node);
+  std::thread height_thread([&] { height_executor.spin(); });
   executor.spin();
+  height_executor.cancel();
+  height_thread.join();
   rclcpp::shutdown();
   return 0;
 }

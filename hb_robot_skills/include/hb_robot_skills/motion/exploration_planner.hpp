@@ -1,5 +1,7 @@
 #pragma once
 #include <memory>
+#include <functional>
+#include <optional>
 #include <string>
 #include <rclcpp/rclcpp.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
@@ -98,6 +100,22 @@ private:
 class ExplorationPlanner{
 
     public:
+        struct SamplingResult {
+            std::vector<ViewSolution> views;
+            std::size_t candidates = 0, ik_attempts = 0, ik_failed = 0;
+            std::size_t collision_rejected = 0, view_rejected = 0, duplicates = 0;
+            bool stopped = false;
+        };
+        // The same sampler and IK implementation as solveView, retaining
+        // multiple branches for a downstream route graph instead of one winner.
+        SamplingResult sampleViews(
+            const std::vector<moveit::core::RobotState>& seeds,
+            const Eigen::Isometry3d& nominal_pose,
+            const ExplorationRequest& request,
+            const planning_scene::PlanningSceneConstPtr& scene,
+            std::size_t max_solutions,
+            const std::function<bool(const Eigen::Isometry3d&)>& view_valid = {},
+            const std::function<bool()>& stopped = {}) const;
         /**
          * constructor for an inspection planner
          */

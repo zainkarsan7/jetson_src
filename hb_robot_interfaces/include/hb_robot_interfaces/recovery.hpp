@@ -1,10 +1,12 @@
 #pragma once
 #include <hb_robot_interfaces/msg/kerf_evidence.hpp>
 #include <hb_robot_interfaces/msg/task_state.hpp>
+#include <hb_robot_interfaces/supervision_policy.hpp>
 #include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>
+#include <stdexcept>
 
 namespace hb_robot::recovery {
 using State = hb_robot_interfaces::msg::TaskState;
@@ -17,9 +19,22 @@ inline bool validInterval(const Interval& i) {
 inline bool overlaps(const Interval& a, const Interval& b) {
   return a.segment_id == b.segment_id && a.s0 < b.s1 && b.s0 < a.s1;
 }
+inline bool planningPermitted(const State& s) {
+  supervision::Evidence e;
+  e.scene_valid = s.scene_valid;
+  e.fault = s.process_fault_active || s.motion_fault_active;
+  return supervision::decide(e, supervision::Operation::Plan) == supervision::Decision::Allow;
+}
 inline bool geometryPermitted(const State& s) {
-  return s.supervision_valid && s.imu_stable && s.workpiece_pose_valid &&
-    !s.process_fault_active && !s.motion_fault_active;
+  supervision::Evidence e;
+  e.fresh = true; // The caller must additionally check transport age.
+  e.authorized = s.supervision_valid && s.imu_stable;
+  // Continuation uses TaskState authorization. New operations additionally
+  // require fresh, stable PlatformSupervision at their admission gate.
+  e.fault = s.process_fault_active || s.motion_fault_active;
+  e.pose_valid = s.workpiece_pose_valid;
+  e.scene_valid = s.scene_valid;
+  return supervision::decide(e, supervision::Operation::ContinueMotion) == supervision::Decision::Allow;
 }
 inline bool sameVersions(const State& a, const State& b) {
   return a.geometry_version == b.geometry_version && a.pose_version == b.pose_version &&
@@ -71,4 +86,49 @@ inline Verdict evaluate(const Evidence& e, const State& s, const std::string& cu
     (all_open?State::VERIFIED:State::INCONCLUSIVE);
   return v;
 }
+// Scope is supplied by the caller, never inferred from the returned evidence.
+inline Verdict evaluateFeature(const Evidence& e, const State& s,
+    const std::string& cut, const std::string& feature, uint64_t last_motion_epoch = 0) {
+  if (feature.empty() || e.required_segments != std::vector<std::string>{feature} ||
+      e.execution_version < last_motion_epoch) return {};
+  return evaluate(e, s, cut);
+}
+
+// Normalized feature coordinates. Preserve gaps; one resulting interval is
+// submitted per action because CutProfile accepts one interval per feature.
+inline std::vector<Interval> repairIntervals(std::vector<Interval> input,
+    double margin = 0.0, double adjacency = 1e-9) {
+  if (!std::isfinite(margin) || margin < 0 || margin > 0.02 ||
+      !std::isfinite(adjacency) || adjacency < 0 || adjacency > 0.001)
+    throw std::invalid_argument("Invalid normalized repair margin/tolerance");
+  for (auto& i : input) {
+    if (!validInterval(i)) throw std::invalid_argument("Invalid residual interval");
+    i.s0 = std::max(0.0, i.s0 - margin); i.s1 = std::min(1.0, i.s1 + margin);
+  }
+  std::sort(input.begin(), input.end(), [](const auto& a, const auto& b) {
+    return a.segment_id == b.segment_id ? a.s0 < b.s0 : a.segment_id < b.segment_id;
+  });
+  std::vector<Interval> result;
+  for (const auto& i : input) {
+    if (!result.empty() && result.back().segment_id == i.segment_id &&
+        i.s0 <= result.back().s1 + adjacency) result.back().s1 = std::max(result.back().s1, i.s1);
+    else result.push_back(i);
+  }
+  return result;
+}
+
+struct FeatureRecoveryState {
+  std::string original_plan_id, recut_plan_id;
+  uint64_t last_motion_epoch = 0;
+  Evidence evidence;
+  Verdict verdict;
+  unsigned inspection_attempts = 0, recut_attempts = 0;
+  bool original_executed = false, interrupted = false;
+  Interval planned_interval;
+  // Write ahead of submission: an uncertain result must never enable replay.
+  std::vector<Interval> attempted;
+  bool verified(const State& s, const std::string& cut, const std::string& feature) const {
+    return evaluateFeature(evidence, s, cut, feature, last_motion_epoch).status == State::VERIFIED;
+  }
+};
 } // namespace hb_robot::recovery

@@ -31,6 +31,32 @@
         <joint name="ur10e_wrist_3_joint" value="-0.383"/>
     </group_state>
 
+    <group_state name="cut_forward" group="manipulator">
+        <joint name="ur10e_elbow_joint" value="1.8"/>
+        <joint name="ur10e_shoulder_lift_joint" value="-3"/>
+        <joint name="ur10e_shoulder_pan_joint" value="-1.65"/>
+        <joint name="ur10e_wrist_1_joint" value="-0.1"/>
+        <joint name="ur10e_wrist_2_joint" value="2.1"/>
+        <joint name="ur10e_wrist_3_joint" value="-1.2"/>
+    </group_state>
+
+    <group_state name="cut_down" group="manipulator">
+        <joint name="ur10e_elbow_joint" value="1.9633"/>
+        <joint name="ur10e_shoulder_lift_joint" value="-3.2616"/>
+        <joint name="ur10e_shoulder_pan_joint" value="-2.1523"/>
+        <joint name="ur10e_wrist_1_joint" value="1.0056"/>
+        <joint name="ur10e_wrist_2_joint" value="1.79611"/>
+        <joint name="ur10e_wrist_3_joint" value="-1.88390"/>
+    </group_state>
+
+    <group_state name="cut_up" group="manipulator">
+        <joint name="ur10e_elbow_joint" value="-2.7356"/>
+        <joint name="ur10e_shoulder_lift_joint" value="-3.040014"/>
+        <joint name="ur10e_shoulder_pan_joint" value="2.40977"/>
+        <joint name="ur10e_wrist_1_joint" value="-0.10716"/>
+        <joint name="ur10e_wrist_2_joint" value="2.6782"/>
+        <joint name="ur10e_wrist_3_joint" value="1.011592"/>
+    </group_state>
 
     <group_state name="inspection_home_v0" group="manipulator">
         <joint name="ur10e_elbow_joint" value="1.8"/>

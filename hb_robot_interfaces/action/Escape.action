@@ -10,6 +10,7 @@ uint8 EXECUTION_FAILED=4
 uint8 status
 bool torch_confirmed_off
 bool robot_stationary
+bool height_stationary
 bool pose_requires_revalidation
 string message
 ---

@@ -24,6 +24,10 @@ namespace hb_robot_skills::motion{
         std::size_t num_candidates{3};
         double ik_timeout{0.02};
         double joint_delta{1.2};
+        // Sampling uses the view frame. Existing callers use the model link
+        // itself (+X forward); RGB-D inspection supplies an optical frame (+Z).
+        Eigen::Vector3d roll_axis = Eigen::Vector3d::UnitX();
+        Eigen::Isometry3d link_from_view = Eigen::Isometry3d::Identity();
         
 
     };

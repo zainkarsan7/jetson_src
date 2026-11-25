@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <optional>
+#include <functional>
+#include <limits>
 
 namespace hb_robot_skills {
 enum class RayEvidence { UNKNOWN, OPEN, MATERIAL };
@@ -12,6 +14,7 @@ struct KerfRayConfig {
   double depth_uncertainty=0.002; // Must include sensor AND registration uncertainty.
   double half_kerf_width=0.001;
   double bin_width=0.002;       // Reported verification is at this spatial resolution.
+  bool allow_sampled_open_verdict=false; // Explicitly opt into the sampled geometric test.
 };
 // Returns the first material interval of a closed straight-sided profile. Curves,
 // tangencies and a camera inside the model are deliberately unsupported.
@@ -74,7 +77,8 @@ inline hb_robot::recovery::Evidence initializeEvidence(
 // not a mechanical proof of separation or a calibrated probability estimate.
 inline void accumulateKerfEvidence(hb_robot::recovery::Evidence& evidence,
     const hb_perception::ProfileModel& profile,const hb_perception::Observation& observation,
-    const Eigen::Isometry3d& world_from_cut,const KerfRayConfig& config) {
+    const Eigen::Isometry3d& world_from_cut,const KerfRayConfig& config,
+    const std::function<void(const std::string&,double,RayEvidence,double,double,double,bool)>& trace = {}) {
   const auto cut_from_camera=world_from_cut.inverse()*tf2::transformToEigen(observation.camera_pose);
   const auto camera_from_cut=cut_from_camera.inverse();
   const auto& info=*observation.rgb_camera_info;
@@ -97,33 +101,42 @@ inline void accumulateKerfEvidence(hb_robot::recovery::Evidence& evidence,
     unsigned open=0,material=0;
     for(double f:{0.0,0.5,1.0}) {
       const double s=bin.interval.s0+f*(bin.interval.s1-bin.interval.s0);
+      double measured=std::numeric_limits<double>::quiet_NaN(),entry_distance=measured,exit_distance=measured;
+      bool within=false;
+      auto emit=[&](RayEvidence kind) {
+        if(trace) trace(bin.interval.segment_id,s,kind,measured,entry_distance,exit_distance,within);
+      };
       const Eigen::Vector2d xy=start+s*(end-start);
       const Eigen::Vector3d target(xy.x(),xy.y(),0);
       const Eigen::Vector3d camera_target=camera_from_cut*target;
-      if(camera_target.z()<=0) continue;
+      if(camera_target.z()<=0) {emit(RayEvidence::UNKNOWN);continue;}
       const int u=std::lround(info.k[0]*camera_target.x()/camera_target.z()+info.k[2]);
       const int v=std::lround(info.k[4]*camera_target.y()/camera_target.z()+info.k[5]);
-      if(u<0 || v<0 || u>=depth.cols || v>=depth.rows) continue;
+      if(u<0 || v<0 || u>=depth.cols || v>=depth.rows) {emit(RayEvidence::UNKNOWN);continue;}
       const double z=depth.at<float>(v,u);
       const Eigen::Vector3d pixel_ray((u-info.k[2])/info.k[0],(v-info.k[5])/info.k[4],1);
       const Eigen::Vector3d direction=cut_from_camera.linear()*pixel_ray.normalized();
+      measured=z*pixel_ray.norm();
       const auto interval=materialRayInterval(profile,cut_from_camera.translation(),direction);
-      if(!interval) continue;
+      if(!interval) {emit(RayEvidence::UNKNOWN);continue;}
+      entry_distance=interval->first;exit_distance=interval->second;
       const auto entry=cut_from_camera.translation()+interval->first*direction;
       const auto exit=cut_from_camera.translation()+interval->second*direction;
       // Reject rays hitting a different front face or leaving the transverse slit.
       if((entry.head<2>()-xy).norm()>config.bin_width ||
-         std::max(std::abs(entry.z()),std::abs(exit.z()))>config.half_kerf_width) continue;
+         std::max(std::abs(entry.z()),std::abs(exit.z()))>config.half_kerf_width) {emit(RayEvidence::UNKNOWN);continue;}
+      within=true;
       const auto kind=classifyKerfRay(*interval,z*pixel_ray.norm(),
         config.depth_uncertainty,true);
       open+=kind==RayEvidence::OPEN;material+=kind==RayEvidence::MATERIAL;
+      emit(kind);
     }
     if(material) {
       bin.observed_fraction=1;bin.residual_fraction=1;bin.open_fraction=0;
       bin.confidence=1;bin.through_thickness_observed=false;
     } else if(open==3) {
       bin.observed_fraction=1;bin.open_fraction=1;bin.confidence=1;
-      bin.through_thickness_observed=true;
+      bin.through_thickness_observed=config.allow_sampled_open_verdict;
     }
   }
   double observed=0,open=0;

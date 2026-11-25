@@ -1,0 +1,9 @@
+# Pure evaluation; this service never changes TaskState or grants permission.
+KerfEvidence evidence
+TaskState state
+string cut_id
+string feature_id
+uint64 last_motion_epoch
+---
+uint8 status
+CutInterval[] residuals

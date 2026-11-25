@@ -1,0 +1,42 @@
+<root main_tree_to_execute="InterruptedCutRecovery">
+  <!-- Admitted only by the session manager AFTER physical containment. -->
+  <BehaviorTree ID="InterruptedCutRecovery">
+    <SequenceStar>
+      <CutFeatureInterrupted/>
+      <AwaitTorchFaultClear/>
+      <RecoverCut/>
+      <MarkFeatureRecoveryPendingInspection/>
+    </SequenceStar>
+  </BehaviorTree>
+  <!-- Fresh control flow over the retained ledger, never a replay of the
+       interrupted ExecuteCut checkpoint or of profile/cut planning. -->
+  <BehaviorTree ID="RecoveredFeatureInspection">
+    <SequenceStar>
+      <ForEachRecoveryFeature>
+        <SequenceStar>
+          <SelectRecoveryFeature/>
+          <Fallback>
+            <FeatureReadyForInspection/>
+            <SequenceStar><AwaitExecutionReady/><ExecuteCut/></SequenceStar>
+          </Fallback>
+          <FeatureReadyForInspection/>
+          <InspectKerf/>
+          <ValidateKerf/>
+          <Fallback>
+            <KerfVerified/>
+            <SequenceStar>
+              <ResidualDetected/>
+              <PlanRecut/>
+              <AwaitExecutionReady/>
+              <ExecuteRecut/>
+              <InspectKerf/>
+              <ValidateKerf/>
+              <KerfVerified/>
+            </SequenceStar>
+          </Fallback>
+        </SequenceStar>
+      </ForEachRecoveryFeature>
+      <AllActiveFeaturesVerified/>
+    </SequenceStar>
+  </BehaviorTree>
+</root>

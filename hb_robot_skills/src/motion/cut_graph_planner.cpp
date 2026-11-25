@@ -1,3 +1,5 @@
+#include "hb_robot_skills/motion/planning_budget.hpp"
+#include "hb_robot_skills/motion/stopped_transit_join.hpp"
 
 
 #include "hb_robot_skills/motion/cut_graph_planner.hpp"
@@ -10,6 +12,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 #include <moveit/kinematic_constraints/kinematic_constraint.h>
@@ -156,12 +160,17 @@ namespace hb_robot_skills::motion{
                 single_candidates.push_back(
                     candidates_by_segment[i]);
 
-                const auto planned = plan(
-                    single_plan,
-                    single_candidates,
-                    home_state,
-                    batch_id + "/" + segment.name,
-                    estimate_id);
+                std::optional<ExecutablePlan> planned;
+                try {
+                    PlanningBudgetScope::check("independent feature planning");
+                    planned = plan(single_plan, single_candidates, home_state,
+                        batch_id + "/" + segment.name, estimate_id);
+                } catch (const PlanningInterrupted& stopped) {
+                    if (stopped.reason == PlanningInterrupted::Reason::Canceled) throw;
+                    feature.failure_reason = stopped.what();
+                    result.features.push_back(std::move(feature));
+                    continue;
+                }
 
                 accumulate(statistics_);
 
@@ -462,11 +471,26 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
     std::unordered_map<NodeId, CandidateGraphEntry> lookup;
     std::unordered_map<NodeId, SegmentMotionPlan> processes;
     std::unordered_map<EdgeId, Plan> transits;
+    struct CachedTransit {
+        moveit::core::RobotState from,to;
+        std::optional<Plan> plan;
+    };
+    std::vector<CachedTransit> transit_cache;
+    const auto cached_transit=[&](const auto& from,const auto& to)->std::optional<Plan> {
+        for(const auto& cached:transit_cache)
+            if(statesMatch(from,cached.from) && statesMatch(to,cached.to)) return cached.plan;
+        auto planned=transit_planner_(from,to);
+        transit_cache.push_back(CachedTransit{from,to,planned});
+        return planned;
+    };
     const auto start = graph.addNode(0, 0.0);
     std::vector<std::vector<NodeId>> layers(count);
     for (std::size_t i = 0; i < count; ++i) {
         const auto& candidates = candidates_by_segment[i];
-        for (std::size_t j = 0; j < std::min(candidates.size(), options_.max_candidates_per_segment); ++j) {
+        std::set<std::string> directions;
+        for(const auto& c:candidates) if(!c.direction_seed_name.empty()) directions.insert(c.direction_seed_name);
+        const auto candidate_limit=std::max(options_.max_candidates_per_segment,directions.size());
+        for (std::size_t j = 0; j < std::min(candidates.size(), candidate_limit); ++j) {
             const auto& c = candidates[j];
             if (!c.entry || !c.exit || c.cut.empty() || !c.cut.front() || !c.cut.back()) continue;
             const auto lower_distance = [&](const auto& a, const auto& b) {
@@ -510,6 +534,7 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
     for (auto n : layers.back()) connect(n, goal);
     GraphRoute selected;
     while (true) {
+        PlanningBudgetScope::check("cut candidate graph");
         auto route = graph.cheapestRoute(start, goal);
         if (!route.found()) return std::nullopt;
         bool changed = false;
@@ -544,7 +569,43 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
                 std::optional<moveit::core::RobotState>(home_state);
             const auto to = lookup.count(edge.to) ? firstState(processes.at(edge.to).approach) :
                 std::optional<moveit::core::RobotState>(home_state);
-            auto transit = from && to ? transit_planner_(*from, *to) : std::nullopt;
+            std::optional<Plan> transit;
+            std::vector<moveit::core::RobotState> route_states;
+            if(from && to) {
+                route_states.push_back(*from);
+                if(lookup.count(edge.from) && candidate(edge.from).direction_home)
+                    route_states.push_back(*candidate(edge.from).direction_home);
+                if(lookup.count(edge.to) && candidate(edge.to).direction_home)
+                    route_states.push_back(*candidate(edge.to).direction_home);
+                route_states.push_back(*to);
+                // Named postures are real waypoints, not an assumed change of
+                // start state. Every leg uses the existing collision-aware planner.
+                bool valid=true;
+                for(std::size_t leg=1;leg<route_states.size();++leg) {
+                    PlanningBudgetScope::check("cut direction transit");
+                    if(statesMatch(route_states[leg-1],route_states[leg])) continue;
+                    auto part=cached_transit(route_states[leg-1],route_states[leg]);
+                    const auto begin=part?firstState(*part):std::nullopt;
+                    const auto end=part?lastState(*part):std::nullopt;
+                    if(!part || !begin || !end || !statesMatch(*begin,route_states[leg-1]) ||
+                        !statesMatch(*end,route_states[leg])) {valid=false;break;}
+                    if(!transit) transit=*part;
+                    else {
+                        std::string error;
+                        if(!transit->trajectory_.multi_dof_joint_trajectory.points.empty() ||
+                           !part->trajectory_.multi_dof_joint_trajectory.points.empty() ||
+                           !appendStoppedJointTrajectory(transit->trajectory_.joint_trajectory,
+                               part->trajectory_.joint_trajectory,options_.boundary_tol,error)) {
+                            std::cout << "[CUT SEED TRANSIT] join rejected: " << error << '\n';
+                            valid=false;break;
+                        }
+                        transit->planning_time_+=part->planning_time_;
+                    }
+                }
+                if(!valid) transit.reset();
+                // Preserve the existing zero-distance transit behavior.
+                if(valid && !transit) transit=cached_transit(*from,*to);
+            }
             const auto first = transit ? firstState(*transit) : std::nullopt;
             const auto last = transit ? lastState(*transit) : std::nullopt;
             const double cost = transit ? transitCost(*transit) : std::numeric_limits<double>::infinity();
@@ -577,6 +638,10 @@ std::optional<ExecutablePlan> CutGraphPlanner::plan(
         // A direct candidate->candidate edge belongs ONLY to its destination.
         cut.transit_in = transits.at(selected.edges.at(i-1));
         cut.process = processes.at(n);
+        if(!candidate(n).direction_seed_name.empty())
+            std::cout << "[CUT SEED SELECTED] feature=" << cut.name
+                      << " seed=" << candidate(n).direction_seed_name
+                      << " planned adjustment included in transit_in/out\n";
         const auto incoming = selected.edges.at(i-1);
         std::cout << "[CUT GRAPH] " << cut.name << " transit_in="
                   << (lookup.count(graph.edge(incoming).from) ? "direct from previous retract" : "from initial/home state")

@@ -174,7 +174,7 @@ hb_robot_perception::hb_perception
 add_executable(inspect_cut_server src/inspect_cut_server.cpp)
 ament_target_dependencies(inspect_cut_server
   rclcpp rclcpp_action geometry_msgs hb_robot_interfaces Eigen3 tf2_eigen
-  sensor_msgs moveit_msgs moveit_ros_planning_interface)
+  sensor_msgs moveit_msgs moveit_ros_planning_interface moveit_ros_planning moveit_core)
 target_link_libraries(inspect_cut_server hb_motion hb_robot_perception::hb_perception)
 
 add_executable(task_state_server src/task_state_server.cpp)

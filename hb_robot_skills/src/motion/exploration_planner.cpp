@@ -116,6 +116,11 @@ namespace hb_robot_skills::motion{
         )const{
 
             std::vector<ViewCandidate> candidates;
+            if (!request.roll_axis.allFinite() || request.roll_axis.norm() < 1e-9 ||
+                !std::isfinite(request.pos_tol) || request.pos_tol < 0 ||
+                !std::isfinite(request.roll_tol) || request.roll_tol < 0 ||
+                !request.link_from_view.matrix().allFinite())
+                throw std::invalid_argument("Invalid exploration sampling frame or tolerance");
             /// make offsets 
             candidates.reserve(request.num_candidates);
             ViewCandidate nom;
@@ -128,7 +133,7 @@ namespace hb_robot_skills::motion{
             std::uniform_real_distribution<double> dist(-1.0,1.0);
             auto makeOffset = [&](double dp, double dr,ViewCandidate candidate){
                 candidate.roll_offset = dr * dist(rng);
-                Eigen::AngleAxisd Rdr(candidate.roll_offset,Eigen::Vector3d::UnitX());
+                Eigen::AngleAxisd Rdr(candidate.roll_offset,request.roll_axis.normalized());
                 Eigen::Vector3d offset(dist(rng),dist(rng),dist(rng));
                 candidate.candidate_pose = nominal_pose;
                 candidate.nominal_pose = nominal_pose;
@@ -169,7 +174,7 @@ namespace hb_robot_skills::motion{
             std::vector<double> consistency_limits(joint_model_group_->getVariableCount(),
             request.joint_delta);
             const bool found = state.setFromIK(joint_model_group_,
-                candidate.candidate_pose,
+                candidate.candidate_pose * request.link_from_view.inverse(),
                 camera_link_,
                 consistency_limits,
                 request.ik_timeout
@@ -185,12 +190,56 @@ namespace hb_robot_skills::motion{
                 return std::nullopt;
             }
             ViewSolution solution(state);
-            solution.cam_pose = candidate.candidate_pose;
+            solution.cam_pose = state.getGlobalLinkTransform(camera_link_) * request.link_from_view;
             solution.motion_cost = scoreSoln(seed_state,state);
             solution.nominal_pose = candidate.nominal_pose;
             
 
             return solution;
+        }
+
+        ExplorationPlanner::SamplingResult ExplorationPlanner::sampleViews(
+            const std::vector<moveit::core::RobotState>& seeds,
+            const Eigen::Isometry3d& nominal_pose,
+            const ExplorationRequest& request,
+            const planning_scene::PlanningSceneConstPtr& scene,
+            std::size_t max_solutions,
+            const std::function<bool(const Eigen::Isometry3d&)>& view_valid,
+            const std::function<bool()>& stopped) const {
+            if (!scene || seeds.empty() || max_solutions == 0)
+                throw std::invalid_argument("View sampling needs scene, seeds and a solution limit");
+            SamplingResult result;
+            const auto candidates = generateCandidates(nominal_pose, request);
+            result.candidates = candidates.size();
+            for (const auto& candidate : candidates) {
+                if (stopped && stopped()) { result.stopped = true; return result; }
+                if (view_valid && !view_valid(candidate.candidate_pose)) {
+                    ++result.view_rejected;
+                    continue;
+                }
+                for (const auto& seed : seeds) {
+                    if (stopped && stopped()) { result.stopped = true; return result; }
+                    ++result.ik_attempts;
+                    auto solution = solveCandidate(seed, candidate, request);
+                    if (!solution) { ++result.ik_failed; continue; }
+                    if (scene->isStateColliding(solution->robot_state, planning_group_)) {
+                        ++result.collision_rejected;
+                        continue;
+                    }
+                    if (view_valid && !view_valid(solution->cam_pose)) {
+                        ++result.view_rejected;
+                        continue;
+                    }
+                    const bool duplicate = std::any_of(result.views.begin(), result.views.end(),
+                        [&](const auto& old) {
+                            return old.robot_state.distance(solution->robot_state, joint_model_group_) < 0.02;
+                        });
+                    if (duplicate) { ++result.duplicates; continue; }
+                    result.views.push_back(std::move(*solution));
+                    if (result.views.size() >= max_solutions) return result;
+                }
+            }
+            return result;
         }
 
         std::optional<ViewSolution> ExplorationPlanner::solveView(const moveit::core::RobotState& seed_state,

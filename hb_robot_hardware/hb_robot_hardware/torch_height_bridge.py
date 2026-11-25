@@ -83,7 +83,7 @@ class TorchHeightBridge(Node):
             'arc_established_wait_ms': 300,
             'arc_establish_timeout_ms': 2000,
 
-            'voltage_tracking_enabled': False,
+            'voltage_tracking_enabled': True,
             'voltage_source': 'analog_input_value',
             'voltage_analog_domain': 1,
             'voltage_target_v': 3.5,
@@ -161,7 +161,7 @@ class TorchHeightBridge(Node):
 
         self.create_subscription(
             TorchStatus,
-            '/cut_profile/torch_status_debug',
+            '/cut_profile/torch_status',
             
             self.on_torch,
             QoSProfile(
@@ -884,7 +884,7 @@ class TorchHeightBridge(Node):
                 and height is not None
                 and now - self.h_at < self.p['status_timeout_s']
             )
-            mode, qualified, _, _ = self.control(now)
+            mode, qualified, correction, tracking = self.control(now)
             voltage = self.voltage()
 
             stats = dict(
@@ -916,7 +916,19 @@ class TorchHeightBridge(Node):
                 ),
 
                 voltage_value=voltage,
+                voltage_target_v=self.p['voltage_target_v'],
+                voltage_low_v=self.low,
+                voltage_high_v=self.high,
 
+                requested_correction=self.correction_direction,
+                effective_correction=correction,
+                effective_tracking=bool(tracking),
+
+                correction_age_ms=(
+                    (now - self.correction_since) * 1000
+                    if self.correction_since is not None
+                    else 0.0
+),
                 tracking_authorized=self.tracking_authorized,
             )
 

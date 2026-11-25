@@ -11,8 +11,108 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 
 namespace hb_robot_skills {
+void CutProfileServer::initializeRobotStationaryMonitor()
+{
+    const auto* jmg = move_group_->getRobotModel()->getJointModelGroup(planning_group_);
+    if (!jmg) throw std::runtime_error("Stationary monitor: planning group unavailable");
+    std::vector<std::string> joints;
+    for (const auto* joint : jmg->getActiveJointModels()) {
+        if (joint->getVariableCount() != 1)
+            throw std::runtime_error("Stationary monitor requires single-DOF arm joints");
+        joints.push_back(joint->getName());
+    }
+    if (joints.empty()) throw std::runtime_error("Stationary monitor: no controlled joints");
+    robot_stationary_window_ = std::make_unique<RobotStationaryWindow>(std::move(joints));
+    if (!has_parameter("robot_joint_states_topic"))
+        declare_parameter<std::string>("robot_joint_states_topic", "joint_states");
+    const auto topic = get_parameter("robot_joint_states_topic").as_string();
+    robot_stationary_callbacks_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = robot_stationary_callbacks_;
+    robot_stationary_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+        topic, rclcpp::SensorDataQoS().keep_last(100),
+        [this](sensor_msgs::msg::JointState::ConstSharedPtr msg) {
+            const auto received = std::chrono::steady_clock::now();
+            const auto ros_now = now().nanoseconds();
+            {
+                std::lock_guard<std::mutex> lock(robot_stationary_mutex_);
+                if (msg->header.stamp.sec < 0 || msg->header.stamp.nanosec >= 1000000000u) {
+                    robot_stationary_window_->reject("malformed_joint_state_timestamp");
+                } else {
+                    const auto stamp = rclcpp::Time(msg->header.stamp, get_clock()->get_clock_type()).nanoseconds();
+                    robot_stationary_window_->observe(
+                        msg->name, msg->position, msg->velocity, stamp, ros_now, received);
+                }
+            }
+            robot_stationary_cv_.notify_all();
+        }, options);
+    RCLCPP_INFO(get_logger(), "[ROBOT STOP MONITOR] topic=%s group=%s velocity_limit=0.01 feedback_max_age_ms=250",
+        robot_stationary_sub_->get_topic_name(), planning_group_.c_str());
+}
+
+bool CutProfileServer::waitForRobotStationary(
+    std::chrono::milliseconds timeout,
+    std::chrono::milliseconds stable_duration)
+{
+    using Clock = std::chrono::steady_clock;
+    if (timeout.count() <= 0 || stable_duration.count() <= 0 || stable_duration > timeout)
+        return false;
+    const auto started = Clock::now();
+    const auto deadline = started + timeout;
+    std::unique_lock<std::mutex> lock(robot_stationary_mutex_);
+    if (!robot_stationary_window_) return false;
+    // Every call starts with new evidence. A simultaneous containment request
+    // can restart this interval, but can never make it succeed early.
+    robot_stationary_window_->reset(started, now().nanoseconds());
+    bool confirmed = false;
+    while (rclcpp::ok() && Clock::now() < deadline) {
+        if (robot_stationary_window_->confirmed(Clock::now(),now().nanoseconds(),stable_duration)) {
+            confirmed = true;
+            break;
+        }
+        robot_stationary_cv_.wait_until(lock,
+            std::min(deadline,Clock::now()+std::chrono::milliseconds(20)));
+    }
+    const auto samples = robot_stationary_window_->received();
+    const auto quiet_samples = robot_stationary_window_->quietSamples();
+    const double max_velocity = robot_stationary_window_->maxVelocity();
+    const std::string reason = confirmed ? "confirmed" : robot_stationary_window_->reason();
+    lock.unlock();
+
+    // Diagnostic only: CurrentStateMonitor may retain old velocity fields.
+    // Actual confirmation above requires velocity entries in each fresh message.
+    bool psm_has_velocities = false;
+    if (planning_scene_monitor_ && planning_scene_monitor_->getStateMonitor()) {
+        const auto robot = planning_scene_monitor_->getStateMonitor()->getCurrentState();
+        psm_has_velocities = robot && robot->hasVelocities();
+    }
+    const double elapsed_ms = std::chrono::duration<double,std::milli>(Clock::now()-started).count();
+    if (confirmed) {
+        RCLCPP_INFO(get_logger(),
+            "[ROBOT STOP CONFIRMED] elapsed_ms=%.1f stable_ms=%lld samples=%llu quiet_samples=%llu max_velocity=%.6f psm_has_velocities=%d",
+            elapsed_ms,static_cast<long long>(stable_duration.count()),
+            static_cast<unsigned long long>(samples),static_cast<unsigned long long>(quiet_samples),
+            max_velocity,int(psm_has_velocities));
+    } else {
+        RCLCPP_ERROR(get_logger(),
+            "[ROBOT STOP UNCONFIRMED] elapsed_ms=%.1f stable_ms=%lld samples=%llu quiet_samples=%llu max_velocity=%.6f psm_has_velocities=%d reason=%s",
+            elapsed_ms,static_cast<long long>(stable_duration.count()),
+            static_cast<unsigned long long>(samples),static_cast<unsigned long long>(quiet_samples),
+            max_velocity,int(psm_has_velocities),reason.c_str());
+    }
+    return confirmed;
+}
+
+bool CutProfileServer::robotStationaryConfirmed(std::chrono::milliseconds stable_duration)
+{
+    std::lock_guard<std::mutex> lock(robot_stationary_mutex_);
+    return robot_stationary_window_ && robot_stationary_window_->confirmed(
+        std::chrono::steady_clock::now(),now().nanoseconds(),stable_duration);
+}
+
 CutProfileServer::~CutProfileServer() {
   if(worker_.joinable()) worker_.join();
   if(escape_worker_.joinable()) escape_worker_.join();
@@ -83,6 +183,8 @@ void CutProfileServer::executeStored(
     result->completed_segments = completed_segments_;
     result->active_segment = active_segment_;
     result->execution_version = execution_version_;
+    // Keep the interrupted result/attempt ledger and cut fault. The workpiece
+    // transform remains valid unless TaskState's IMU supervision invalidates it.
     motion_active_ = false;
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(Clock::now() - entered).count();
@@ -388,6 +490,16 @@ void CutProfileServer::executeStored(
   }
   
   stage = "recut_overlap";
+  // A planned-only parent is valid: [0,1] may intentionally cut an uncut feature.
+  if(!stored.intervals.empty() && stored.parent_id.empty()) {
+    finish("Recut has no original parent lineage"); return;
+  }
+  if(cut_planning_mode_ == CutPlanningMode::Independent)
+    for(const auto& interval : stored.intervals)
+      if(stored.executable.cuts.size()!=1 ||
+         interval.segment_id!=stored.executable.cuts.front().name) {
+        finish("Independent recut interval belongs to another feature"); return;
+      }
   for(const auto& interval : stored.intervals)
     for(const auto& attempted : attempted_[stored.cut_id])
       if(hb_robot::recovery::overlaps(interval, attempted)) {
@@ -451,52 +563,85 @@ void CutProfileServer::escape(const std::shared_ptr<rclcpp_action::ServerGoalHan
   using Action=hb_robot_interfaces::action::Escape;
   auto result=std::make_shared<Action::Result>();
   result->status=Action::Result::STOPPED_IN_PLACE;
-  result->pose_requires_revalidation=true;
+  result->pose_requires_revalidation = !taskStateFreshness().state.workpiece_pose_valid;
+  const auto height_stationary = [this]() {
+    if (!process_enabled_) return true;
+    const auto height = heightSnapshot();
+    return heightCommunicationValid(height) && !height.tracking &&
+        (height.state == "HOME" || height.state == "READY" ||
+         height.state == "HOLD" || height.state == "PAUSED" || height.state == "FAULT");
+  };
   auto finish=[&](const std::string& message) {
-    motion_active_=false;retreat_active_=false;
-    // Commit the result's revalidation requirement to shared state too. Publish
-    // after the bounded retreat so invalidation cannot authorize further motion.
-    std_msgs::msg::Bool invalid;invalid.data=true;invalidate_pose_pub_->publish(invalid);
+    // The cut/recovery worker owns its active flag; a stop acknowledgment must
+    // never make a still-running worker appear finished.
+    result->robot_stationary = waitForRobotStationary(
+        std::chrono::milliseconds(3000), std::chrono::milliseconds(300));
     const auto telemetry=torch_controller_->snapshot();
     result->torch_confirmed_off=torch_controller_->hasFreshIO() &&
       telemetry.output_on==std::optional<bool>(false) &&
       telemetry.transfer_detected==std::optional<bool>(false);
-    const auto robot=move_group_->getCurrentState(1.0);
-    result->robot_stationary=robot && robot->hasVelocities();
-    if(result->robot_stationary)
-      for(const auto& joint:robot->getRobotModel()->getVariableNames())
-        if(!std::isfinite(robot->getVariableVelocity(joint)) ||
-           std::abs(robot->getVariableVelocity(joint))>0.01) result->robot_stationary=false;
+    result->height_stationary = height_stationary();
+    // Containment feedback and workpiece geometry are independent facts.
+    // Report TaskState's pose verdict without publishing an invalidation event.
+    result->pose_requires_revalidation = !taskStateFreshness().state.workpiece_pose_valid;
+    RCLCPP_INFO(get_logger(),
+        "[ESCAPE STOP] torch_off=%d robot_stationary=%d height_stationary=%d "
+        "pose_revalidation=%d cut_worker_busy=%d",
+        int(result->torch_confirmed_off), int(result->robot_stationary),
+        int(result->height_stationary), int(result->pose_requires_revalidation), int(busy_.load()));
     result->message=message;
     if(h->is_canceling()) h->canceled(result);else h->succeed(result);
   };
   try {
     requestCutStop();
-    std::lock_guard<std::mutex> execution_lock(execution_mutex_);
+    // Explicit containment also stops an active/tracking height axis.
+    const auto height = heightSnapshot();
+    if (process_enabled_ && !height_stationary()) {
+      stopHeightAsync();
+    } else if (height.tracking || height.state == "PREP_MOVING" ||
+               height.state == "SEARCH" || height.state == "ESTABLISH" ||
+               height.state == "HOMING" || height.state == "JOG") {
+      stopHeightAsync();
+    }
+    // Stop-only containment must not queue behind graph planning. It reads
+    // independent feedback and does not change MoveGroup planning targets.
     // The independent callback has already requested OFF and stop. Now feedback
     // may be awaited without delaying the first containment request.
     const auto off=torch_controller_->requestShutdown(std::chrono::milliseconds(1500));
+    const auto height_deadline = HeightClock::now() + std::chrono::milliseconds(1500);
+    while (rclcpp::ok() && !height_stationary() && HeightClock::now() < height_deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
     TaskState state;
     {std::lock_guard<std::mutex> lock(task_mutex_);state=task_state_;
       if(std::chrono::steady_clock::now()-task_received_>std::chrono::milliseconds(500)) state.supervision_valid=false;}
     if(!h->get_goal()->allow_retreat || h->is_canceling()) {finish("Stop requested; no retreat requested");return;}
-    if(off!=TorchCommandResult::CONFIRMED || !state.supervision_valid || !state.imu_stable ||
+    std::unique_lock<std::mutex> execution_lock(execution_mutex_, std::try_to_lock);
+    if (!execution_lock.owns_lock()) {
+      result->status = Action::Result::MOTION_NOT_PERMITTED;
+      finish("Retreat denied: planning/execution worker has not drained");
+      return;
+    }
+    if(off!=TorchCommandResult::CONFIRMED || !height_stationary() ||
+       !state.supervision_valid || !state.imu_stable ||
        !state.workpiece_pose_valid || state.motion_fault_active) {
       result->status=Action::Result::MOTION_NOT_PERMITTED;
-      finish("Retreat denied: off confirmation, valid geometry and motion permission required");return;
+      finish("Retreat denied: torch off, stationary height, valid geometry and motion permission required");return;
     }
     const auto estimate=latestProfileEstimate();
     auto robot=move_group_->getCurrentState(2.0);
     const auto model=estimate?hb_perception::ProfileLibrary::find(estimate->profile_name):std::nullopt;
     if(!robot || !estimate || !model) {result->status=Action::Result::NO_SAFE_PATH;finish("Missing retreat geometry");return;}
-    bool stationary=robot->hasVelocities();
-    if(stationary) for(const auto& joint:robot->getRobotModel()->getVariableNames())
-      if(!std::isfinite(robot->getVariableVelocity(joint)) ||
-         std::abs(robot->getVariableVelocity(joint))>0.01) stationary=false;
+    const bool stationary = waitForRobotStationary(
+        std::chrono::milliseconds(3000), std::chrono::milliseconds(300));
     const auto telemetry=torch_controller_->snapshot();
     if(!stationary || telemetry.transfer_detected!=std::optional<bool>(false)) {
       result->status=Action::Result::MOTION_NOT_PERMITTED;
       finish("Stationary robot and extinguished arc must be confirmed before retreat");return;
+    }
+    robot=move_group_->getCurrentState(1.0);
+    if (!robot || !robotStationaryConfirmed(std::chrono::milliseconds(300))) {
+      result->status=Action::Result::MOTION_NOT_PERMITTED;
+      finish("Fresh stationary robot state lost before retreat planning");return;
     }
     {planning_scene_monitor::LockedPlanningSceneRO scene(planning_scene_monitor_);
       if(scene->isStateColliding(*robot,planning_group_)) {
@@ -526,7 +671,8 @@ void CutProfileServer::escape(const std::shared_ptr<rclcpp_action::ServerGoalHan
       if(fraction<0.999 || trajectory.joint_trajectory.points.empty()) continue;
       TaskState latest;
       {std::lock_guard<std::mutex> lock(task_mutex_);latest=task_state_;}
-      if(h->is_canceling() || !latest.imu_stable || !latest.workpiece_pose_valid ||
+      if(!robotStationaryConfirmed(std::chrono::milliseconds(300)) || h->is_canceling() || !height_stationary() ||
+          !latest.imu_stable || !latest.workpiece_pose_valid ||
          !hb_robot::recovery::sameVersions(state,latest)) break;
       // Process faults remain latched; geometric retreat is permitted only with
       // the output confirmed OFF. No normal is treated as inherently collision-free.
@@ -540,7 +686,9 @@ void CutProfileServer::escape(const std::shared_ptr<rclcpp_action::ServerGoalHan
     }
     result->status=Action::Result::NO_SAFE_PATH;finish("No validated retreat; holding position");
   } catch(const std::exception& e) {
-    requestCutStop();result->status=Action::Result::EXECUTION_FAILED;finish(e.what());
+    requestCutStop();
+    retreat_active_ = false;
+    result->status=Action::Result::EXECUTION_FAILED;finish(e.what());
   }
 }
 } // namespace hb_robot_skills

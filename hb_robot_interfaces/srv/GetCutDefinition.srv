@@ -1,0 +1,5 @@
+string profile_name
+---
+bool found
+# Canonical geometry signature; compare before using archived planning metadata.
+string definition

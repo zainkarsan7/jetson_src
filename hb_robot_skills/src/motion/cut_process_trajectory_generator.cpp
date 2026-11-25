@@ -1,9 +1,11 @@
+#include "hb_robot_skills/motion/planning_budget.hpp"
 
 #include "hb_robot_skills/motion/cut_process_trajectory_generator.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 #include <random>
@@ -262,6 +264,7 @@ CutProcessTrajectoryGenerator::solvePath(
     // numerical IK strategy, not a reversed cutting operation.
     for (std::size_t k = 0; k < count; ++k)
     {
+        PlanningBudgetScope::check("process waypoint IK");
         const std::size_t index =
             backward ? count - 1 - k : k;
 
@@ -279,11 +282,11 @@ CutProcessTrajectoryGenerator::solvePath(
             k == 0 ? options_.local_ik_consistency_rad : options_.max_joint_step_rad);
         const bool ik_ok = (k > 0 || constrain_initial_ik) ? next.setFromIK(
             joint_model_group_, target, plasma_link_, consistency_limits,
-            options_.ik_timeout_s) : next.setFromIK(
+            PlanningBudgetScope::slice(options_.ik_timeout_s, "process IK")) : next.setFromIK(
             joint_model_group_,
             target,
             plasma_link_,
-            options_.ik_timeout_s);
+            PlanningBudgetScope::slice(options_.ik_timeout_s, "process IK"));
 
         if (!ik_ok)
         {
@@ -433,6 +436,55 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
     ProcessGenerationResult result;
     if (!std::isfinite(segment.pos_tol) || segment.pos_tol <= 0.0) return result;
 
+    if (!segment.direction_solutions.empty()) {
+        std::vector<std::vector<ProcessCandidate>> branches;
+        for (const auto& direction:segment.direction_solutions) {
+            PlanningBudgetScope::check("SRDF direction process sampling");
+            if (!direction.home || std::any_of(direction.chain.begin(),direction.chain.end(),
+                                               [](const auto& s){return !s;})) continue;
+            auto variant=segment;
+            variant.direction_solutions.clear(); // One bounded generator pass per seed.
+            variant.approach_state=direction.chain[0];variant.start_state=direction.chain[1];
+            variant.end_state=direction.chain[2];variant.retract_state=direction.chain[3];
+            auto local_options=options_;
+            local_options.roll_samples=std::min<std::size_t>(4,options_.roll_samples);
+            local_options.seeds_per_roll=std::min<std::size_t>(4,options_.seeds_per_roll);
+            local_options.global_seeds_per_roll=0;
+            CutProcessTrajectoryGenerator local(robot_model_,planning_group_,plasma_link_,local_options);
+            auto generated=local.generate(variant,*direction.home,scene);
+            for (auto& candidate:generated.candidates) {
+                candidate.direction_seed_name=direction.name;
+                candidate.direction_home=direction.home;
+            }
+            const auto& s=generated.stats;
+            result.stats.attempts+=s.attempts;result.stats.ik_failures+=s.ik_failures;
+            result.stats.collision_failures+=s.collision_failures;result.stats.joint_limit_failures+=s.joint_limit_failures;
+            result.stats.joint_jump_failures+=s.joint_jump_failures;result.stats.tcp_error_failures+=s.tcp_error_failures;
+            result.stats.duplicate_candidates+=s.duplicate_candidates;
+            std::cout << "[CUT SEED PROCESS] feature=" << segment.name << " seed=" << direction.name
+                      << " candidates=" << generated.candidates.size() << " attempts=" << s.attempts << '\n';
+            branches.push_back(std::move(generated.candidates));
+        }
+        // Round-robin retention prevents the first posture consuming the whole
+        // graph quota before another direction has any candidate considered.
+        const std::size_t cap=std::max(options_.max_candidates,branches.size());
+        for(std::size_t i=0;result.candidates.size()<cap;++i) {
+            bool added=false;
+            for(auto& branch:branches) if(i<branch.size() && result.candidates.size()<cap) {
+                result.candidates.push_back(std::move(branch[i]));added=true;
+            }
+            if(!added) break;
+        }
+        if (result.candidates.empty()) {
+            auto fallback=segment;fallback.direction_solutions.clear();
+            // Reference fallback may discover another IK branch; it has no
+            // promised SRDF staging posture, so uses the ordinary transit path.
+            return generate(fallback,reference_state,scene);
+        }
+        result.stats.accepted=result.candidates.size();
+        return result;
+    }
+
     const std::size_t direction_count =
         options_.enable_reverse_ik_search ? 2 : 1;
 
@@ -507,6 +559,7 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
     };
 
     for (const auto& offset : orientations) {
+        PlanningBudgetScope::check("process orientation sampling");
         const double roll = std::atan2(offset(1,0), offset(0,0));
         // const auto initial_count = result.candidates.size();
         std::vector<ProcessCandidate> roll_candidates;
@@ -517,15 +570,23 @@ ProcessGenerationResult CutProcessTrajectoryGenerator::generate(
              seed_index < options_.seeds_per_roll;
              ++seed_index)
         {
-            // if (options_.max_candidates_per_roll > 0 &&
-            //     result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
+            PlanningBudgetScope::check("process seed sampling");
+            // Spend at least one attempt on a global branch when enabled, even
+            // if forward/backward local solves filled the retention quota.
+            const bool explored_global = options_.global_seeds_per_roll == 0 ||
+                options_.seeds_per_roll <= 2 || seed_index > 2;
+            if (options_.max_candidates_per_roll > 0 &&
+                roll_candidates.size() >= options_.max_candidates_per_roll && explored_global) break;
             for (std::size_t d = 0; d < direction_count; ++d)
             {
                 // if (options_.max_candidates_per_roll > 0 &&
                 //     result.candidates.size() - initial_count >= options_.max_candidates_per_roll) break;
                 const bool backward = d == 1;
                 const auto geometric = backward ? segment.retract_state : segment.approach_state;
-                const bool global = seed_index >= options_.seeds_per_roll - options_.global_seeds_per_roll;
+                // Interleave global branches before the quota can fill with local duplicates.
+                const bool global = options_.global_seeds_per_roll > 0 &&
+                    seed_index >= 2 && (seed_index - 2) % 3 == 0 &&
+                    (seed_index - 2) / 3 < options_.global_seeds_per_roll;
                 const bool use_geometric = geometric && seed_index != 1 && !global;
                 moveit::core::RobotState seed(use_geometric ? *geometric : reference_state);
                 if (global) {
