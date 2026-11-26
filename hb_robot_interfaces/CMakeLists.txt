@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Escape.action"
   "msg/CutTraj.msg"
   "msg/KerfObservation.msg"
+  "msg/CutInspectionSeeds.msg"
   "msg/TorchStatus.msg"
   "msg/TaskState.msg"
   "msg/ProfileEstimate.msg"

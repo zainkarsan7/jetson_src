@@ -4,6 +4,10 @@
 #include "hb_robot_skills/motion/cut_candidate_graph.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/transit_planner.hpp"
+#include "hb_robot_skills/motion/planning_budget.hpp"
+#include "hb_robot_skills/motion/named_cut_posture.hpp"
+#include "hb_robot_skills/motion/inspection_sweep_order.hpp"
+#include "hb_robot_skills/motion/cut_inspection_seed_cache.hpp"
 #include "hb_robot_interfaces/action/inspect_cut.hpp"
 #include "hb_robot_interfaces/msg/kerf_observation.hpp"
 #include "hb_robot_interfaces/msg/kerf_ray_sample.hpp"
@@ -35,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -74,7 +79,16 @@ public:
     view_request_.joint_delta = positive("view_joint_consistency_rad", 6.28);
     view_request_.num_candidates = boundedCount("view_samples", 32, 256);
     max_view_solutions_ = boundedCount("view_solutions", 6, 16);
-    planning_timeout_ = positive("inspection_planning_timeout_s", 60.0);
+    seed_trials_ = boundedCount("view_seed_trials", 16, 64);
+    local_seed_radius_ = positive("view_local_seed_radius_rad", 0.35);
+    local_consistency_ = positive("view_local_ik_consistency_rad", 0.75);
+    station_joint_step_ = positive("view_station_joint_step_rad", 0.35);
+    direction_seed_names_ = declare_parameter<std::vector<std::string>>(
+      "cut_geometry.direction_seed_states", {"cut_forward", "cut_down", "cut_up"});
+    planning_timeout_ = positive("inspection_planning_timeout_s", 120.0);
+    transit_budget_ = positive("inspection_transit_budget_s", 15.0);    
+    local_transit_budget_ = positive("inspection_station_ptp_budget_s", 2.0);
+    transit_options_.guided_ptp_time_s = positive("inspection_ptp_call_timeout_s", 2.0);
     transit_options_.guide_link = camera_;
     task_state_timeout_ms_ = positive("task_state_timeout_ms", 500.0);
 
@@ -117,7 +131,7 @@ public:
         rgbd_topic_);
     RCLCPP_INFO(get_logger(),
                 "[KERF RGBD] persistent receiver topic=%s; embedded CameraInfo; "
-                "roll_reference=measured_optical",
+                "roll_reference=inspection_home_optical",
                 rgbd_topic_.c_str());
     stability_ = std::make_unique<hb_robot_skills::PlatformSupervisionClient>(*this);
 
@@ -131,6 +145,13 @@ public:
         create_publisher<hb_robot_interfaces::msg::KerfObservation>("~/observations", 10);
     rays_pub_ = create_publisher<hb_robot_interfaces::msg::KerfRaySample>(
         "~/ray_samples", rclcpp::QoS(100).best_effort());
+      cut_seeds_sub_ = create_subscription<hb_robot_interfaces::msg::CutInspectionSeeds>(
+      "/cut_profile/inspection_seeds", rclcpp::QoS(1).reliable().transient_local(),
+      [this](hb_robot_interfaces::msg::CutInspectionSeeds::ConstSharedPtr seeds) {
+        if (seeds->features.size()!=seeds->states.size() || seeds->states.size()>4096) return;
+        std::lock_guard<std::mutex> lock(seed_mutex_);
+        cut_seeds_ = seeds;
+      });
     using Evaluate = hb_robot_interfaces::srv::EvaluateKerf;
     using Replay = hb_robot_interfaces::srv::ReplayKerf;
     replay_service_ = create_service<Replay>(
@@ -355,6 +376,7 @@ private:
     uint32_t timeouts = 0;
 
     while (rclcpp::ok() && !canceled()) {
+      const auto before = capture.diagnostics();
       auto observation = capture.acquireAfter(after, capture_window);
 
       // Authorization may have changed while
@@ -366,11 +388,14 @@ private:
         return observation;
 
       ++timeouts;
-
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                           "[KERF ACQUISITION] Waiting for fresh RGB-D; "
-                           "timeouts=%u window_ms=%lld",
-                           timeouts, static_cast<long long>(capture_window.count()));
+      const auto d = capture.diagnostics();
+      RCLCPP_WARN(get_logger(),
+          "[KERF RGBD WAIT] topic=%s timeouts=%u matched=%zu arrivals=%zu callbacks=%zu "
+          "invalid=%zu resolved=%zu tf_failures=%zu executor_ticks=%zu",
+          d.topic.c_str(), timeouts, d.matched_publishers,
+          d.middleware_arrivals-before.middleware_arrivals, d.received-before.received,
+          d.invalid-before.invalid, d.resolved-before.resolved,
+          d.tf_failures-before.tf_failures, d.executor_ticks-before.executor_ticks);
 
       capture.logCaptureFailure(after);
 
@@ -694,20 +719,42 @@ private:
         return;
       }
 
-      // Use the measured OPTICAL image-plane orientation as the roll reference.
-      // Freeze it once per goal; preview and live planning share these stations.
+      if (canceled()) {
+        finish(Action::Result::CANCELLED, "Interrupted before route planning");
+        return;
+      }
+      auto start = move_->getCurrentState(5.0);
+      if (!start) {
+        finish(Action::Result::PLANNING_FAILED, "No current robot state");
+        return;
+      }
+      start->update();
+      const auto *jmg = start->getJointModelGroup(group_);
+      if (!jmg)
+        throw std::runtime_error("Inspection joint group is absent");
+      const auto &home_names = jmg->getDefaultStateNames();
+      if (std::find(home_names.begin(), home_names.end(), "inspection_home") == home_names.end()) {
+        finish(Action::Result::PLANNING_FAILED, "SRDF inspection_home is missing");
+        return;
+      }
+      auto home = std::make_shared<moveit::core::RobotState>(*start);
+      home->setToDefaultValues(jmg, "inspection_home");
+      home->update();
+      // Use a deterministic calibrated optical roll reference from inspection_home.
+      const Eigen::Isometry3d reference_optical =
+          home->getGlobalLinkTransform(camera_) * link_from_optical;
       const auto stations = motion::inspectionStations(
           profile, world_from_cut, goal->sample_spacing > 0 ? goal->sample_spacing : spacing_,
           goal->camera_standoff > 0 ? goal->camera_standoff : standoff_,
-          world_from_optical.linear());
+          reference_optical.linear());
       result->viewpoints_requested = static_cast<uint32_t>(stations.size());
       poses.header.stamp = now();
       for (const auto &station : stations)
         poses.poses.push_back(tf2::toMsg(station.camera_poses.front()));
       publishCameraPoses(poses, link_from_optical);
-      const Eigen::Quaterniond reference_rotation(world_from_optical.linear());
+      const Eigen::Quaterniond reference_rotation(reference_optical.linear());
       RCLCPP_INFO(get_logger(),
-                  "[KERF STATIONS] count=%zu reference=measured_optical frame=%s q_xyzw=[%.6f %.6f "
+                  "[KERF STATIONS] count=%zu reference=inspection_home_optical frame=%s q_xyzw=[%.6f %.6f "
                   "%.6f %.6f] preview=%d",
                   stations.size(), optical_frame.c_str(), reference_rotation.x(),
                   reference_rotation.y(), reference_rotation.z(), reference_rotation.w(),
@@ -750,166 +797,173 @@ private:
         scene = locked->diff();
         scene->decoupleParent();
       }
-      const auto planning_deadline =
-          Clock::now() + std::chrono::milliseconds(static_cast<int>(planning_timeout_ * 1000));
-      auto planning_stopped = [&] { return canceled() || Clock::now() >= planning_deadline; };
-      motion::ExplorationPlanner explorer(move_->getRobotModel(), group_, camera_);
-
-      // Reuse the cut planner's layered candidate graph and lazy edge validation.
-      // Each layer is a REQUIRED observation station, each node an exploration solution.
-      // Calibration can retry indefinitely: obtain the robot state only now.
-      if (canceled()) {
-        finish(Action::Result::CANCELLED, "Interrupted before route planning");
-        return;
-      }
-      auto start = move_->getCurrentState(5.0);
-      if (!start) {
-        finish(Action::Result::PLANNING_FAILED, "No current robot state");
-        return;
-      }
-      start->update();
       motion::CutCandidateGraph graph;
       std::vector<moveit::core::RobotStatePtr> states{start};
-      std::vector<std::size_t> station_ids{0};
+      const auto no_capture = stations.size();
+      std::vector<std::size_t> station_ids{no_capture};
       const auto root = graph.addNode(0, 0);
       std::vector<motion::NodeId> previous{root};
-      const auto *jmg = start->getJointModelGroup(group_);
-      if (!jmg)
-        throw std::runtime_error("Inspection joint group is absent");
-      const auto &home_names = jmg->getDefaultStateNames();
-      if (std::find(home_names.begin(), home_names.end(), "inspection_home") == home_names.end()) {
-        finish(Action::Result::PLANNING_FAILED, "SRDF inspection_home is missing");
-        return;
-      }
-      auto home = std::make_shared<moveit::core::RobotState>(*start);
-      home->setToDefaultValues(jmg, "inspection_home");
-      home->update();
-      for (std::size_t i = 0; i < stations.size(); ++i) {
-        std::vector<motion::NodeId> layer;
-        std::vector<moveit::core::RobotState> seeds;
-        const auto add_seed = [&](const moveit::core::RobotState &candidate) {
-          if (std::none_of(seeds.begin(), seeds.end(),
-                           [&](const auto &old) { return old.distance(candidate, jmg) < 0.02; }))
-            seeds.push_back(candidate);
-        };
-        for (const auto from : previous)
-          add_seed(*states[from]);
-        add_seed(*start);
-        add_seed(*home);
-        // A second deterministic branch even when start == inspection_home.
-        auto defaults = *start;
-        defaults.setToDefaultValues();
-        std::vector<double> default_joints;
-        defaults.copyJointGroupPositions(jmg, default_joints);
-        auto neutral = *start;
-        neutral.setJointGroupPositions(jmg, default_joints);
-        neutral.update();
-        add_seed(neutral);
-        const auto sampled = explorer.sampleViews(
-            seeds, stations[i].camera_poses.front(), view_request, scene, max_view_solutions_,
-            [&](const auto &pose) { return seesTarget(pose, stations[i].target); },
-            planning_stopped);
-        std::ostringstream diagnostics;
-        diagnostics << "feature=" << stations[i].feature << " station=" << i + 1 << '/'
-                    << stations.size() << " target=[" << stations[i].target.transpose()
-                    << "] seeds=" << seeds.size() << " candidates=" << sampled.candidates
-                    << " ik_attempts=" << sampled.ik_attempts
-                    << " ik_or_bounds_failed=" << sampled.ik_failed
-                    << " collision_rejected=" << sampled.collision_rejected
-                    << " framing_rejected=" << sampled.view_rejected
-                    << " duplicates=" << sampled.duplicates << " accepted=" << sampled.views.size();
-        RCLCPP_INFO(get_logger(), "[KERF IK] %s", diagnostics.str().c_str());
-        if (planning_stopped()) {
-          finish(canceled() ? Action::Result::CANCELLED : Action::Result::PLANNING_FAILED,
-                 "Inspection planning stopped (cancel, supervision or planning deadline): " +
-                     diagnostics.str());
-          return;
-        }
-        if (sampled.views.empty()) {
-          finish(Action::Result::PLANNING_FAILED,
-                 "No usable inspection view: " + diagnostics.str());
-          return;
-        }
-        for (const auto &solution : sampled.views) {
-          auto state = std::make_shared<moveit::core::RobotState>(solution.robot_state);
-          const auto id = graph.addNode(i + 1, 0);
-          states.push_back(state);
-          station_ids.push_back(i);
-          layer.push_back(id);
-          for (const auto from : previous)
-            graph.addEdge(from, id, states[from]->distance(*state, jmg));
-        }
-        previous = std::move(layer);
-      }
-      // Independent cutting starts at inspection_home. Include the return leg
-      // in the checked route before moving, under the same task supervision.
-      const auto home_id = graph.addNode(stations.size() + 1, 0);
-      states.push_back(home);
-      station_ids.push_back(stations.size());
-      for (const auto from : previous)
-        graph.addEdge(from, home_id, states[from]->distance(*home, jmg));
-      previous = {home_id};
-      const auto sink = graph.addNode(stations.size() + 2, 0);
-      for (const auto from : previous) {
-        auto id = graph.addEdge(from, sink, 0);
-        graph.edge(id).status = motion::TransitStatus::Valid;
-      }
+      std::set<motion::EdgeId> local_edges;
       std::map<motion::EdgeId, Plan> plans;
       motion::GraphRoute route;
-      auto transit_options = transit_options_;
-      transit_options.scene = scene;
-      home->copyJointGroupPositions(jmg, transit_options.home_joints);
-      bool route_complete = false;
-      while (!planning_stopped()) {
-        route = graph.cheapestRoute(root, sink);
-        if (!route.found()) {
-          finish(Action::Result::PLANNING_FAILED,
-                 "No collision-checked route through every station");
-          return;
-        }
-        bool complete = true;
-        for (const auto edge_id : route.edges) {
-          auto &edge = graph.edge(edge_id);
-          if (edge.status == motion::TransitStatus::Valid)
-            continue;
-          complete = false;
-          if (planning_stopped())
-            break;
-
-          auto plan = motion::planTransit(*move_, get_logger(), *states[edge.from],
-                                          *states[edge.to], transit_options);
-
-          if (planning_stopped())
-            break;
-
-          if (!plan || !scene->isPathValid(plan->start_state_, plan->trajectory_, group_)) {
-            edge.status = motion::TransitStatus::Invalid;
-            RCLCPP_WARN(
-                get_logger(),
-                "[KERF TRANSIT] edge=%zu from=%zu to=%zu failed; trying another candidate route",
-                edge_id, edge.from, edge.to);
-          } else {
-            edge.status = motion::TransitStatus::Valid;
-            const auto &points = plan->trajectory_.joint_trajectory.points;
-            double cost = 0;
-            for (std::size_t k = 1; k < points.size(); ++k)
-              for (std::size_t j = 0; j < points[k].positions.size(); ++j)
-                cost += std::abs(points[k].positions[j] - points[k - 1].positions[j]);
-            edge.actual_cost = cost;
-            plans.emplace(edge_id, std::move(*plan));
+      motion::NodeId sink;
+      // Scope ends before execution/acquisition. Nested edge budgets inherit
+      // both this overall deadline and cancellation/supervision checks.
+      {
+        motion::PlanningBudget planning_budget(planning_timeout_, canceled);
+        motion::PlanningBudgetScope planning_scope(planning_budget);
+        motion::ExplorationPlanner explorer(move_->getRobotModel(), group_, camera_);
+        hb_robot_interfaces::msg::CutInspectionSeeds::ConstSharedPtr cached;
+        { std::lock_guard<std::mutex> lock(seed_mutex_); cached = cut_seeds_; }
+        if (cached && !motion::inspectionSeedsMatch(*cached, goal->cut_id,
+            goal->estimate.profile_name, group_, frame_, goal->geometry_version, goal->pose_version))
+          cached.reset();
+        std::size_t layer_base = 1;
+        for (std::size_t begin=0; begin<stations.size();) {
+          motion::PlanningBudgetScope::check("inspection feature sampling");
+          std::size_t end=begin+1;
+          while (end<stations.size() && stations[end].feature==stations[begin].feature) ++end;
+          std::vector<moveit::core::RobotState> bases;
+          const auto add_seed = [&](const moveit::core::RobotState& state) {
+            if (std::none_of(bases.begin(), bases.end(), [&](const auto& old) {
+                return old.distance(state,jmg)<0.02;
+            })) bases.push_back(state);
+          };
+          // Prefer this feature's cut branches, then allow other features as
+          // hints (e.g. the opposite web face omitted from the cutting route).
+          std::size_t reused = 0;
+          if (cached) for (bool same_feature : {true, false}) {
+            for (std::size_t i=0; i<cached->states.size() && reused<8; ++i) {
+              if ((cached->features[i]==stations[begin].feature)!=same_feature) continue;
+              auto state = motion::inspectionSeedState(cached->states[i], *start, jmg);
+              if (!state) continue;
+              const auto old_size = bases.size();
+              add_seed(*state);
+              if (bases.size()!=old_size) ++reused;
+            }
           }
-          break;
+          add_seed(*start); add_seed(*home);
+          for (const auto& name : direction_seed_names_)
+            if (auto posture=motion::namedCutPosture(*start,jmg,name)) add_seed(*posture);
+          for (const auto from : previous) add_seed(*states[from]);
+          std::vector<motion::IKSeed> seeds;
+          for (const auto& base : bases) seeds.push_back({base, true});
+          seeds.push_back({*start, false});
+          seeds.push_back({*home, false});
+          // Use the same bounded perturbation/global-branch generator as cutting.
+          std::mt19937 rng(0);
+          for (std::size_t i=2; i<seed_trials_; ++i) {
+            auto seed=motion::sampleIKSeed(*start, &bases[(i-2)%bases.size()], jmg,
+              i, 2, local_seed_radius_, rng);
+            // As in cutting, a global branch gets a chance before local
+            // warm starts can fill the retention quota.
+            if (i==2) seeds.insert(seeds.begin()+std::min<std::size_t>(2,seeds.size()),std::move(seed));
+            else seeds.push_back(std::move(seed));
+          }
+          std::vector<Eigen::Isometry3d> nominal;
+          for (std::size_t i=begin; i<end; ++i) nominal.push_back(stations[i].camera_poses.front());
+          const auto sampled=explorer.sampleSweep(seeds, nominal, view_request, scene,
+            max_view_solutions_, local_consistency_, station_joint_step_,
+            [&](std::size_t i, const auto& pose) { return seesTarget(pose,stations[begin+i].target); }, canceled);
+          const auto& stats=sampled.stats;
+          if (stats.stopped) {
+            finish(Action::Result::CANCELLED,"Inspection sweep canceled or live supervision lost"); return;
+          }
+          RCLCPP_INFO(get_logger(),
+            "[KERF SWEEP] feature=%s stations=%zu middle=%zu seeds=%zu reused_cut=%zu poses=%zu "
+            "ik=%zu ik_failed=%zu collision=%zu framing=%zu continuation_failed=%zu branches=%zu",
+            stations[begin].feature.c_str(),end-begin,begin+(end-begin)/2+1,seeds.size(),reused,
+            stats.candidates,stats.ik_attempts,stats.ik_failed,stats.collision_rejected,
+            stats.view_rejected,sampled.continuation_failed,sampled.sweeps.size());
+          motion::PlanningBudgetScope::check("inspection feature sampled");
+          if (sampled.sweeps.empty()) {
+            finish(Action::Result::PLANNING_FAILED,
+              "No continuous inspection sweep for feature="+stations[begin].feature); return;
+          }
+          const auto visits=motion::inspectionSweepOrder(end-begin);
+          std::vector<motion::NodeId> exits;
+          for (const auto& sweep : sampled.sweeps) {
+            motion::NodeId last=root;
+            for (std::size_t k=0; k<visits.size(); ++k) {
+              const auto& visit=visits[k];
+              auto state=std::make_shared<moveit::core::RobotState>(sweep[visit.station].robot_state);
+              const auto id=graph.addNode(layer_base+k,0);
+              states.push_back(state);
+              station_ids.push_back(visit.capture ? begin+visit.station : no_capture);
+              if (k==0) {
+                for (const auto from : previous) graph.addEdge(from,id,states[from]->distance(*state,jmg));
+              } else {
+                local_edges.insert(graph.addEdge(last,id,states[last]->distance(*state,jmg)));
+              }
+              last=id;
+            }
+            exits.push_back(last);
+          }
+          previous=std::move(exits);
+          layer_base+=visits.size();
+          begin=end;
         }
-        if (complete) {
-          route_complete = true;
-          break;
+        // The return home remains mandatory and is checked before any execution.
+        const auto home_id=graph.addNode(layer_base++,0);
+        states.push_back(home);station_ids.push_back(no_capture);
+        for (const auto from : previous) graph.addEdge(from,home_id,states[from]->distance(*home,jmg));
+        sink=graph.addNode(layer_base,0);
+        const auto final_edge=graph.addEdge(home_id,sink,0);
+        graph.edge(final_edge).status=motion::TransitStatus::Valid;
+        auto transit_options=transit_options_;
+        transit_options.scene=scene;
+        home->copyJointGroupPositions(jmg,transit_options.home_joints);
+        for (;;) {
+          motion::PlanningBudgetScope::check("inspection route search");
+          route=graph.cheapestRoute(root,sink);
+          if (!route.found()) {
+            finish(Action::Result::PLANNING_FAILED,"No checked PTP route through every inspection sweep and home"); return;
+          }
+          bool complete=true;
+          // Reject a bad local sweep before spending a long entry/exit budget.
+          // Keep validating this route after success; only re-search on failure.
+          auto validation_order=route.edges;
+          std::stable_sort(validation_order.begin(),validation_order.end(),[&](auto a,auto b) {
+            return local_edges.count(a)>local_edges.count(b);
+          });
+          for (const auto edge_id : validation_order) {
+            auto& edge=graph.edge(edge_id);
+            if (edge.status==motion::TransitStatus::Valid) continue;
+            motion::PlanningBudgetScope::check("inspection transit");
+            const bool local=local_edges.count(edge_id)>0;
+            auto options=transit_options;
+            const double edge_budget_s =
+              local ? local_transit_budget_ : transit_budget_;
+            // One direct PTP call for neighboring stations, guided PTP for entry,
+            // between-feature motion and return. Never invoke the OMPL fallbacks.
+            if (local) {
+              options.guided_max_ptp_calls=1;
+              options.home_joints.clear();
+            }
+            std::optional<Plan> plan;
+            try {
+              motion::PlanningBudget edge_budget(edge_budget_s);
+              motion::PlanningBudgetScope edge_scope(edge_budget);
+              plan=motion::planGuidedPTP(*move_,get_logger(),*states[edge.from],*states[edge.to],options);
+            } catch (const motion::PlanningInterrupted& stopped) {
+              if (stopped.reason==motion::PlanningInterrupted::Reason::Canceled) throw;
+              motion::PlanningBudgetScope::check("inspection transit deadline");
+              RCLCPP_WARN(get_logger(),"[KERF TRANSIT] edge=%zu exhausted %.1fs budget",edge_id,edge_budget_s);
+            }
+            if (!plan || !scene->isPathValid(plan->start_state_,plan->trajectory_,group_)) {
+              edge.status=motion::TransitStatus::Invalid;
+              complete=false;
+              RCLCPP_WARN(get_logger(),"[KERF TRANSIT] edge=%zu local=%d failed; trying another middle branch",
+                edge_id,local);
+              break;
+            }
+            edge.status=motion::TransitStatus::Valid;
+            edge.actual_cost=edge.estimated_cost;
+            plans.emplace(edge_id,std::move(*plan));
+          }
+          if (complete) break;
         }
-      }
-      if (!route_complete || planning_stopped()) {
-        finish(
-            canceled() ? Action::Result::CANCELLED : Action::Result::PLANNING_FAILED,
-            "Inspection route incomplete: canceled, supervision lost or planning deadline reached");
-        return;
+        motion::PlanningBudgetScope::check("inspection route complete");
       }
       poses.poses.clear();
       poses.header.stamp = now();
@@ -924,6 +978,7 @@ private:
                   stations.size(), route.edges.size() - 1);
       exception_code = Action::Result::MOTION_FAILED;
       const auto samples = goal->samples_per_viewpoint ? goal->samples_per_viewpoint : 3;
+      std::set<std::size_t> captured_stations;
       for (const auto edge_id : route.edges) {
         const auto &edge = graph.edge(edge_id);
         if (edge.to == sink)
@@ -956,7 +1011,7 @@ private:
           finish(Action::Result::MOTION_FAILED, "Inspection motion failed");
           return;
         }
-        if (station_ids[edge.to] == stations.size())
+        if (station_ids[edge.to] == no_capture)
           continue;
 
         if (!stability_->waitForStable(
@@ -1145,7 +1200,7 @@ private:
           record.camera_info = *ob->rgb_camera_info;
           observation_pub_->publish(record);
           auto feedback = std::make_shared<Action::Feedback>();
-          feedback->current_viewpoint = index;
+          feedback->current_viewpoint = result->viewpoints_captured;
           feedback->total_viewpoints = stations.size();
           feedback->feature_name = stations[index].feature;
           feedback->current_pose = tf2::toMsg(camera_pose);
@@ -1174,6 +1229,10 @@ private:
           return;
         }
 
+        if (!captured_stations.insert(index).second) {
+          finish(Action::Result::ACQUISITION_FAILED, "Duplicate capture station in route");
+          return;
+        }
         ++result->viewpoints_captured;
         RCLCPP_INFO(get_logger(),
                     "[KERF CAPTURE] feature=%s station=%zu/%zu samples=%u added_points=%zu "
@@ -1190,6 +1249,17 @@ private:
         finish(Action::Result::CANCELLED, "Canceled");
         return;
       }
+      if (!stability_->waitForStable(
+              std::chrono::milliseconds(static_cast<int64_t>(stability_timeout_ * 1000.0)), canceled)) {
+        finish(canceled() ? Action::Result::CANCELLED : Action::Result::STABILITY_TIMEOUT,
+               "Platform not stable after return home");
+        return;
+      }
+      auto final_state = move_->getCurrentState(2.0);
+      if (!final_state || final_state->distance(*home, jmg) > 0.05) {
+        finish(Action::Result::MOTION_FAILED, "Return to inspection_home not confirmed");
+        return;
+      }
       if (result->viewpoints_captured != result->viewpoints_requested) {
         finish(Action::Result::ACQUISITION_FAILED, "Not all required stations were captured");
         return;
@@ -1201,6 +1271,8 @@ private:
       }
       finish(Action::Result::SUCCESS,
              "Post-cut acquisition complete; separation and bridging have not been evaluated");
+    } catch (const motion::PlanningInterrupted& e) {
+      finish(canceled() ? Action::Result::CANCELLED : Action::Result::PLANNING_FAILED, e.what());
     } catch (const std::exception &e) {
       finish(exception_code, e.what());
     }
@@ -1228,6 +1300,13 @@ private:
   double spacing_, standoff_, band_, margin_, range_, timeout_, stability_timeout_,
       planning_timeout_;
   std::size_t max_view_solutions_;
+  std::size_t seed_trials_;
+  double local_seed_radius_,local_consistency_,station_joint_step_,local_transit_budget_;
+  double transit_budget_ = 15.0;
+  std::vector<std::string> direction_seed_names_;
+  std::mutex seed_mutex_;
+  hb_robot_interfaces::msg::CutInspectionSeeds::ConstSharedPtr cut_seeds_;
+  rclcpp::Subscription<hb_robot_interfaces::msg::CutInspectionSeeds>::SharedPtr cut_seeds_sub_;
   motion::ExplorationRequest view_request_;
   motion::TransitPlannerOptions transit_options_;
   planning_scene_monitor::PlanningSceneMonitorPtr scene_monitor_;

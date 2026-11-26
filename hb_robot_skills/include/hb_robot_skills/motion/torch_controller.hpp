@@ -14,6 +14,9 @@
 #include <chrono>
 #include <functional>
 #include <condition_variable>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 
 
 using SteadyClock = std::chrono::steady_clock;
@@ -167,50 +170,71 @@ class TorchController{
         return fault_reason_;
     }
 
+    static const char* resultName(TorchCommandResult result) {
+        switch(result) {
+        case TorchCommandResult::CONFIRMED: return "CONFIRMED";
+        case TorchCommandResult::NOT_READY: return "NOT_READY";
+        case TorchCommandResult::SERVICE_UNAVAILABLE: return "SERVICE_UNAVAILABLE";
+        case TorchCommandResult::REQUEST_FAILED: return "REQUEST_FAILED";
+        case TorchCommandResult::FEEDBACK_TIMEOUT: return "FEEDBACK_TIMEOUT";
+        case TorchCommandResult::IO_LOST: return "IO_LOST";
+        case TorchCommandResult::CANCELED: return "CANCELED";
+        case TorchCommandResult::FAULT: return "FAULT";
+        }
+        return "UNKNOWN";
+    }
+
+    std::string diagnostic() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return diagnosticLocked();
+    }
+
     TorchCommandResult requestIgnition(std::chrono::milliseconds timeout,
-    const CancelCheck& canceled = {})
-    {
-        std::unique_lock<std::mutex>command_lock(command_mutex_);
+                                      const CancelCheck& canceled = {}) {
+        std::unique_lock<std::mutex> command_lock(command_mutex_);
         {
-            std::lock_guard<std::mutex>lock(mutex_);
-            if(!config_.ignition_enabled || 
-            state_!=State::IDLE||
-            !freshLocked() || 
-            telemetry_.output_on!=std::optional<bool>(false)||
-            telemetry_.transfer_detected!=std::optional<bool>(false)){
+            std::lock_guard<std::mutex> lock(mutex_);
+            // A previous containment OFF may have completed before transfer
+            // fell low. Finalize that clean shutdown, never a FAULT or active cut.
+            if(state_ == State::SHUTTING_DOWN) (void)finishCutLocked(false);
+            if(!config_.ignition_enabled || state_ != State::IDLE ||
+               !freshLocked() || telemetry_.command_on ||
+               telemetry_.output_on != std::optional<bool>(false) ||
+               telemetry_.transfer_detected != std::optional<bool>(false)) {
+                RCLCPP_ERROR(node_.get_logger(),
+                    "[TORCH IGNITION REJECTED] result=NOT_READY %s",
+                    diagnosticLocked().c_str());
                 return TorchCommandResult::NOT_READY;
             }
+            RCLCPP_INFO(node_.get_logger(),"[TORCH IGNITION REQUEST] %s",
+                        diagnosticLocked().c_str());
             state_ = State::IGNITING;
-
-            // Command intent must precede any physical output feedback.
-            // output_on remains the separately measured feedback.
             telemetry_.command_on = true;
         }
-            const auto result = setTorchEnabled(true, timeout, canceled);
-            if(result!=TorchCommandResult::CONFIRMED){
-                {
-                    std::lock_guard<std::mutex>lock(mutex_);
-                    latchFaultLocked("ignition not confirmed");
-                }
-            }
-            return result;
-        
+        const auto result = setTorchEnabled(true, timeout, canceled);
+        if(result != TorchCommandResult::CONFIRMED) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            latchFaultLocked(std::string("ignition not confirmed: ") + resultName(result));
+        }
+        return result;
     }
-    TorchCommandResult requestShutdown(std::chrono::milliseconds timeout){
-        
-            std::unique_lock<std::mutex>command_lock(command_mutex_);
-            {
-                std::lock_guard<std::mutex>lock(mutex_);
-                telemetry_.command_on = false;
-                if(state_ != State::FAULT) state_= State::SHUTTING_DOWN;
-            }
-            
-            const auto result = setTorchEnabled(false,timeout,{});
-            if(result != TorchCommandResult::CONFIRMED){
-                std::lock_guard<std::mutex>lock(mutex_);
-                latchFaultLocked("shutdown not confirmed");
-            }
-            return result;
+
+    TorchCommandResult requestShutdown(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> command_lock(command_mutex_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            telemetry_.command_on = false;
+            if(state_ != State::FAULT) state_ = State::SHUTTING_DOWN;
+        }
+        const auto result = setTorchEnabled(false, timeout, {});
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(result != TorchCommandResult::CONFIRMED)
+                latchFaultLocked(std::string("shutdown not confirmed: ") + resultName(result));
+            else
+                (void)finishCutLocked(); // Fault-free, fresh OFF and transfer-low only.
+        }
+        return result;
     }
     WaitResult waitForOutputOff(std::chrono::milliseconds timeout,
         CancelCheck canceled = {}){
@@ -236,19 +260,10 @@ class TorchController{
 
     // }
 
-    bool finishCut(){
-        std::lock_guard<std::mutex>lock(mutex_);
-        if(state_ != State::SHUTTING_DOWN || !freshLocked() ||
-        telemetry_.output_on != std::optional<bool>(false) ||
-        telemetry_.transfer_detected != std::optional<bool>(false)
-    ) { return false;}
-    state_ = State::IDLE;
-    transfer_lost_since_.reset();
-    active_segment_.clear();
-    return true;
+    bool finishCut() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return finishCutLocked();
     }
-
-
 
     void setFaultCallback(std::function<void(const std::string&)> callback){
        std::lock_guard<std::mutex> lock(mutex_);
@@ -326,6 +341,8 @@ class TorchController{
             return false;
         }
         fault_reason_.clear();
+        // clearFault already requires fresh, measured OFF and transfer-low.
+        telemetry_.command_on = false;
         fault_reported_ = false;
         transfer_lost_since_.reset();
         active_segment_.clear();
@@ -362,79 +379,123 @@ class TorchController{
     
     private:
 
-    TorchCommandResult setTorchEnabled(bool enabled,
-    std::chrono::milliseconds timeout,
-    const CancelCheck& canceled
-    ){
-        using Clock = std::chrono::steady_clock;
-        const auto deadline = Clock::now() + timeout;
-        if(enabled && canceled && canceled()){
-            return TorchCommandResult::CANCELED;
+    static const char* stateName(State state) {
+        switch(state) {
+        case State::IDLE: return "IDLE";
+        case State::IGNITING: return "IGNITING";
+        case State::ESTABLISHED: return "ESTABLISHED";
+        case State::CUTTING: return "CUTTING";
+        case State::SHUTTING_DOWN: return "SHUTTING_DOWN";
+        case State::FAULT: return "FAULT";
         }
-
-        const auto remaining= [&](){
-            const auto now = Clock::now();
-            if(now>=deadline){
-                return std::chrono::milliseconds(0);
-            }
-            return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-        };
-        // if(!io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))){
-        //     RCLCPP_ERROR(node_.get_logger(),"ur SetIO is unavailable");
-        //     return TorchCommandResult::SERVICE_UNAVAILABLE;
-        // }
-        while(rclcpp::ok() && remaining().count()>0){
-            if(io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))){
-                break;
-            }
-        }
-        if(!io_client_->service_is_ready()){
-            RCLCPP_ERROR(node_.get_logger(),"ur SetIO is unavailable");
-            return TorchCommandResult::SERVICE_UNAVAILABLE;
-        }
-             
-        auto request = std::make_shared<ur_msgs::srv::SetIO::Request>();
-        request->fun =1;
-        request->pin=config_.torch_output_pin;
-        request->state=  enabled ? 1.0: 0.0;
-
-        auto pending = io_client_->async_send_request(request);
-        while(remaining().count()>0){
-            if(enabled && canceled && canceled()){
-                io_client_->remove_pending_request(pending);
-                return TorchCommandResult::CANCELED;
-            }
-            if(pending.wait_for(std::chrono::milliseconds(20))== std::future_status::ready)
-            {
-                 try{
-                    const auto response = pending.get();
-                    if(!response || !response->success) return TorchCommandResult::REQUEST_FAILED;
-                    
-                }catch(const std::exception& e){
-                    RCLCPP_ERROR(node_.get_logger(),"SetIO exception %s",e.what());
-                    return TorchCommandResult::REQUEST_FAILED;
-                }
-                std::unique_lock<std::mutex>lock(mutex_);
-                while(Clock::now() < deadline){
-                    if(enabled && canceled && canceled()) return TorchCommandResult::CANCELED;
-                    if(enabled && state_ == State::FAULT) return TorchCommandResult::FAULT; 
-                    if(!freshLocked()) return TorchCommandResult::IO_LOST;
-                    if(telemetry_.output_on == std::optional<bool>(enabled)){
-
-                        // telemetry_.command_on = enabled;
-                        return TorchCommandResult::CONFIRMED;
-                    }
-                cv_.wait_for(lock,std::chrono::milliseconds(20));
-
-                }
-                return TorchCommandResult::FEEDBACK_TIMEOUT;
-            }
-        }
-        io_client_->remove_pending_request(pending);
-        return TorchCommandResult::REQUEST_FAILED;
+        return "UNKNOWN";
     }
 
-       
+    std::string diagnosticLocked() const {
+        const auto bit=[](const std::optional<bool>& value) {
+            return value ? int(*value) : -1;
+        };
+        const double age=last_io_time_ ? std::chrono::duration<double,std::milli>(
+            SteadyClock::now()-*last_io_time_).count() : -1.0;
+        std::ostringstream text;
+        text<<std::fixed<<std::setprecision(1)
+            <<"state="<<stateName(state_)<<" enabled="<<config_.ignition_enabled
+            <<" command_on="<<telemetry_.command_on<<" output="<<bit(telemetry_.output_on)
+            <<" transfer="<<bit(telemetry_.transfer_detected)<<" io_fresh="<<freshLocked()
+            <<" callback_age_ms="<<age<<" io_limit_ms="<<config_.output_timeout_s*1000.0
+            <<" rx_count="<<io_rx_count_<<" max_callback_gap_ms="<<max_io_gap_ms_
+            <<" output_pin="<<config_.torch_output_pin<<" transfer_pin="<<config_.transfer_input_pin
+            <<" segment='"<<active_segment_<<"' fault='"<<fault_reason_<<"'";
+        return text.str();
+    }
+
+    bool finishCutLocked(bool clear_segment = true) {
+        if((state_ != State::SHUTTING_DOWN && state_ != State::IDLE) ||
+           telemetry_.command_on || !freshLocked() ||
+           telemetry_.output_on != std::optional<bool>(false) ||
+           telemetry_.transfer_detected != std::optional<bool>(false)) return false;
+        if(state_ == State::SHUTTING_DOWN)
+            RCLCPP_INFO(node_.get_logger(),
+                "[TORCH STATE] SHUTTING_DOWN -> IDLE: fresh OFF and transfer-low confirmed");
+        state_ = State::IDLE;
+        transfer_lost_since_.reset();
+        if(clear_segment) active_segment_.clear();
+        return true;
+    }
+
+    TorchCommandResult setTorchEnabled(bool enabled, std::chrono::milliseconds timeout,
+                                      const CancelCheck& canceled) {
+        const auto started = SteadyClock::now();
+        const auto deadline = started + timeout;
+        const auto done = [&](TorchCommandResult result, const char* stage) {
+            const double elapsed = std::chrono::duration<double,std::milli>(
+                SteadyClock::now()-started).count();
+            const auto detail=diagnostic();
+            if(result == TorchCommandResult::CONFIRMED)
+                RCLCPP_INFO(node_.get_logger(),
+                    "[TORCH IO RESULT] on=%d result=%s stage=%s elapsed_ms=%.1f %s",
+                    int(enabled),resultName(result),stage,elapsed,detail.c_str());
+            else
+                RCLCPP_ERROR(node_.get_logger(),
+                    "[TORCH IO RESULT] on=%d result=%s stage=%s elapsed_ms=%.1f %s",
+                    int(enabled),resultName(result),stage,elapsed,detail.c_str());
+            return result;
+        };
+        const auto canceled_on = [&] { return enabled && canceled && canceled(); };
+        const auto remaining = [&] {
+            const auto now=SteadyClock::now();
+            return now>=deadline ? std::chrono::milliseconds(0) :
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline-now);
+        };
+        while(rclcpp::ok() && remaining().count()>0) {
+            if(canceled_on()) return done(TorchCommandResult::CANCELED,"service_wait");
+            if(io_client_->wait_for_service(std::min(remaining(),std::chrono::milliseconds(200)))) break;
+        }
+        if(!io_client_->service_is_ready())
+            return done(TorchCommandResult::SERVICE_UNAVAILABLE,"service_wait");
+        if(canceled_on() || !rclcpp::ok()) return done(TorchCommandResult::CANCELED,"before_send");
+        if(enabled && hasFault()) return done(TorchCommandResult::FAULT,"before_send");
+        if(remaining().count()<=0) return done(TorchCommandResult::REQUEST_FAILED,"deadline_before_send");
+
+        auto request=std::make_shared<ur_msgs::srv::SetIO::Request>();
+        request->fun=1; request->pin=config_.torch_output_pin; request->state=enabled ? 1.0 : 0.0;
+        auto pending=io_client_->async_send_request(request);
+        RCLCPP_INFO(node_.get_logger(),"[TORCH IO REQUEST] on=%d pin=%d request=%lld service=%s",
+            int(enabled),config_.torch_output_pin,static_cast<long long>(pending.request_id),
+            config_.set_io_service.c_str());
+        while(rclcpp::ok() && remaining().count()>0) {
+            if(canceled_on()) {
+                io_client_->remove_pending_request(pending);
+                return done(TorchCommandResult::CANCELED,"service_reply");
+            }
+            if(pending.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) continue;
+            try {
+                const auto response=pending.get();
+                if(!response || !response->success)
+                    return done(TorchCommandResult::REQUEST_FAILED,"service_rejected");
+            } catch(const std::exception& e) {
+                RCLCPP_ERROR(node_.get_logger(),"SetIO exception %s",e.what());
+                return done(TorchCommandResult::REQUEST_FAILED,"service_exception");
+            }
+            while(rclcpp::ok() && SteadyClock::now()<deadline) {
+                // External predicates may themselves read torch state.
+                if(canceled_on()) return done(TorchCommandResult::CANCELED,"output_feedback");
+                std::unique_lock<std::mutex> lock(mutex_);
+                TorchCommandResult result=TorchCommandResult::FEEDBACK_TIMEOUT;
+                bool finished=true;
+                if(enabled && state_==State::FAULT) result=TorchCommandResult::FAULT;
+                else if(!freshLocked()) result=TorchCommandResult::IO_LOST;
+                else if(telemetry_.output_on==std::optional<bool>(enabled)) result=TorchCommandResult::CONFIRMED;
+                else finished=false;
+                if(finished) { lock.unlock(); return done(result,"output_feedback"); }
+                cv_.wait_until(lock,std::min(deadline,SteadyClock::now()+std::chrono::milliseconds(20)));
+            }
+            return done(TorchCommandResult::FEEDBACK_TIMEOUT,"output_feedback");
+        }
+        io_client_->remove_pending_request(pending);
+        return done(TorchCommandResult::REQUEST_FAILED,"service_reply_timeout");
+    }
+
     bool freshLocked()const{
         if(!last_io_time_){
             return false;
@@ -445,6 +506,8 @@ class TorchController{
     void latchFaultLocked(const std::string& reason){
         if(state_ == State::FAULT) return;
 
+        RCLCPP_ERROR(node_.get_logger(),"[TORCH FAULT FIRST] reason=%s %s",
+            reason.c_str(),diagnosticLocked().c_str());
         state_ = State::FAULT;
         fault_reason_ = reason;
         cv_.notify_all();
@@ -514,7 +577,12 @@ class TorchController{
             }
             
         
-            last_io_time_ = std::chrono::steady_clock::now();
+            const auto received=SteadyClock::now();
+            if(last_io_time_)
+                max_io_gap_ms_=std::max(max_io_gap_ms_,
+                    std::chrono::duration<double,std::milli>(received-*last_io_time_).count());
+            ++io_rx_count_;
+            last_io_time_ = received;
 
         }
         cv_.notify_all();
@@ -543,7 +611,12 @@ class TorchController{
         msg.analog_domain = static_cast<uint8_t>(data.analog_domain.value_or(0));        
         msg.arc_voltage_valid = data.arc_voltage_v.has_value();
         msg.arc_voltage_v = data.arc_voltage_v.value_or(0.0);
-        msg.ready = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            msg.ready = config_.ignition_enabled && state_==State::IDLE && freshLocked() &&
+                !telemetry_.command_on && telemetry_.output_on==std::optional<bool>(false) &&
+                telemetry_.transfer_detected==std::optional<bool>(false);
+        }
         msg.fault =hasFault();
         msg.fault_reason = faultReason();
         status_pub_->publish(msg);
@@ -591,6 +664,8 @@ class TorchController{
     }
 
 
+    uint64_t io_rx_count_=0; // mutex_
+    double max_io_gap_ms_=0.0; // mutex_
     std::optional<std::chrono::steady_clock::time_point> last_io_time_;
     std::optional<std::chrono::steady_clock::time_point> transfer_lost_since_;
     mutable std::mutex mutex_;

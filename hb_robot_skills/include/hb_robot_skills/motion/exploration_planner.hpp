@@ -18,7 +18,8 @@
 #include "moveit_msgs/msg/constraints.hpp"
 #include <moveit/constraint_samplers/constraint_sampler_manager.h>
 #include <moveit/constraint_samplers/default_constraint_samplers.h>
-
+#include "hb_robot_skills/motion/planning_budget.hpp"
+#include "hb_robot_skills/motion/ik_seed_sampling.hpp"
 
 
 namespace hb_robot_skills::motion{
@@ -106,6 +107,21 @@ class ExplorationPlanner{
             std::size_t collision_rejected = 0, view_rejected = 0, duplicates = 0;
             bool stopped = false;
         };
+        struct SweepSamplingResult {
+            SamplingResult stats;
+            std::size_t continuation_failed = 0;
+            // Each complete branch is indexed in the original station order.
+            std::vector<std::vector<ViewSolution>> sweeps;
+        };
+        SweepSamplingResult sampleSweep(
+            const std::vector<IKSeed>& seeds,
+            const std::vector<Eigen::Isometry3d>& nominal_poses,
+            const ExplorationRequest& request,
+            const planning_scene::PlanningSceneConstPtr& scene,
+            std::size_t max_solutions, double local_consistency, double station_joint_step,
+            const std::function<bool(std::size_t, const Eigen::Isometry3d&)>& view_valid = {},
+            const std::function<bool()>& stopped = {}) const;
+            
         // The same sampler and IK implementation as solveView, retaining
         // multiple branches for a downstream route graph instead of one winner.
         SamplingResult sampleViews(

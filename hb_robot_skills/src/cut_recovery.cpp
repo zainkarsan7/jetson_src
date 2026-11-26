@@ -566,8 +566,15 @@ void CutProfileServer::escape(const std::shared_ptr<rclcpp_action::ServerGoalHan
   result->pose_requires_revalidation = !taskStateFreshness().state.workpiece_pose_valid;
   const auto height_stationary = [this]() {
     if (!process_enabled_) return true;
-    const auto height = heightSnapshot();
-    return heightCommunicationValid(height) && !height.tracking &&
+    HeightStatus height;
+    HeightClock::time_point checked_at;
+    {
+        std::lock_guard<std::mutex> lock(height_mutex_);
+        height = height_status_;
+        checked_at = HeightClock::now();
+    }
+
+    return heightCommunicationValid(height, checked_at) && !height.tracking &&
         (height.state == "HOME" || height.state == "READY" ||
          height.state == "HOLD" || height.state == "PAUSED" || height.state == "FAULT");
   };

@@ -21,7 +21,7 @@
 #include "hb_robot_interfaces/msg/workpiece_reference.hpp"
 #include "hb_robot_interfaces/srv/clear_torch_fault.hpp"
 #include "hb_robot_interfaces/action/recover_cut.hpp"
-
+#include "hb_robot_interfaces/msg/cut_inspection_seeds.hpp"
 #include "hb_robot_interfaces/srv/approve_motion.hpp"
 #include "hb_robot_interfaces/action/cut_profile.hpp"
 #include "hb_robot_perception/profile_library.hpp"
@@ -343,6 +343,7 @@ bool latchObservedMotionStop(const char* reason);
         rclcpp::Subscription<hb_robot_interfaces::msg::ProfileEstimate>::SharedPtr profile_estimate_sub_;
         rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_ ;
         rclcpp::Publisher<moveit_msgs::msg::DisplayRobotState>::SharedPtr debug_robot_pub_;
+        rclcpp::Publisher<hb_robot_interfaces::msg::CutInspectionSeeds>::SharedPtr inspection_seeds_pub_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
             collision_debug_pub_;
 
@@ -372,8 +373,7 @@ double height_status_max_gap_ms_{0.0};
 uint64_t height_callback_count_{0}, height_rejected_count_{0};
 HeightClock::time_point height_last_callback_{};
 double height_callback_gap_ms_{0.0}, height_max_callback_gap_ms_{0.0};
-bool heightCommunicationValid(
-    const HeightStatus& h, HeightClock::time_point at = HeightClock::now()) const;
+
 rclcpp::CallbackGroup::SharedPtr height_callbacks_;
 rclcpp::CallbackGroup::SharedPtr height_recovery_callbacks_;
 rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr height_reset_home_service_;
@@ -399,7 +399,15 @@ int height_pierce_dwell_ms_ = 0;
 void initializeHeightInterface();
 HeightStatus heightSnapshot() const;
 bool heightValid(const HeightStatus& h, HeightClock::time_point at = HeightClock::now()) const;
+
+
+
+bool heightCommunicationValid(const HeightStatus& h, HeightClock::time_point at = HeightClock::now()) const;
+
+
 bool heightAtHomeAndReady(bool log_status = true) const;
+
+
 bool recoveryHardwareReady() const;
 rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr recovery_ready_service_;
 bool requestHeightCommand(

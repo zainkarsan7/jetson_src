@@ -1,6 +1,7 @@
 #include "hb_robot_skills/motion/trajectory_validator.hpp"
 #include "hb_robot_skills/motion/exploration_planner.hpp"
 #include "hb_robot_skills/motion/exploration_types.hpp"
+#include "hb_robot_skills/motion/planning_budget.hpp"
 
 #include "moveit/kinematic_constraints/kinematic_constraint.h"
 #include "moveit/kinematic_constraints/utils.h"
@@ -237,6 +238,132 @@ namespace hb_robot_skills::motion{
                     if (duplicate) { ++result.duplicates; continue; }
                     result.views.push_back(std::move(*solution));
                     if (result.views.size() >= max_solutions) return result;
+                }
+            }
+            return result;
+        }
+
+        ExplorationPlanner::SweepSamplingResult ExplorationPlanner::sampleSweep(
+            const std::vector<IKSeed>& seeds,
+            const std::vector<Eigen::Isometry3d>& nominal_poses,
+            const ExplorationRequest& request,
+            const planning_scene::PlanningSceneConstPtr& scene,
+            std::size_t max_solutions, double local_consistency, double station_joint_step,
+            const std::function<bool(std::size_t, const Eigen::Isometry3d&)>& view_valid,
+            const std::function<bool()>& stopped) const {
+            if (!scene || seeds.empty() || nominal_poses.empty() || !max_solutions ||
+                !std::isfinite(local_consistency) || local_consistency <= 0 ||
+                !std::isfinite(station_joint_step) || station_joint_step <= 0)
+                throw std::invalid_argument("Invalid inspection sweep request");
+            SweepSamplingResult result;
+            const auto middle = nominal_poses.size()/2;
+            const auto& nominal = nominal_poses[middle];
+            // As in cutting, explore structured rolls before positional jitter.
+            auto jittered = generateCandidates(nominal, request);
+            std::vector<ViewCandidate> candidates{jittered.front()};
+            const auto add_roll = [&](double roll) {
+                if (std::abs(roll)>request.roll_tol || candidates.size()>=request.num_candidates+1 ||
+                    std::any_of(candidates.begin(), candidates.end(), [&](const auto& old) {
+                        return std::abs(old.roll_offset-roll)<1e-3;
+                    })) return;
+                auto candidate = jittered.front();
+                candidate.roll_offset = roll;
+                candidate.candidate_pose.linear() *= Eigen::AngleAxisd(
+                    roll, request.roll_axis.normalized()).toRotationMatrix();
+                candidates.push_back(std::move(candidate));
+            };
+            // Carry over a useful optical roll from cut/retract and named
+            // postures without reusing their camera position or viewing ray.
+            for (const auto& seed : seeds) {
+                const Eigen::Matrix3d relative = nominal.linear().transpose() *
+                    (seed.state.getGlobalLinkTransform(camera_link_)*request.link_from_view).linear();
+                const Eigen::Vector3d axis = request.roll_axis.normalized();
+                const Eigen::Vector3d x = axis.unitOrthogonal();
+                const Eigen::Vector3d y = axis.cross(x);
+                const Eigen::Vector3d projected = relative*x;
+                if (std::hypot(projected.dot(x),projected.dot(y))>1e-6)
+                    add_roll(std::atan2(projected.dot(y),projected.dot(x)));
+            }
+            for (double fraction : {1.0, -1.0, 0.5, -0.5, 0.25, -0.25, 0.75, -0.75}) {
+                if (candidates.size() >= request.num_candidates+1) break;
+                add_roll(fraction*request.roll_tol);
+            }
+            for (std::size_t i=1; i<jittered.size() && candidates.size()<request.num_candidates+1; ++i)
+                candidates.push_back(std::move(jittered[i]));
+            result.stats.candidates = candidates.size();
+            const auto interrupted = [&] {
+                if (stopped && stopped()) { result.stats.stopped = true; return true; }
+                PlanningBudgetScope::check("inspection sweep IK");
+                return false;
+            };
+            const auto solve = [&](const moveit::core::RobotState& seed, const ViewCandidate& candidate,
+                                   std::size_t index, double consistency) -> std::optional<ViewSolution> {
+                ++result.stats.ik_attempts;
+                auto local = request;
+                local.joint_delta = consistency;
+                local.ik_timeout = PlanningBudgetScope::slice(request.ik_timeout, "inspection IK");
+                auto solution = solveCandidate(seed, candidate, local);
+                if (!solution ||
+                    (solution->cam_pose.translation()-candidate.candidate_pose.translation()).norm()>0.001 ||
+                    Eigen::Quaterniond(solution->cam_pose.linear()).angularDistance(
+                        Eigen::Quaterniond(candidate.candidate_pose.linear()))>0.02) {
+                    ++result.stats.ik_failed; return std::nullopt;
+                }
+                if (scene->isStateColliding(solution->robot_state, planning_group_)) {
+                    ++result.stats.collision_rejected; return std::nullopt;
+                }
+                if (view_valid && !view_valid(index, solution->cam_pose)) {
+                    ++result.stats.view_rejected; return std::nullopt;
+                }
+                return solution;
+            };
+            for (const auto& candidate : candidates) {
+                std::size_t accepted_at_pose = 0;
+                bool explored_global = std::none_of(seeds.begin(),seeds.end(),
+                    [](const auto& seed) { return seed.global; });
+                for (const auto& seed : seeds) {
+                    if (accepted_at_pose>=2 && explored_global) break;
+                    if (interrupted()) return result;
+                    explored_global = explored_global || seed.global;
+                    auto center = solve(seed.state, candidate, middle,
+                        seed.constrain ? local_consistency : request.joint_delta);
+                    if (!center) continue;
+                    if (std::any_of(result.sweeps.begin(), result.sweeps.end(), [&](const auto& old) {
+                        return old[middle].robot_state.distance(center->robot_state, joint_model_group_)<0.15;
+                    })) { ++result.stats.duplicates; continue; }
+                    std::vector<ViewSolution> sweep(nominal_poses.size(), *center);
+                    const Eigen::Isometry3d offset = nominal.inverse()*center->cam_pose;
+                    bool complete = true;
+                    // Continue outward from the same middle branch in BOTH directions.
+                    for (int direction : {-1, 1}) {
+                        auto previous = middle;
+                        for (int i=static_cast<int>(middle)+direction;
+                             i>=0 && i<static_cast<int>(nominal_poses.size()); i+=direction) {
+                            if (interrupted()) return result;
+                            ViewCandidate target;
+                            target.nominal_pose = nominal_poses[i];
+                            target.candidate_pose = nominal_poses[i]*offset;
+                            auto next = solve(sweep[previous].robot_state, target, i, station_joint_step);
+                            if (next) {
+                                for (const auto& variable : joint_model_group_->getVariableNames()) {
+                                    if (std::abs(next->robot_state.getVariablePosition(variable) -
+                                        sweep[previous].robot_state.getVariablePosition(variable))>station_joint_step) {
+                                        next.reset(); break;
+                                    }
+                                }
+                            }
+                            if (!next) { complete = false; break; }
+                            sweep[i] = std::move(*next);
+                            previous = static_cast<std::size_t>(i);
+                        }
+                        if (!complete) break;
+                    }
+                    if (!complete) { ++result.continuation_failed; continue; }
+                    result.sweeps.push_back(std::move(sweep));
+                    if (result.sweeps.size()>=max_solutions) return result;
+                    // Retain roll diversity, but let a global seed compete
+                    // even when two local branches already passed.
+                    ++accepted_at_pose;
                 }
             }
             return result;

@@ -377,9 +377,14 @@ void checkPlanningCancellation() {
 
         auto marker_qos = rclcpp::QoS(1).reliable().transient_local();
         visualization_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("/cut_profile/cut_plan",marker_qos);
+        
+        inspection_seeds_pub_ = create_publisher<hb_robot_interfaces::msg::CutInspectionSeeds>(
+            "/cut_profile/inspection_seeds", marker_qos);
+        
         collision_debug_pub_ =
     create_publisher<visualization_msgs::msg::MarkerArray>(
         "/cut_profile/debug_collision", marker_qos);
+
         debug_robot_pub_ = create_publisher<moveit_msgs::msg::DisplayRobotState>("/cut_profile/debug_robot",marker_qos);
 
     }
@@ -3174,6 +3179,31 @@ CutProfileServer::MotionOutcome CutProfileServer::executeCut(
 
             }
         checkPlanningCancellation();
+        // Publish sampled entry/retract branches even if subsequent transit
+        // search fails. These are hints, never executable inspection plans.
+        hb_robot_interfaces::msg::CutInspectionSeeds inspection_seeds;
+        inspection_seeds.header.frame_id = move_group_->getPlanningFrame();
+        inspection_seeds.header.stamp = now();
+        inspection_seeds.cut_id = goal->cut_id;
+        inspection_seeds.profile_name = estimate.profile_name;
+        inspection_seeds.planning_group = planning_group_;
+        inspection_seeds.geometry_version = planning_versions.geometry_version;
+        inspection_seeds.pose_version = planning_versions.pose_version;
+        const auto* seed_group = move_group_->getRobotModel()->getJointModelGroup(planning_group_);
+        for (std::size_t i=0; i<candidates_by_segment.size(); ++i) {
+            for (const auto& candidate : candidates_by_segment[i]) {
+                for (const auto& state : {candidate.entry, candidate.exit}) {
+                    if (!state) continue;
+                    sensor_msgs::msg::JointState joints;
+                    joints.name = seed_group->getVariableNames();
+                    state->copyJointGroupPositions(seed_group, joints.position);
+                    inspection_seeds.features.push_back(plan.segments[i].name);
+                    inspection_seeds.states.push_back(std::move(joints));
+                }
+            }
+        }
+        inspection_seeds_pub_->publish(inspection_seeds);
+
         RCLCPP_INFO(get_logger(), "starting cut graph planner");
 
         
