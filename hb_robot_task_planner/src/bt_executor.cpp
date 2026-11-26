@@ -2168,9 +2168,10 @@ int main(int argc, char** argv) {
           auto& active_tree=inspection_tree?*inspection_tree:tree;
           const auto status = active_tree.tickRoot();
           if (status == BT::NodeStatus::SUCCESS) {
-            outcome = hasDeferredFeatures(context) ? "COMPLETED_WITH_DEFERRED" : "COMPLETED";
-            reason = hasDeferredFeatures(context) ?
-                "Remaining features verified; deferred features are unresolved and workpiece separation is not verified" :
+ outcome = hasRejectedFeatures(context) ? "COMPLETED_WITH_SKIPPED" :
+                hasDeferredFeatures(context) ? "COMPLETED_WITH_DEFERRED" : "COMPLETED";
+            reason = (hasDeferredFeatures(context) || hasRejectedFeatures(context)) ?
+                "Remaining active features verified; rejected/deferred features remain unresolved and separation is not verified" :
                 "Selected workflow completed; separation verification is reported separately";
           } else if (status == BT::NodeStatus::FAILURE) {
             reason = !context->first_action_timeout.empty() ? context->first_action_timeout :

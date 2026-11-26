@@ -185,6 +185,8 @@ def generate_launch_description():
         Node(package="hb_robot_skills", executable="inspect_cut_server", output="screen",
              parameters=[moveit_config.to_dict(), {
                  "preview_only": ParameterValue(LaunchConfiguration("inspect_cut_preview_only"), value_type=bool),
+                 "require_plan_approval": True,
+                 "skip_inspection_motion": False,
                  "enable_geometric_kerf_evidence": True,
 
                  

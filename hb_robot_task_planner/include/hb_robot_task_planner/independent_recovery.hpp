@@ -54,13 +54,37 @@ inline bool hasDeferredFeatures(const std::shared_ptr<Context>& context) {
   });
 }
 
+inline bool hasRejectedFeatures(const std::shared_ptr<Context>& context) {
+  return std::any_of(context->feature_plans.begin(),context->feature_plans.end(),[](const auto& e) {
+    return e.status==Context::FeaturePlanEntry::Status::Rejected;
+  });
+}
+
+// Tick-thread only. Reset control flow, never physical history or authorization.
+inline bool advanceRejectedRecoveryFeature(const std::shared_ptr<Context>& context) {
+  using Status=Context::FeaturePlanEntry::Status;
+  if (!context->independent_batch || context->batch_interrupted || context->execution_uncertain ||
+      !context->plan_id.empty() || !context->cancellation_waiters.empty()) return false;
+  const auto entry=std::find_if(context->feature_plans.begin(),context->feature_plans.end(),
+      [&](const auto& e){return e.feature_id==context->recovery_feature;});
+  const auto ledger=context->feature_recovery.find(context->recovery_feature);
+  if (entry==context->feature_plans.end() || entry->status!=Status::Rejected ||
+      ledger==context->feature_recovery.end() || ledger->second.original_executed ||
+      ledger->second.interrupted || ledger->second.last_motion_epoch!=0) return false;
+  context->recovery_feature.clear();
+  context->last_error.clear();
+  return true;
+}
+
 inline bool allActiveFeaturesVerified(const std::shared_ptr<Context>& context) {
   const auto state=context->snapshot();
   if(context->required_segments.empty()) return false;
   for(const auto& name:context->required_segments) {
     const auto entry=std::find_if(context->feature_plans.begin(),context->feature_plans.end(),
         [&](const auto& e){return e.feature_id==name;});
-    if(entry!=context->feature_plans.end() && entry->status==Context::FeaturePlanEntry::Status::Deferred)
+    if(entry!=context->feature_plans.end() &&
+       (entry->status==Context::FeaturePlanEntry::Status::Deferred ||
+        entry->status==Context::FeaturePlanEntry::Status::Rejected))
       continue;
     const auto it=context->feature_recovery.find(name);
     if(it==context->feature_recovery.end() || !it->second.verified(state,context->cut_id,name)) return false;
@@ -69,7 +93,7 @@ inline bool allActiveFeaturesVerified(const std::shared_ptr<Context>& context) {
 }
 
 inline bool allFeaturesVerified(const std::shared_ptr<Context>& context) {
-  return !hasDeferredFeatures(context) && allActiveFeaturesVerified(context);
+  return !hasDeferredFeatures(context) && !hasRejectedFeatures(context) && allActiveFeaturesVerified(context);
 }
 
 // Called only by the tick thread after session containment/authorization checks.
@@ -129,8 +153,15 @@ void installRecovery(BT::BehaviorTreeFactory& factory,const rclcpp::Node::Shared
     [=](const auto& name,const auto& config) {
       return std::make_unique<hb_robot_task_planner::ForEachPending>(name,config,[=] {
         return !allActiveFeaturesVerified(context);
-      });
+      },[=] {
+        const auto feature=context->recovery_feature;
+        if (!advanceRejectedRecoveryFeature(context)) return false;
+        RCLCPP_INFO(node->get_logger(),
+            "[CUT SKIP] feature=%s rejected before execution; advancing to next eligible feature",
+            feature.c_str());
+        return true;
     });
+  });
   factory.registerSimpleAction("SelectRecoveryFeature",[=](BT::TreeNode&) {
     using Status=Context::FeaturePlanEntry::Status;
     if(!context->independent_batch || context->batch_interrupted || !context->plan_id.empty())

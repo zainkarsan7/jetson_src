@@ -109,9 +109,14 @@ class TorchController{
                 "/cut_profile/torch_status",
                 rclcpp::QoS(10)
             );
+             // A service response must not queue behind the node's default
+            // mutually-exclusive I/O, action and supervision callbacks.
+            io_reply_callback_group_ = node_.create_callback_group(
+                rclcpp::CallbackGroupType::MutuallyExclusive);
 
             io_client_ = node_.create_client<ur_msgs::srv::SetIO>(
-                config_.set_io_service
+                config_.set_io_service, rmw_qos_profile_services_default,
+                io_reply_callback_group_
             );
             status_callback_group_ =
                 node_.create_callback_group(
@@ -427,18 +432,19 @@ class TorchController{
                                       const CancelCheck& canceled) {
         const auto started = SteadyClock::now();
         const auto deadline = started + timeout;
+        int64_t request_id = -1;
         const auto done = [&](TorchCommandResult result, const char* stage) {
             const double elapsed = std::chrono::duration<double,std::milli>(
                 SteadyClock::now()-started).count();
             const auto detail=diagnostic();
             if(result == TorchCommandResult::CONFIRMED)
                 RCLCPP_INFO(node_.get_logger(),
-                    "[TORCH IO RESULT] on=%d result=%s stage=%s elapsed_ms=%.1f %s",
-                    int(enabled),resultName(result),stage,elapsed,detail.c_str());
+                   "[TORCH IO RESULT] on=%d request=%lld result=%s stage=%s elapsed_ms=%.1f %s",
+                    int(enabled),static_cast<long long>(request_id),resultName(result),stage,elapsed,detail.c_str());
             else
                 RCLCPP_ERROR(node_.get_logger(),
-                    "[TORCH IO RESULT] on=%d result=%s stage=%s elapsed_ms=%.1f %s",
-                    int(enabled),resultName(result),stage,elapsed,detail.c_str());
+                    "[TORCH IO RESULT] on=%d request=%lld result=%s stage=%s elapsed_ms=%.1f %s",
+                    int(enabled),static_cast<long long>(request_id),resultName(result),stage,elapsed,detail.c_str());
             return result;
         };
         const auto canceled_on = [&] { return enabled && canceled && canceled(); };
@@ -460,6 +466,7 @@ class TorchController{
         auto request=std::make_shared<ur_msgs::srv::SetIO::Request>();
         request->fun=1; request->pin=config_.torch_output_pin; request->state=enabled ? 1.0 : 0.0;
         auto pending=io_client_->async_send_request(request);
+        request_id=pending.request_id;
         RCLCPP_INFO(node_.get_logger(),"[TORCH IO REQUEST] on=%d pin=%d request=%lld service=%s",
             int(enabled),config_.torch_output_pin,static_cast<long long>(pending.request_id),
             config_.set_io_service.c_str());
@@ -471,6 +478,10 @@ class TorchController{
             if(pending.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) continue;
             try {
                 const auto response=pending.get();
+                RCLCPP_INFO(node_.get_logger(),
+                    "[TORCH IO ACK] request=%lld success=%d elapsed_ms=%.1f callback_group=dedicated",
+                    static_cast<long long>(request_id),int(response && response->success),
+                    std::chrono::duration<double,std::milli>(SteadyClock::now()-started).count());
                 if(!response || !response->success)
                     return done(TorchCommandResult::REQUEST_FAILED,"service_rejected");
             } catch(const std::exception& e) {
@@ -587,7 +598,9 @@ class TorchController{
         }
         cv_.notify_all();
         publishStatus();
-
+         // Keep raw feedback and safety checks at their original rates. The
+        // existing 100 ms timer publishes status; forwarding every controller
+        // I/O sample here needlessly floods TaskState and the height bridge.
     }
 
     void publishStatus(){
@@ -678,6 +691,8 @@ class TorchController{
 
     std::condition_variable cv_;
     FaultCallback fault_callback_;
+    rclcpp::CallbackGroup::SharedPtr io_reply_callback_group_;
+
     rclcpp::Subscription<ur_msgs::msg::IOStates>::SharedPtr io_sub_;
     rclcpp::Publisher<hb_robot_interfaces::msg::TorchStatus>::SharedPtr status_pub_;
     rclcpp::Client<ur_msgs::srv::SetIO>::SharedPtr io_client_;
