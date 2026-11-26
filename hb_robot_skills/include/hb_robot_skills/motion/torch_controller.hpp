@@ -97,12 +97,19 @@ class TorchController{
         {
 
 
+            // Keep raw I/O and its status timer ordered, away from the node's
+            // default action/supervision callbacks. Service replies use their
+            // existing separate group.
+            io_feedback_callback_group_ = node_.create_callback_group(
+                rclcpp::CallbackGroupType::MutuallyExclusive);
+            rclcpp::SubscriptionOptions io_options;
+            io_options.callback_group = io_feedback_callback_group_;
             io_sub_ = node_.create_subscription<ur_msgs::msg::IOStates>(
                 config_.io_topic,
                 rclcpp::QoS(10).reliable(),
                 [this](ur_msgs::msg::IOStates::ConstSharedPtr msg){
                     onIOStates(*msg);
-                }
+                }, io_options
             );
 
             status_pub_ = node_.create_publisher<hb_robot_interfaces::msg::TorchStatus>(
@@ -118,9 +125,7 @@ class TorchController{
                 config_.set_io_service, rmw_qos_profile_services_default,
                 io_reply_callback_group_
             );
-            status_callback_group_ =
-                node_.create_callback_group(
-                    rclcpp::CallbackGroupType::MutuallyExclusive);
+            status_callback_group_ = io_feedback_callback_group_;
 
             status_timer_ = node_.create_wall_timer(
                 std::chrono::milliseconds(100),
@@ -226,10 +231,25 @@ class TorchController{
 
     TorchCommandResult requestShutdown(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> command_lock(command_mutex_);
+        bool already_off = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            // Avoid an unnecessary SetIO round trip for an idle, confirmed OFF
+            // torch (e.g. inspection planning failed before any motion).
+            // A timed-out ON request may still execute at the server: in that
+            // case always send OFF, including after operator fault clearance.
+            already_off = !on_request_uncertain_ && state_ == State::IDLE &&
+                !telemetry_.command_on && freshLocked() &&
+                telemetry_.output_on == std::optional<bool>(false) &&
+                telemetry_.transfer_detected == std::optional<bool>(false);
             telemetry_.command_on = false;
-            if(state_ != State::FAULT) state_ = State::SHUTTING_DOWN;
+            if(!already_off && state_ != State::FAULT) state_ = State::SHUTTING_DOWN;
+        }
+        if (already_off) {
+            RCLCPP_INFO(node_.get_logger(),
+                "[TORCH IO RESULT] on=0 result=CONFIRMED stage=already_idle_off %s",
+                diagnostic().c_str());
+            return TorchCommandResult::CONFIRMED;
         }
         const auto result = setTorchEnabled(false, timeout, {});
         {
@@ -465,6 +485,12 @@ class TorchController{
 
         auto request=std::make_shared<ur_msgs::srv::SetIO::Request>();
         request->fun=1; request->pin=config_.torch_output_pin; request->state=enabled ? 1.0 : 0.0;
+        bool prior_on_uncertainty = false;
+        if (enabled) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            prior_on_uncertainty = on_request_uncertain_;
+            on_request_uncertain_ = true;
+        }
         auto pending=io_client_->async_send_request(request);
         request_id=pending.request_id;
         RCLCPP_INFO(node_.get_logger(),"[TORCH IO REQUEST] on=%d pin=%d request=%lld service=%s",
@@ -478,6 +504,12 @@ class TorchController{
             if(pending.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) continue;
             try {
                 const auto response=pending.get();
+                if (enabled) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    // This ON call finished, but an earlier missing response
+                    // must remain uncertain even after another successful ON.
+                    on_request_uncertain_ = prior_on_uncertainty;
+                }
                 RCLCPP_INFO(node_.get_logger(),
                     "[TORCH IO ACK] request=%lld success=%d elapsed_ms=%.1f callback_group=dedicated",
                     static_cast<long long>(request_id),int(response && response->success),
@@ -555,7 +587,8 @@ class TorchController{
 
 }
 
-    void onIOStates(ur_msgs::msg::IOStates msg){
+    void onIOStates(const ur_msgs::msg::IOStates& msg){
+        bool publish_now = false;
         TorchTelemetry next;
         
         next.stamp = node_.now();
@@ -582,6 +615,16 @@ class TorchController{
 
             std::lock_guard<std::mutex> lock(mutex_);
             next.command_on = telemetry_.command_on;
+            // Preserve raw feedback while ignition/cutting is active: reducing
+            // that stream to a timer could hide transfer-low pulses and make
+            // the bridge incorrectly infer a continuous arc. Only steady idle
+            // OFF telemetry is reduced to the existing 10 Hz timer.
+            publish_now = state_ == State::IGNITING || state_ == State::ESTABLISHED ||
+                state_ == State::CUTTING || state_ == State::SHUTTING_DOWN || next.command_on ||
+                next.output_on != std::optional<bool>(false) ||
+                next.transfer_detected != std::optional<bool>(false) ||
+                next.output_on != telemetry_.output_on ||
+                next.transfer_detected != telemetry_.transfer_detected;
             telemetry_ = std::move(next);
             if(state_==State::CUTTING && telemetry_.transfer_detected == std::optional<bool>(true)){
                 transfer_lost_since_.reset();
@@ -597,41 +640,33 @@ class TorchController{
 
         }
         cv_.notify_all();
-        publishStatus();
-         // Keep raw feedback and safety checks at their original rates. The
-        // existing 100 ms timer publishes status; forwarding every controller
-        // I/O sample here needlessly floods TaskState and the height bridge.
+        if (publish_now) publishStatus();
     }
 
     void publishStatus(){
-
-        const auto data = snapshot();
-
         hb_robot_interfaces::msg::TorchStatus msg;
-        msg.stamp = data.stamp;
         {
-        std::lock_guard<std::mutex>lock(mutex_);
-        msg.segment_name = active_segment_;
-        }
-        
-        
-        msg.io_connected = hasFreshIO();
-        msg.command_on = data.command_on;
-        msg.output_on = data.output_on.value_or(false);
-        msg.transfer_detected = data.transfer_detected.value_or(false);
-        msg.analog_valid = data.analog_value.has_value();
-        msg.analog_input_value = data.analog_value.value_or(0.0);
-        msg.analog_domain = static_cast<uint8_t>(data.analog_domain.value_or(0));        
-        msg.arc_voltage_valid = data.arc_voltage_v.has_value();
-        msg.arc_voltage_v = data.arc_voltage_v.value_or(0.0);
-        {
+            // One coherent snapshot. The I/O callback and timer share a group,
+            // so an older timer snapshot cannot overtake a newer I/O snapshot.
             std::lock_guard<std::mutex> lock(mutex_);
-            msg.ready = config_.ignition_enabled && state_==State::IDLE && freshLocked() &&
-                !telemetry_.command_on && telemetry_.output_on==std::optional<bool>(false) &&
-                telemetry_.transfer_detected==std::optional<bool>(false);
+            const auto& data = telemetry_;
+            msg.stamp = data.stamp;
+            msg.segment_name = active_segment_;
+            msg.io_connected = freshLocked();
+            msg.command_on = data.command_on;
+            msg.output_on = data.output_on.value_or(false);
+            msg.transfer_detected = data.transfer_detected.value_or(false);
+            msg.analog_valid = data.analog_value.has_value();
+            msg.analog_input_value = data.analog_value.value_or(0.0);
+            msg.analog_domain = static_cast<uint8_t>(data.analog_domain.value_or(0));
+            msg.arc_voltage_valid = data.arc_voltage_v.has_value();
+            msg.arc_voltage_v = data.arc_voltage_v.value_or(0.0);
+            msg.ready = config_.ignition_enabled && state_ == State::IDLE && freshLocked() &&
+                !data.command_on && data.output_on == std::optional<bool>(false) &&
+                data.transfer_detected == std::optional<bool>(false);
+            msg.fault = state_ == State::FAULT;
+            msg.fault_reason = fault_reason_;
         }
-        msg.fault =hasFault();
-        msg.fault_reason = faultReason();
         status_pub_->publish(msg);
     }
 
@@ -688,6 +723,8 @@ class TorchController{
     std::string fault_reason_;
     std::string active_segment_;
     bool fault_reported_{false};
+    bool on_request_uncertain_{false}; // mutex_; never cleared by clearFault()
+    rclcpp::CallbackGroup::SharedPtr io_feedback_callback_group_;
 
     std::condition_variable cv_;
     FaultCallback fault_callback_;

@@ -275,6 +275,9 @@ ssh -N \
 when fastdds fails 
 fastdds shm clean
 
+LIBGL_ALWAYS_SOFTWARE=1 QT_QPA_PLATFORM=xcb QT_X11_NO_MITSHM=1 \
+rviz2 -d ~/.rviz2/supervisor_light.rviz
+
 
 ros2 bag record -s mcap <topic_name>
 
