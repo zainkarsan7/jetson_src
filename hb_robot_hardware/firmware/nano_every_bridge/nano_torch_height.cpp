@@ -100,6 +100,8 @@ volatile uint32_t permitAt = 0;
 volatile uint32_t began = 0;
 volatile uint32_t budget = 0;
 volatile uint32_t establishAt = 0;
+volatile uint32_t rampBegan = 0;
+volatile bool searchResumeAllowed = false;
 volatile uint32_t remaining = 0;
 volatile uint32_t activeId = 0;
 volatile uint32_t doneId = 0;
@@ -133,6 +135,7 @@ bool moving(State s) {
 
 // Called from ISR or inside ATOMIC_BLOCK.
 void finish(uint8_t result) {
+  searchResumeAllowed = false;
   rate = 0;
   targetRate = 0;
 
@@ -144,6 +147,9 @@ void finish(uint8_t result) {
 }
 
 void fail(uint8_t reason, bool pause = false) {
+  // A later containment STOP must not erase the initiating hardware fault.
+  if (reason == STOPPED && fault != NONE && (state == FAULT || state == PAUSED))
+    reason = fault;
   finish(2);
   correction = 0;
   qualified = false;
@@ -166,6 +172,8 @@ void startMove(
   rate = 0;
   phase = 0;
   began = ms;
+  rampBegan = ms;
+  searchResumeAllowed = (s == SEARCH);
   budget = timeout;
   activeId = id;
   fault = NONE;
@@ -256,6 +264,19 @@ void superviseAxis() {
   if (state == ESTABLISH) {
     rate = 0;
 
+    // Pauses count toward the ORIGINAL search wall-time budget. No new command,
+    // additional travel allowance or new timeout is created when a pulse fades.
+    if (searchResumeAllowed && (!remaining || ms - began >= budget)) {
+      fail(SEARCH_END);
+      return;
+    }
+    if (permit == 1 && searchResumeAllowed) {
+      state = SEARCH;
+      phase = 0;
+      rampBegan = ms; // ramp up again; leave began/budget/remaining/id intact
+      return;
+    }
+
     if (permit == 2 && qualified) {
       const int32_t mechanicalLow =
           -((int32_t)cfg[RET] + (int32_t)cfg[DIVE]);
@@ -338,7 +359,7 @@ void superviseAxis() {
     return;
   }
 
-  const uint32_t age = ms - began;
+  const uint32_t age = ms - rampBegan;
   rate = age < 200
       ? (uint32_t)targetRate * age / 200
       : targetRate;
@@ -834,10 +855,10 @@ void command(char *line) {
         reply = "SEARCH_ACCEPTED";
 
       } else if (permit == 2) {
-        // Transfer already detected: establish without issuing STEP.
-        rate = 0;
-        targetRate = 0;
-        activeId = (uint32_t)id;
+        // Initialize the same search envelope, but hold stationary immediately.
+        // If this unqualified indication falls, only the unused budget resumes.
+        // ATOMIC_BLOCK prevents any STEP between startMove and ESTABLISH.
+        startMove(SEARCH, -1, cfg[DIVE], cfg[SEARCH_RATE], cfg[SEARCH_MS], id);
         trackingAuthorized = false;
         correction = 0;
         establishAt = ms;
