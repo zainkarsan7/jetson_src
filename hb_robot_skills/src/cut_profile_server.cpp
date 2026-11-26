@@ -140,35 +140,76 @@ void checkPlanningCancellation() {
               if(move_group_) move_group_->stop();
             }
           }
-          if (recovery_motion_active_.load()) {
-                const bool torch_safe =
-                    torch_controller_ &&
-                    torch_controller_->hasFreshIO() &&
-                    !torch_controller_->hasFault();
-
-                bool off_confirmed = false;
-
-                if (torch_safe) {
+                    if (recovery_motion_active_.load()) {
+                const bool torch_present = bool(torch_controller_);
+                const bool io_fresh = torch_present && torch_controller_->hasFreshIO();
+                const bool torch_fault = !torch_present || torch_controller_->hasFault();
+                std::optional<bool> output, transfer;
+                if (torch_present) {
                     const auto t = torch_controller_->snapshot();
-                    off_confirmed =
-                        t.output_on == std::optional<bool>(false) &&
-                        t.transfer_detected == std::optional<bool>(false);
+                    output = t.output_on;
+                    transfer = t.transfer_detected;
                 }
-
+                const bool off_confirmed = io_fresh && !torch_fault &&
+                    output == std::optional<bool>(false) &&
+                    transfer == std::optional<bool>(false);
+                // Preserve the existing HOME predicate, including configuration
+                // checks in the deployed height implementation.
+                const bool height_ready = heightAtHomeAndReady(false);
                 const auto task = taskStateFreshness();
-                if (!off_confirmed || !heightAtHomeAndReady(false) || !task.fresh ||
-                    !hb_robot::recovery::geometryPermitted(task.state) ||
-                    !hb_robot::recovery::sameVersions(task.state, execution_state_) ||
-                    task.state.cut_environment_id != execution_state_.cut_environment_id) {
-                    latchObservedMotionStop("recovery_hardware_or_authorization_lost");
+                const bool geometry_ok = hb_robot::recovery::geometryPermitted(task.state);
+                const bool versions_match = hb_robot::recovery::sameVersions(
+                    task.state, execution_state_);
+                const bool environment_match = task.state.cut_environment_id ==
+                    execution_state_.cut_environment_id;
 
-                    if (torch_controller_)
-                        torch_controller_->requestOutputOff();
+                if ((!off_confirmed || !height_ready || !task.fresh ||
+                     !geometry_ok || !versions_match || !environment_match) &&
+                    latchObservedMotionStop("recovery_hardware_or_authorization_lost")) {
+                    // Latch once, then request the stop once. Further failing
+                    // 20 ms ticks must not flood SetIO and MoveIt cancellation.
+                    // Explicit containment/stop requests remain independent.
+                    if (torch_controller_) torch_controller_->requestOutputOff();
+                    if (move_group_) move_group_->stop();
 
-                    if (move_group_)
-                        move_group_->stop();
+                    // These gate values are the ones that triggered the latch.
+                    // The height detail is sampled afterwards and labelled as
+                    // such; it cannot retrospectively prove the failed gate safe.
+                    const auto h = heightSnapshot();
+                    const auto sampled_at = HeightClock::now();
+                    const double height_age_ms = h.received == HeightClock::time_point{} ? -1.0 :
+                        std::chrono::duration<double, std::milli>(sampled_at - h.received).count();
+                    std::ostringstream detail;
+                    detail << "off_confirmed=" << off_confirmed
+                        << " torch_present=" << torch_present << " io_fresh=" << io_fresh
+                        << " torch_fault=" << torch_fault
+                        << " output=" << (output ? int(*output) : -1)
+                        << " transfer=" << (transfer ? int(*transfer) : -1)
+                        << " height_ready=" << height_ready
+                        << " task_received=" << task.received << " task_fresh=" << task.fresh
+                        << " task_age_ms=" << task.age_ms << " task_limit_ms=" << task_state_timeout_ms_
+                        << " geometry_ok=" << geometry_ok << " versions_match=" << versions_match
+                        << " environment_match=" << environment_match
+                        << " supervision=" << task.state.supervision_valid << " imu=" << task.state.imu_stable
+                        << " scene_valid=" << task.state.scene_valid << " pose_valid=" << task.state.workpiece_pose_valid
+                        << " motion_fault=" << task.state.motion_fault_active
+                        << " process_fault=" << task.state.process_fault_active
+                        << " geometry=" << task.state.geometry_version << '/' << execution_state_.geometry_version
+                        << " pose=" << task.state.pose_version << '/' << execution_state_.pose_version
+                        << " scene=" << task.state.scene_version << '/' << execution_state_.scene_version
+                        << " reference='" << task.state.scene_id << "'/'" << execution_state_.scene_id
+                        << "' environment='" << task.state.cut_environment_id << "'/'"
+                        << execution_state_.cut_environment_id << "'"
+                        << " height_sample_after_stop={state=" << h.state << " age_ms=" << height_age_ms
+                        << " limit_ms=" << height_status_timeout_ms_ << " position=" << h.position
+                        << " switch=" << h.switch_active << " fault=" << h.fault
+                        << " referenced=" << h.referenced << " configured=" << h.configured
+                        << " tracking=" << h.tracking << " session=" << h.session << '}';
+                    RCLCPP_ERROR(get_logger(), "[RECOVERY GUARD FAILED] stage=active_motion %s",
+                        detail.str().c_str());
                 }
             }
+
         
         
         if (!motion_active_)
