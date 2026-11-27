@@ -1,0 +1,28 @@
+awp_excitation_server:
+  ros__parameters:
+    planning_group: manipulator
+    home_named_target: excitation_home
+    # First campaign: one SRDF nominal. Add named workspace configurations later.
+    nominal_targets: [excitation_home]
+    # Empty means all six MoveIt group variables in model order.
+    excited_joints: []
+    joint_delta_rad: 0.035  # 2 degrees; maximum accepted by node 0.15 rad
+    velocity_scales: [0.05, 0.10]
+    acceleration_scale: 0.05
+    repetitions: 1
+    planning_time_s: 8.0
+    start_joint_tolerance_rad: 0.02
+    # Both channels must pass RMS test after the fixed observation period.
+    # These are EXPERIMENT settling criteria, NOT protective motion limits.
+    min_observation_s: 4.0
+    settle_timeout_s: 15.0
+    settle_window_s: 0.5
+    settle_hold_s: 0.8
+    settle_accel_rms_m_s2: 0.20
+    settle_gyro_rms_rad_s: 0.025
+    max_imu_age_s: 0.30
+    imu_1_topic: /mpu6050/imu
+    imu_2_topic: /mpu6050_2/imu
+    # Must be intentionally changed to true for physical motion.
+    execute_motion: false
+    require_motion_approval: true

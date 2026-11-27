@@ -1,0 +1,14 @@
+cut_pose_experiment:
+  ros__parameters:
+    planning_group: manipulator
+    home_named_target: inspection_home
+    nominal_targets: [cut_forward_tilt, cut_down_tilt, cut_up_tilt]
+    velocity_scales: [0.05]
+    acceleration_scale: 0.01
+    repetitions: 1
+    min_observation_s: 6.0
+    settle_timeout_s: 20.0
+    imu_1_topic: /mpu6050/imu
+    imu_2_topic: /mpu6050_2/imu
+    execute_motion: true
+    require_motion_approval: true

@@ -32,6 +32,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ProfileEstimate.msg"
   "msg/PlatformImuMetrics.msg"
   "msg/PlatformSupervision.msg"
+  "msg/KerfDepthProfile.msg"
+  "msg/SchedulingDiagnostics.msg"
   "srv/EvaluateKerf.srv"
   "srv/GetCutDefinition.srv"
   "srv/ReplayKerf.srv"
