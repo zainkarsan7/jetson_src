@@ -33,6 +33,9 @@
  * Calibration: physically inhibit the torch.
  * RESET_FAULT never moves or asserts HOME.
  * HOME requires production mode and fresh confirmed torch OFF.
+ * Startup may confirm an already debounced HOME switch without any STEP.
+ * A fault, reset or motion command cancels that startup-only confirmation.
+ * Tracking preserves fractional steps across same-direction deadband holds.
  *
  * SEARCH owns the transition from READY:
  *   permit 1 -> SEARCH motion
@@ -46,6 +49,10 @@ const uint8_t STEP = 4;
 const uint8_t DIR = 5;
 const uint8_t HOME_PIN = 7;
 const uint16_t HZ = 10000;
+// At the production 20 steps/s tracking rate, a 200ms ramp on every short
+// correction can prevent all steps. Start TRACK at up to 20 steps/s; higher
+// tracking rates still ramp over 200ms. Never exceed the configured rate.
+const uint16_t TRACK_START_RATE = 20;
 
 enum State : uint8_t {
   UNKNOWN, HOME, PREP_MOVING, READY, SEARCH, ESTABLISH,
@@ -87,6 +94,8 @@ volatile bool pulse = false;
 volatile bool referenced = false;
 volatile bool trackingAuthorized = false;
 volatile bool homeReleaseObserved = false;
+volatile bool startupHomePending = false;
+volatile bool trackingProgressValid = false;
 
 volatile int8_t correction = 0;
 volatile int8_t direction = 1;
@@ -136,6 +145,8 @@ bool moving(State s) {
 // Called from ISR or inside ATOMIC_BLOCK.
 void finish(uint8_t result) {
   searchResumeAllowed = false;
+  trackingProgressValid = false;
+  phase = 0;
   rate = 0;
   targetRate = 0;
 
@@ -147,6 +158,7 @@ void finish(uint8_t result) {
 }
 
 void fail(uint8_t reason, bool pause = false) {
+  startupHomePending = false;
   // A later containment STOP must not erase the initiating hardware fault.
   if (reason == STOPPED && fault != NONE && (state == FAULT || state == PAUSED))
     reason = fault;
@@ -161,6 +173,9 @@ void fail(uint8_t reason, bool pause = false) {
 void startMove(
     State s, int8_t dir, uint32_t steps, uint16_t speed,
     uint32_t timeout, uint32_t id) {
+
+  startupHomePending = false;
+  trackingProgressValid = false;
 
   digitalWrite(
       DIR,
@@ -210,6 +225,22 @@ void superviseAxis() {
 
   const bool fresh =
       (uint32_t)(ms - permitAt) <= (uint32_t)cfg[LINK_MS];
+
+  // This establishes a reference only; it never seeks or emits a STEP. Use
+  // both raw contact and the local 5ms debounce, not a cached ROS switch value.
+  if (startupHomePending && !cfg[CAL] && state == UNKNOWN &&
+      fault == NONE && !referenced && !activeId && !trackingAuthorized &&
+      fresh && permit == 0 && raw && switchOn) {
+    finish(1);
+    position = 0;
+    referenced = true;
+    qualified = false;
+    correction = 0;
+    homeReleaseObserved = false;
+    startupHomePending = false;
+    state = HOME;
+    return;
+  }
 
   // Calibration jogs have local time/travel bounds.
   const bool local =
@@ -305,6 +336,8 @@ void superviseAxis() {
     // Normal torch shutdown stops corrections without homing.
     if (permit == 0 || permit == 4) {
       rate = 0;
+      trackingProgressValid = false;
+      phase = 0;
       state = HOLD;
       return;
     }
@@ -315,6 +348,12 @@ void superviseAxis() {
     }
 
     if (!trackingAuthorized || !cfg[TRACK_RATE] || !correction) {
+      if (!trackingAuthorized || !cfg[TRACK_RATE]) {
+        trackingProgressValid = false;
+        phase = 0;
+      }
+      // A zero correction is an authorized deadband/dwell hold. Keep the
+      // fractional step only while tracking stays armed in this cut.
       rate = 0;
       state = HOLD;
       return;
@@ -327,7 +366,11 @@ void superviseAxis() {
     }
 
     if (state != TRACK || direction != correction) {
+      const uint16_t savedPhase =
+          trackingProgressValid && direction == correction ? phase : 0;
       startMove(TRACK, correction, 0, cfg[TRACK_RATE], 0, 0);
+      phase = savedPhase;
+      trackingProgressValid = true;
       return;
     }
   }
@@ -360,8 +403,11 @@ void superviseAxis() {
   }
 
   const uint32_t age = ms - rampBegan;
+  const uint16_t initialRate = state == TRACK
+      ? (targetRate < TRACK_START_RATE ? targetRate : TRACK_START_RATE)
+      : 0;
   rate = age < 200
-      ? (uint32_t)targetRate * age / 200
+      ? initialRate + (uint32_t)(targetRate - initialRate) * age / 200
       : targetRate;
 }
 
@@ -650,6 +696,14 @@ void command(char *line) {
            state != ESTABLISH && state != HOLD;
 
       if (ok) {
+        // Do not turn a reconnect from FAULT/PAUSED, or an explicit reset in
+        // UNKNOWN, into automatic fault recovery. Same-session retries return
+        // above and cannot rearm startup confirmation.
+        const bool allowStartupHome = fault == NONE && !activeId &&
+            !trackingAuthorized &&
+            ((state == UNKNOWN && lastCommand == 0 &&
+              (!configured || startupHomePending)) ||
+             (state == HOME && referenced));
         memcpy(cfg, v, sizeof(cfg));
         configured = true;
         session = sid;
@@ -668,6 +722,7 @@ void command(char *line) {
         activeId = 0;
         doneId = 0;
         doneResult = 0;
+        startupHomePending = allowStartupHome;
       }
     }
 
@@ -720,6 +775,7 @@ void command(char *line) {
         n == 4 && !moving(state)) {
 
       // No movement; explicit HOME still required.
+      startupHomePending = false;
       finish(2);
       state = UNKNOWN;
       fault = NONE;
@@ -759,6 +815,7 @@ void command(char *line) {
 
       const bool rawHome = digitalRead(HOME_PIN) == LOW;
 
+      startupHomePending = false;
       trackingAuthorized = false;
       correction = 0;
       qualified = false;

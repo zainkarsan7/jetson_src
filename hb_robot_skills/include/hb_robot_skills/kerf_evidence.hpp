@@ -81,14 +81,8 @@ inline void accumulateKerfEvidence(hb_robot::recovery::Evidence& evidence,
     const std::function<void(const std::string&,double,RayEvidence,double,double,double,bool)>& trace = {}) {
   const auto cut_from_camera=world_from_cut.inverse()*tf2::transformToEigen(observation.camera_pose);
   const auto camera_from_cut=cut_from_camera.inverse();
-  const auto& info=*observation.rgb_camera_info;
-  const auto& image=*observation.depth_to_rgb;
-  cv::Mat depth;
-  if(image.encoding==sensor_msgs::image_encodings::TYPE_16UC1)
-    cv_bridge::toCvShare(observation.depth_to_rgb,image.encoding)->image.convertTo(depth,CV_32FC1,0.001);
-  else if(image.encoding==sensor_msgs::image_encodings::TYPE_32FC1)
-    depth=cv_bridge::toCvShare(observation.depth_to_rgb,image.encoding)->image;
-  else return;
+  const hb_perception::ValidatedRGBDView depth(observation);
+  const auto& info=depth.info();
   for(auto& bin:evidence.segments) {
     if(bin.residual_fraction>0) continue;
     const auto it=std::find_if(profile.cut_features.begin(),profile.cut_features.end(),
@@ -112,8 +106,8 @@ inline void accumulateKerfEvidence(hb_robot::recovery::Evidence& evidence,
       if(camera_target.z()<=0) {emit(RayEvidence::UNKNOWN);continue;}
       const int u=std::lround(info.k[0]*camera_target.x()/camera_target.z()+info.k[2]);
       const int v=std::lround(info.k[4]*camera_target.y()/camera_target.z()+info.k[5]);
-      if(u<0 || v<0 || u>=depth.cols || v>=depth.rows) {emit(RayEvidence::UNKNOWN);continue;}
-      const double z=depth.at<float>(v,u);
+      if(u<0 || v<0 || std::uint32_t(u)>=depth.width() || std::uint32_t(v)>=depth.height()) {emit(RayEvidence::UNKNOWN);continue;}
+      const double z=depth.depthMetres(u,v);
       const Eigen::Vector3d pixel_ray((u-info.k[2])/info.k[0],(v-info.k[5])/info.k[4],1);
       const Eigen::Vector3d direction=cut_from_camera.linear()*pixel_ray.normalized();
       measured=z*pixel_ray.norm();

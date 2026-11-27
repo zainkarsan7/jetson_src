@@ -17,6 +17,14 @@ def generate_launch_description():
         "ompl","chomp","pilz_industrial_motion_planner",
     ])
     # .sensors_3d(file_path="config/sensors_3d.yaml")
+    # Skill monitors consume MoveGroup's authoritative scene. Republishing on
+    # /monitored_planning_scene would circulate stale full worlds between them.
+    .planning_scene_monitor(
+        publish_planning_scene=False,
+        publish_geometry_updates=False,
+        publish_state_updates=False,
+        publish_transforms_updates=False,
+    )
     .to_moveit_configs()
     )
     # inspect_scene_server= Node(
@@ -94,7 +102,7 @@ def generate_launch_description():
         "cut_geometry.waypoint_beam_width": 3,
         "cut_geometry.explore_ik_branches": True,
         "cut_sampling.max_candidates_per_roll": 3,
-        "cut_geometry.direction_seed_states": [cut_forward, cut_down, cut_up],
+        "cut_geometry.direction_seed_states": ["cut_forward", "cut_down", "cut_up"],
         "cut_geometry.direction_seed_pose_samples": 12,
         # Geometric seed + reference seed + bounded local perturbations;
         # only the final two attempts per roll explore globally.

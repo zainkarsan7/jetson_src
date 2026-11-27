@@ -12,6 +12,10 @@
 #include "hb_robot_interfaces/msg/kerf_observation.hpp"
 #include "hb_robot_interfaces/msg/kerf_ray_sample.hpp"
 #include "hb_robot_interfaces/srv/evaluate_kerf.hpp"
+#include "hb_robot_interfaces/srv/approve_motion.hpp"
+#include <moveit_msgs/msg/display_trajectory.hpp>
+#include <condition_variable>
+#include <type_traits>
 #include "hb_robot_interfaces/srv/get_cut_definition.hpp"
 #include "hb_robot_interfaces/srv/replay_kerf.hpp"
 #include <iomanip>
@@ -92,6 +96,13 @@ public:
     transit_options_.guide_link = camera_;
     task_state_timeout_ms_ = positive("task_state_timeout_ms", 500.0);
 
+    planning_time_ = positive("planning_time", 5.0);
+    transit_options_.velocity_scaling = positive("transit.velocity_scaling", 0.05);
+    transit_options_.acceleration_scaling = positive("transit.acceleration_scaling", 0.01);
+    if (transit_options_.velocity_scaling > 1.0 || transit_options_.acceleration_scaling > 1.0)
+      throw std::invalid_argument("Transit scaling must be in (0, 1]");
+    require_plan_approval_ = declare_parameter<bool>("require_plan_approval", true);
+    skip_motion_ = declare_parameter<bool>("skip_inspection_motion", true);
     // Preview is deliberately separate from successful acquisition.
     preview_ = declare_parameter<bool>("preview_only", true);
     declare_parameter<std::string>("perception_rgb_topic", "/k4a/rgb/image_raw");
@@ -107,10 +118,10 @@ public:
   }
   void initialize() {
     move_ = std::make_unique<MoveGroup>(shared_from_this(), group_);
-    move_->setPlanningTime(5.0);
+    move_->setPlanningTime(planning_time_);
     move_->setPoseReferenceFrame(frame_);
-    move_->setMaxVelocityScalingFactor(0.1);
-    move_->setMaxAccelerationScalingFactor(0.1);
+    move_->setMaxVelocityScalingFactor(transit_options_.velocity_scaling);
+    move_->setMaxAccelerationScalingFactor(transit_options_.acceleration_scaling);
     move_->setGoalPositionTolerance(0.002);
     move_->setGoalOrientationTolerance(0.02);
     if (move_->getPlanningFrame() != frame_ || !move_->getRobotModel()->hasLinkModel(camera_))
@@ -134,6 +145,40 @@ public:
                 "roll_reference=inspection_home_optical",
                 rgbd_topic_.c_str());
     stability_ = std::make_unique<hb_robot_skills::PlatformSupervisionClient>(*this);
+
+    display_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>(
+        "/display_planned_path", rclcpp::QoS(1).reliable().transient_local());
+    route_traj_pub_ = create_publisher<moveit_msgs::msg::DisplayTrajectory>(
+        "~/display_planned_path", rclcpp::QoS(1).reliable().transient_local());
+    // InspectProfile remains the sole owner of approve_profile_motion.
+    // Use the same service type and GUI pattern with an unambiguous endpoint.
+    approval_service_ = create_service<hb_robot_interfaces::srv::ApproveMotion>(
+        "approve_inspect_cut_motion",
+        [this](hb_robot_interfaces::srv::ApproveMotion::Request::SharedPtr request,
+               hb_robot_interfaces::srv::ApproveMotion::Response::SharedPtr response) {
+          const bool live = !shutting_down_.load() && taskValid();
+          std::string message;
+          {
+            std::lock_guard<std::mutex> lock(approval_mutex_);
+            response->accepted = live && approval_pending_ && !approval_decided_;
+            if (response->accepted) {
+              approval_decided_ = true;
+              motion_approved_ = request->approve;
+              message = std::string(request->approve ? "Approved: " : "Rejected: ") + approval_description_;
+            } else {
+              message = "No undecided, live kerf inspection motion awaiting approval";
+            }
+          }
+          setApprovalMessage(*response, response->accepted, message);
+          RCLCPP_INFO(get_logger(), "[KERF APPROVAL] %s", message.c_str());
+          approval_cv_.notify_all();
+        });
+    RCLCPP_INFO(get_logger(),
+        "[KERF MOTION CONFIG] planner=profile_transit_portfolio velocity=%.3f acceleration=%.3f "
+        "approval=%d skip_motion=%d service=%s route_preview=%s",
+        transit_options_.velocity_scaling, transit_options_.acceleration_scaling,
+        int(require_plan_approval_), int(skip_motion_), approval_service_->get_service_name(),
+        route_traj_pub_->get_topic_name());
 
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/kerf_cloud",
                                                                  rclcpp::QoS(1).transient_local());
@@ -492,6 +537,58 @@ private:
     return valid;
   }
 
+  // ApproveMotion.message is bool in the supplied interface; some deployed
+  // versions use string. Keep both source-compatible without changing messages.
+  template<class Response>
+  static void setApprovalMessage(Response& response, bool accepted, const std::string& text) {
+    if constexpr (std::is_assignable_v<decltype(response.message)&, std::string>)
+      response.message = text;
+    else
+      response.message = accepted;
+  }
+
+  void clearApproval() {
+    std::lock_guard<std::mutex> lock(approval_mutex_);
+    approval_pending_ = approval_decided_ = motion_approved_ = false;
+    approval_description_.clear();
+    approval_cv_.notify_all();
+  }
+
+  enum class ApprovalOutcome { Approved, Rejected, Canceled };
+  ApprovalOutcome waitForInspectionApproval(const moveit_msgs::msg::DisplayTrajectory& display,
+      const std::string& description, const std::function<bool()>& canceled) {
+    if (canceled()) return ApprovalOutcome::Canceled;
+    {
+      std::lock_guard<std::mutex> lock(approval_mutex_);
+      approval_pending_ = approval_decided_ = motion_approved_ = false;
+      approval_description_ = description;
+      // Publish the complete, fixed route including return home before accepting
+      // a decision. No planning occurs after this approval.
+      display_traj_pub_->publish(display);
+      approval_pending_ = require_plan_approval_;
+    }
+    if (!require_plan_approval_)
+      return canceled() ? ApprovalOutcome::Canceled : ApprovalOutcome::Approved;
+    RCLCPP_INFO(get_logger(), "Awaiting inspection motion approval: %s (service=%s)",
+        description.c_str(), approval_service_->get_service_name());
+    for (;;) {
+      // The planning deadline does not include human review time. Live
+      // authorization and cancellation still apply throughout the wait.
+      if (canceled()) {
+        clearApproval();
+        return ApprovalOutcome::Canceled;
+      }
+      std::unique_lock<std::mutex> lock(approval_mutex_);
+      if (approval_decided_) {
+        const auto result = motion_approved_ ? ApprovalOutcome::Approved : ApprovalOutcome::Rejected;
+        approval_pending_ = approval_decided_ = motion_approved_ = false;
+        approval_description_.clear();
+        return result;
+      }
+      approval_cv_.wait_for(lock, std::chrono::milliseconds(50));
+    }
+  }
+
   bool executeInspectionMotion(const Plan &plan, const std::function<bool()> &canceled) {
     if (canceled())
       return false;
@@ -564,6 +661,7 @@ private:
     uint8_t exception_code = Action::Result::PLANNING_FAILED;
     hb_perception::PointCloud cloud;
     auto finish = [&](uint8_t code, std::string message) {
+      clearApproval();
       if (code == Action::Result::SUCCESS)
         (void)taskValid();
       {
@@ -934,8 +1032,8 @@ private:
             auto options=transit_options;
             const double edge_budget_s =
               local ? local_transit_budget_ : transit_budget_;
-            // One direct PTP call for neighboring stations, guided PTP for entry,
-            // between-feature motion and return. Never invoke the OMPL fallbacks.
+            // Reuse InspectProfile's transit portfolio with the same conservative
+            // scaling. The nested budget still bounds every local/entry edge.
             if (local) {
               options.guided_max_ptp_calls=1;
               options.home_joints.clear();
@@ -944,7 +1042,7 @@ private:
             try {
               motion::PlanningBudget edge_budget(edge_budget_s);
               motion::PlanningBudgetScope edge_scope(edge_budget);
-              plan=motion::planGuidedPTP(*move_,get_logger(),*states[edge.from],*states[edge.to],options);
+              plan=motion::planTransit(*move_,get_logger(),*states[edge.from],*states[edge.to],options);
             } catch (const motion::PlanningInterrupted& stopped) {
               if (stopped.reason==motion::PlanningInterrupted::Reason::Canceled) throw;
               motion::PlanningBudgetScope::check("inspection transit deadline");
@@ -976,6 +1074,30 @@ private:
       RCLCPP_INFO(get_logger(),
                   "[KERF ROUTE] stations=%zu validated_transits=%zu; return_home included",
                   stations.size(), route.edges.size() - 1);
+      moveit_msgs::msg::DisplayTrajectory display;
+      display.model_id = move_->getRobotModel()->getName();
+      for (const auto edge_id : route.edges) {
+        if (graph.edge(edge_id).to == sink) continue;
+        const auto& plan = plans.at(edge_id);
+        if (display.trajectory.empty()) display.trajectory_start = plan.start_state_;
+        display.trajectory.push_back(plan.trajectory_);
+      }
+      route_traj_pub_->publish(display);
+      if (skip_motion_) {
+        display_traj_pub_->publish(display);
+        finish(Action::Result::PLANNING_FAILED,
+               "skip_inspection_motion: complete route published; no motion or acquisition");
+        return;
+      }
+      const auto approval = waitForInspectionApproval(display,
+          "complete kerf inspection route, including return to inspection_home", canceled);
+      if (approval != ApprovalOutcome::Approved) {
+        finish(Action::Result::CANCELLED, approval == ApprovalOutcome::Rejected
+            ? "Operator rejected kerf inspection route" : "Inspection approval invalidated or canceled");
+        return;
+      }
+      // The approved route is fixed. Each leg still checks live authorization,
+      // the actual start and the latest collision scene before execution.
       exception_code = Action::Result::MOTION_FAILED;
       const auto samples = goal->samples_per_viewpoint ? goal->samples_per_viewpoint : 3;
       std::set<std::size_t> captured_stations;
@@ -1311,6 +1433,14 @@ private:
   motion::TransitPlannerOptions transit_options_;
   planning_scene_monitor::PlanningSceneMonitorPtr scene_monitor_;
   bool preview_, infer_evidence_;
+  double planning_time_ = 5.0;
+  bool require_plan_approval_ = true, skip_motion_ = false;
+  std::mutex approval_mutex_;
+  std::condition_variable approval_cv_;
+  bool approval_pending_ = false, approval_decided_ = false, motion_approved_ = false;
+  std::string approval_description_;
+  rclcpp::Service<hb_robot_interfaces::srv::ApproveMotion>::SharedPtr approval_service_;
+  rclcpp::Publisher<moveit_msgs::msg::DisplayTrajectory>::SharedPtr display_traj_pub_, route_traj_pub_;
   KerfRayConfig ray_config_;
   std::atomic<bool> busy_{false};
   std::thread worker_;
